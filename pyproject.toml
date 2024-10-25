@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "cardioner-nl"
+version = "0.1.0"
+description = "NER model for Dutch cardiovascular discharges"
+authors = ["Bram van Es and Kasia Smietanka"]
+license = "GPL-3"
+readme = "README.md"
+packages = [{include = "cardioner"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+transformers = "^4.46.0"
+spacy = "^3.7.5"
+gensim = "^4.3.3"
+scikit-learn = "^1.5.2"
+scikit-lego = "^0.9.1"
+seaborn = "^0.13.2"
+simpletransformers = "^0.70.1"
+
+[tool.poetry.group.dev.dependencies]
+jupyter = "^1.1.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
