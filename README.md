@@ -83,4 +83,4 @@ with
 id2labels = {0: 'disease', 1: 'medication', 2: 'procedure', 3: 'symptom'}
 ```
 
-This can be directly loaded into 
+This can be directly loaded into huggingface datasets.
