@@ -13,45 +13,59 @@ import spacy
 nlp = spacy.blank("nl")
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-from collections import defaultdict, Sequence
+from collections import defaultdict
 import json
 from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, DataCollatorForTokenClassification
+from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModelForTokenClassification
+import argparse
+import numpy as np
+from functools import partial
+
+import evaluate
+metric = evaluate.load("seqeval")
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
-tokenizer = AutoTokenizer.from_pretrained('CLTL/MedRoBERTa.nl')
 
-# if file locs not given, generate with sklearn
-train_ids = ...
-test_ids = ...
-val_ids = ...
-
-
-corpus_b1 = []
-# read jsonl
-with open('../../assets/annotations_from_ann_b1.jsonl', 'r', encoding='utf-8') as fr:
-    for line in fr:
-        corpus_b1.append(json.loads(line))
-
-corpus_b2 = []
-# read jsonl
-with open('../../assets/annotations_from_ann_b2.jsonl', 'r', encoding='utf-8') as fr:
-    for line in fr:
-        corpus_b2.append(json.loads(line))
-
-class DataCollator():
-    def __init__(self, labels: List[str]=['DIS', 'PROC', 'SYMP', 'MED']):
+class ModelTrainer():
+    def __init__(self, labels: List[str]=['O', 'B-DIS', 'I-DIS', 'B-PROC', 'I-PROC', 'B-SYMP', 'I-SYMP', 'B-MED', 'I-MED'], 
+                 tokenizer=None, 
+                 model: str='CLTL/MedRoBERTa.nl',):
         self.labels = labels
         self.label2id = {l:c for c,l in enumerate(labels)}
         self.id2label = {c:l for l,c in self.label2id.items()}
 
-        data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
-        #batch = data_collator([tokenized_datasets["train"][i] for i in range(2)])
+        if tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(model, add_prefix_space=True)
+        else:
+            self.tokenizer = tokenizer
+
+        self.data_collator = DataCollatorForTokenClassification(tokenizer=self.tokenizer)
+        self.model = AutoModelForTokenClassification.from_pretrained(model, id2label=self.id2label, label2id=self.label2id)
+
+    def compute_metrics(self, eval_preds):
+        logits, labels = eval_preds
+        predictions = np.argmax(logits, axis=-1)
+
+        # Remove ignored index (special tokens) and convert to labels
+        true_labels = [[self.labels[l] for l in label if l != -100] for label in labels]
+        true_predictions = [
+            [self.labels[p] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+        all_metrics = metric.compute(predictions=true_predictions, references=true_labels)
+        return {
+            "precision": all_metrics["overall_precision"],
+            "recall": all_metrics["overall_recall"],
+            "f1": all_metrics["overall_f1"],
+            "accuracy": all_metrics["overall_accuracy"],
+        }
+
 
 def annotate_corpus(corpus, batch_id="b1"):
     annotated_data = []
 
+    unique_tags = set()
     for entry in corpus:
         text = entry["text"]
         tags = entry["tags"]
@@ -65,6 +79,8 @@ def annotate_corpus(corpus, batch_id="b1"):
             start, end, tag_type = tag["start"], tag["end"], tag["tag"]
             token_start = None
             token_end = None
+            
+            unique_tags.add(tag_type)
 
             for token in doc:
                 if token.idx >= start and token.idx < end:
@@ -86,10 +102,12 @@ def annotate_corpus(corpus, batch_id="b1"):
             "id": entry["id"],
             "batch": batch_id,
             "tokens": [d['token'] for d in token_data],
-            "ner_tags": [d['tag'] for d in token_data],
+            "tags": [d['tag'] for d in token_data],
         })
+    
 
-    return annotated_data
+    tag_list = ",".join(['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]).split(",")
+    return annotated_data, tag_list
 
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
@@ -113,11 +131,19 @@ def align_labels_with_tokens(labels, word_ids):
 
     return new_labels
 
-def tokenize_and_align_labels(examples):
+
+def tokenize_and_align_labels(docs, tokenizer, label2id: Optional[Dict[str, int]]=None):
+    '''
+    Tokenizes and aligns labels with tokens.
+    '''
     tokenized_inputs = tokenizer(
-        examples["tokens"], truncation=True, is_split_into_words=True
+        docs["tokens"], truncation=True, is_split_into_words=True
     )
-    all_labels = examples["tags"]
+    if label2id is not None:
+        # Corrected this line to handle lists of lists
+        all_labels = [[label2id[tag] for tag in tags] for tags in docs["tags"]]
+    else:
+        all_labels = docs["tags"]
     new_labels = []
     for i, labels in enumerate(all_labels):
         word_ids = tokenized_inputs.word_ids(i)
@@ -126,13 +152,82 @@ def tokenize_and_align_labels(examples):
     tokenized_inputs["labels"] = new_labels
     return tokenized_inputs
 
-# Run the transformation
-iob_data_b1 = annotate_corpus(corpus_b1, batch_id="b1")
-iob_data_b2 = annotate_corpus(corpus_b1, batch_id="b2")
-iob_data = iob_data_b1 + iob_data_b2
 
-iob_data_dataset = Dataset.from_list(iob_data)
-iob_data_dataset_tokenized = iob_data_dataset.map(
-    tokenize_and_align_labels,
-    batched=True,
-)
+def prepare(Model: str='CLTL/MedRoBERTa.nl',
+         Corpus_b1: str='../../assets/annotations_from_ann_b1.jsonl',
+         Corpus_b2: str='../../assets/annotations_from_ann_b2.jsonl',
+         Output: str='../../assets/annotations_from_ann_tokenized.jsonl',
+         label2id: Optional[Dict[str, int]]=None, 
+         id2label: Optional[Dict[int, str]]=None
+         ):
+    
+    corpus_b1 = []
+    # read jsonl
+    with open(Corpus_b1, 'r', encoding='utf-8') as fr:
+        for line in fr:
+            corpus_b1.append(json.loads(line))
+
+    corpus_b2 = []
+    # read jsonl
+    with open(Corpus_b2, 'r', encoding='utf-8') as fr:
+        for line in fr:
+            corpus_b2.append(json.loads(line))
+
+    tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True)
+
+    # Run the transformation
+    iob_data_b1, unique_tags  = annotate_corpus(corpus_b1, batch_id="b1")
+    iob_data_b2, _unique_tags = annotate_corpus(corpus_b2, batch_id="b2")
+    
+    assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
+
+    label2id = {l:c for c,l in enumerate(unique_tags)}
+    id2label = {c:l for c,l in enumerate(unique_tags)}
+
+    print("Unique tags: ", unique_tags)
+        
+    iob_data = iob_data_b1 + iob_data_b2
+
+    partial_tokenize_and_align_labels = partial(tokenize_and_align_labels, 
+                                                tokenizer=tokenizer, 
+                                                label2id=label2id)
+
+    iob_data_dataset = Dataset.from_list(iob_data)
+    iob_data_dataset_tokenized = iob_data_dataset.map(
+        partial_tokenize_and_align_labels,
+        batched=True,
+    )
+
+    with open(Output, 'w', encoding='utf-8') as fw:
+        for entry in iob_data_dataset_tokenized:
+            json.dump(entry, fw)
+            fw.write('\n')
+
+    return iob_data_dataset_tokenized, unique_tags
+
+
+def train(tokenized_data, unique_tags, Model: str='CLTL/MedRoBERTa.nl'):
+    print("Not implemented yet")
+    pass
+
+
+if __name__ == "__main__":
+    """
+        take in .jsonl with:
+        {'tags': [{'start': int, 'end': int, 'tag': str}], 'text':str, 'id': str}
+
+        and output .jsonl with tokenized and aligned data
+    """
+
+    argparsers = argparse.ArgumentParser()
+    argparsers.add_argument('--Model', type=str, default='CLTL/MedRoBERTa.nl')
+    argparsers.add_argument('--Corpus_b1', type=str, default='../../assets/annotations_from_ann_b1.jsonl')
+    argparsers.add_argument('--Corpus_b2', type=str, default='../../assets/annotations_from_ann_b2.jsonl')
+    argparsers.add_argument('--Output', type=str, default='../../assets/annotations_from_ann_tokenized.jsonl')
+
+    kwargs = vars(argparsers.parse_args())
+
+    print("Loading and prepping data..")
+    tokenized_data, tags = prepare(**kwargs)
+
+    train(tokenized_data, tags, Model='CLTL/MedRoBERTa.nl')
