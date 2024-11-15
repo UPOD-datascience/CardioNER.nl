@@ -14,7 +14,7 @@ import spacy
 # Load a spaCy model for tokenization
 nlp = spacy.blank("nl")
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Union, Tuple, Literal
 from collections import defaultdict
 import json
 from datasets import Dataset, DatasetDict
@@ -109,52 +109,154 @@ class ModelTrainer():
         return metrics
 
 
-def annotate_corpus(corpus, batch_id="b1"):
+def annotate_corpus_standard(corpus,
+                    batch_id: str="b1", 
+                    chunk_size: int = 256):
     annotated_data = []
 
     unique_tags = set()
+
     for entry in corpus:
         text = entry["text"]
         tags = entry["tags"]
 
-        # Initialize tags for each token with "O" (outside)
+        # Tokenize the text using spaCy
         doc = nlp(text)
+        tokens = [token.text for token in doc]
+        token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
+
+        # Initialize tags for each token with "O" (outside)
         token_tags = ["O"] * len(doc)
 
-        # Annotate each span with IOB tags
+        # Annotate each token with IOB tags
         for tag in tags:
             start, end, tag_type = tag["start"], tag["end"], tag["tag"]
-            token_start = None
-            token_end = None
-
             unique_tags.add(tag_type)
 
-            for token in doc:
-                if token.idx >= start and token.idx < end:
-                    if token_start is None:
-                        token_start = token.i
-                        token_tags[token.i] = f"B-{tag_type}"
+            # Find tokens that fall within the span
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end <= start:
+                    continue  # Token is before the entity
+                if token_start >= end:
+                    break  # Token is after the entity
+                if token_start >= start and token_end <= end:
+                    # Token is inside the entity
+                    if token_tags[i] == "O":
+                        token_tags[i] = f"B-{tag_type}"
                     else:
-                        token_tags[token.i] = f"I-{tag_type}"
-                elif token.idx >= end:
+                        token_tags[i] = f"I-{tag_type}"
+                elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
+                    # Token overlaps with entity boundary
+                    token_tags[i] = f"I-{tag_type}"
+
+        # Split tokens and tags into chunks of max_tokens without splitting entities
+        i = 0
+        while i < len(tokens):
+            end_index = min(i + chunk_size, len(tokens))
+            # Adjust end_index to avoid splitting entities
+            while end_index < len(tokens) and token_tags[end_index].startswith('I-'):
+                end_index += 1
+            chunk_tokens = tokens[i:end_index]
+            chunk_tags = token_tags[i:end_index]
+
+            annotated_data.append({
+                "id": entry["id"] + f"_{i//chunk_size}",  # Modify ID to reflect chunk
+                "batch": batch_id,
+                "tokens": chunk_tokens,
+                "tags": chunk_tags,
+            })
+
+            i = end_index  # Move to the next chunk
+
+    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    return annotated_data, tag_list
+
+def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
+    annotated_data = []
+    unique_tags = set()
+
+    for entry in corpus:
+        text = entry["text"]
+        tags = entry["tags"]
+
+        # Tokenize the text using spaCy
+        doc = nlp(text)
+        tokens = [token.text for token in doc]
+        token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
+
+        # Initialize tags for each token with "O" (outside)
+        token_tags = ["O"] * len(doc)
+
+        # Annotate each token with IOB tags
+        for tag in tags:
+            start, end, tag_type = tag["start"], tag["end"], tag["tag"]
+            unique_tags.add(tag_type)
+
+            # Find tokens that fall within the span
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end <= start:
+                    continue  # Token is before the entity
+                if token_start >= end:
+                    break  # Token is after the entity
+                if token_start >= start and token_end <= end:
+                    # Token is inside the entity
+                    if token_tags[i] == "O":
+                        token_tags[i] = f"B-{tag_type}"
+                    else:
+                        token_tags[i] = f"I-{tag_type}"
+                elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
+                    # Token overlaps with entity boundary
+                    token_tags[i] = f"I-{tag_type}"
+
+        # Create chunks centered around each span
+        for tag in tags:
+            start, end, tag_type = tag["start"], tag["end"], tag["tag"]
+
+            # Find the token indices for the span
+            span_start_idx = None
+            span_end_idx = None
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end >= start and span_start_idx is None:
+                    span_start_idx = i
+                if token_start >= end:
+                    span_end_idx = i
                     break
 
-        # Compile each token, its tag, and token ID
-        token_data = [
-            {"token": token.text, "tag": token_tags[i], "token_id": token.i}
-            for i, token in enumerate(doc)
-        ]
+            if span_start_idx is None:
+                print(f"Warning: Could not find token indices for span in document ID {entry['id']}")
+                print(f"Span start: {start}, Span end: {end}")
+                #print(f"Token offsets: {token_offsets}")
+                continue
 
-        annotated_data.append({
-            "id": entry["id"],
-            "batch": batch_id,
-            "tokens": [d['token'] for d in token_data],
-            "tags": [d['tag'] for d in token_data],
-        })
+            if span_end_idx is None:
+                span_end_idx = len(tokens)  # Span goes to the end of the text
 
+            # Center the chunk around the span
+            left_context = max(0, span_start_idx - (chunk_size // 2))
+            right_context = min(len(tokens), span_start_idx + (chunk_size // 2))
 
-    tag_list = ",".join(['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]).split(",")
+            # Adjust if the span is near the start or end of the document
+            if right_context - left_context < chunk_size:
+                if left_context == 0:
+                    right_context = min(len(tokens), left_context + chunk_size)
+                elif right_context == len(tokens):
+                    left_context = max(0, right_context - chunk_size)
+
+            chunk_tokens = tokens[left_context:right_context]
+            chunk_tags = token_tags[left_context:right_context]
+
+            annotated_data.append({
+                "id": entry["id"] + f"_span_{start}_{end}",
+                "batch": batch_id,
+                "tokens": chunk_tokens,
+                "tags": chunk_tags,
+            })
+
+    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
     return annotated_data, tag_list
+
 
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
@@ -205,7 +307,9 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          Corpus_b2: str='../../assets/annotations_from_ann_b2.jsonl',
          annotation_loc: str='../../assets/annotations_from_ann_tokenized.jsonl',
          label2id: Optional[Dict[str, int]]=None,
-         id2label: Optional[Dict[int, str]]=None
+         id2label: Optional[Dict[int, str]]=None,
+         ChunkSize: int=256,
+         ChunkType: Literal['standard', 'centered']='standard'
          ):
 
     corpus_b1 = []
@@ -223,8 +327,12 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True)
 
     # Run the transformation
-    iob_data_b1, unique_tags  = annotate_corpus(corpus_b1, batch_id="b1")
-    iob_data_b2, _unique_tags = annotate_corpus(corpus_b2, batch_id="b2")
+    if ChunkType == 'standard':
+        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_b1, batch_id="b1", chunk_size=ChunkSize)
+        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_b2, batch_id="b2", chunk_size=ChunkSize)
+    elif ChunkType == 'centered':
+        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_b1, batch_id="b1", chunk_size=ChunkSize)
+        iob_data_b2, _unique_tags = annotate_corpus_centered(corpus_b2, batch_id="b2", chunk_size=ChunkSize)
 
     assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
 
@@ -252,6 +360,7 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     max_seq_length = max(len(entry['input_ids']) for entry in iob_data_dataset_tokenized)
     print(f"Maximum sequence length after tokenization: {max_seq_length}")
 
+    annotation_loc = annotation_loc.replace('.jsonl', f'_chunk{ChunkSize}_{ChunkType}.jsonl')
     with open(annotation_loc, 'w', encoding='utf-8') as fw:
         for entry in iob_data_dataset_tokenized:
             entry.update({'label2id': label2id, 'id2label': id2label})
@@ -298,6 +407,8 @@ if __name__ == "__main__":
     argparsers.add_argument('--annotation_loc', type=str, default='../../assets/annotations_from_ann_tokenized.jsonl')
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
+    argparsers.add_argument('--chunk_size', type=int, default=256)
+    argparsers.add_argument('--chunk_type', type=str, default='standard')
     args = argparsers.parse_args()
 
 
@@ -308,6 +419,8 @@ if __name__ == "__main__":
     _corpus_b1 = args.Corpus_b1
     _corpus_b2 = args.Corpus_b2
     _annotation_loc = args.annotation_loc
+    ChunkSize = args.chunk_size
+    ChunkType = args.chunk_type
     parse_annotations = args.parse_annotations
     train_model = args.train_model
 
@@ -316,7 +429,9 @@ if __name__ == "__main__":
         tokenized_data, tags = prepare(Model=_model,
                                     Corpus_b1=_corpus_b1,
                                     Corpus_b2=_corpus_b2,
-                                    annotation_loc=_annotation_loc)
+                                    annotation_loc=_annotation_loc,
+                                    ChunkSize=ChunkSize,
+                                    ChunkType=ChunkType)
 
     if train_model:
         print("Training the model..")
