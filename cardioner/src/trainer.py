@@ -7,19 +7,24 @@ Incoming format is :
 
 ]
 """
+from ast import parse
+from os import truncate
 import spacy
 
 # Load a spaCy model for tokenization
 nlp = spacy.blank("nl")
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union, Tuple
 from collections import defaultdict
 import json
 from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModelForTokenClassification
+from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModelForTokenClassification, TrainingArguments, Trainer
+from torch.utils.data import DataLoader
 import argparse
 import numpy as np
 from functools import partial
+
+from sklearn.model_selection import train_test_split, KFold
 
 import evaluate
 metric = evaluate.load("seqeval")
@@ -28,29 +33,52 @@ metric = evaluate.load("seqeval")
 
 
 class ModelTrainer():
-    def __init__(self, labels: List[str]=['O', 'B-DIS', 'I-DIS', 'B-PROC', 'I-PROC', 'B-SYMP', 'I-SYMP', 'B-MED', 'I-MED'], 
-                 tokenizer=None, 
-                 model: str='CLTL/MedRoBERTa.nl',):
-        self.labels = labels
-        self.label2id = {l:c for c,l in enumerate(labels)}
-        self.id2label = {c:l for l,c in self.label2id.items()}
+    def __init__(self,
+                 label2id: Dict[str, int],
+                 id2label: Dict[int, str],
+                 tokenizer=None,
+                 model: str='CLTL/MedRoBERTa.nl',
+                 batch_size: int=16,
+                 max_length: int=512,
+                 learning_rate: float=5e-5,
+                 weight_decay: float=0.01,
+                 num_train_epochs: int=3,
+    ):
+        self.label2id = label2id
+        self.id2label = id2label
+
+        self.train_kwargs = {
+            'per_device_train_batch_size': batch_size,
+            'per_device_eval_batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'num_train_epochs': num_train_epochs,
+            'weight_decay': weight_decay,
+            'eval_strategy':'epoch',
+            'save_strategy': 'epoch'
+        }
 
         if tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(model, add_prefix_space=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(model,
+                add_prefix_space=True, max_length=max_length, padding="max_length")
         else:
             self.tokenizer = tokenizer
 
         self.data_collator = DataCollatorForTokenClassification(tokenizer=self.tokenizer)
         self.model = AutoModelForTokenClassification.from_pretrained(model, id2label=self.id2label, label2id=self.label2id)
 
+        self.args = TrainingArguments(
+            output_dir="../results",
+            **self.train_kwargs
+        )
+
     def compute_metrics(self, eval_preds):
         logits, labels = eval_preds
         predictions = np.argmax(logits, axis=-1)
 
         # Remove ignored index (special tokens) and convert to labels
-        true_labels = [[self.labels[l] for l in label if l != -100] for label in labels]
+        true_labels = [[labels[l] for l in label if l != -100] for label in labels]
         true_predictions = [
-            [self.labels[p] for (p, l) in zip(prediction, label) if l != -100]
+            [labels[p] for (p, l) in zip(prediction, label) if l != -100]
             for prediction, label in zip(predictions, labels)
         ]
         all_metrics = metric.compute(predictions=true_predictions, references=true_labels)
@@ -60,6 +88,25 @@ class ModelTrainer():
             "f1": all_metrics["overall_f1"],
             "accuracy": all_metrics["overall_accuracy"],
         }
+
+    def train(self, train_data: List[Dict], eval_data: List[Dict], output_dir: str="../results"):
+        trainer = Trainer(
+            model=self.model,
+            args=self.args,
+            train_dataset=train_data,
+            eval_dataset=eval_data,
+            data_collator=self.data_collator,
+            compute_metrics=self.compute_metrics,
+            tokenizer=self.tokenizer,
+        )
+        trainer.train()
+        metrics = trainer.evaluate()
+        try:
+            trainer.save_metrics(output_dir, metrics=metrics)
+            trainer.save_model(output_dir)
+        except:
+            print("Failed to save model and metrics")
+        return metrics
 
 
 def annotate_corpus(corpus, batch_id="b1"):
@@ -79,7 +126,7 @@ def annotate_corpus(corpus, batch_id="b1"):
             start, end, tag_type = tag["start"], tag["end"], tag["tag"]
             token_start = None
             token_end = None
-            
+
             unique_tags.add(tag_type)
 
             for token in doc:
@@ -104,7 +151,7 @@ def annotate_corpus(corpus, batch_id="b1"):
             "tokens": [d['token'] for d in token_data],
             "tags": [d['tag'] for d in token_data],
         })
-    
+
 
     tag_list = ",".join(['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]).split(",")
     return annotated_data, tag_list
@@ -137,7 +184,7 @@ def tokenize_and_align_labels(docs, tokenizer, label2id: Optional[Dict[str, int]
     Tokenizes and aligns labels with tokens.
     '''
     tokenized_inputs = tokenizer(
-        docs["tokens"], truncation=True, is_split_into_words=True
+        docs["tokens"], is_split_into_words=True
     )
     if label2id is not None:
         # Corrected this line to handle lists of lists
@@ -156,11 +203,11 @@ def tokenize_and_align_labels(docs, tokenizer, label2id: Optional[Dict[str, int]
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
          Corpus_b1: str='../../assets/annotations_from_ann_b1.jsonl',
          Corpus_b2: str='../../assets/annotations_from_ann_b2.jsonl',
-         Output: str='../../assets/annotations_from_ann_tokenized.jsonl',
-         label2id: Optional[Dict[str, int]]=None, 
+         annotation_loc: str='../../assets/annotations_from_ann_tokenized.jsonl',
+         label2id: Optional[Dict[str, int]]=None,
          id2label: Optional[Dict[int, str]]=None
          ):
-    
+
     corpus_b1 = []
     # read jsonl
     with open(Corpus_b1, 'r', encoding='utf-8') as fr:
@@ -178,18 +225,18 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     # Run the transformation
     iob_data_b1, unique_tags  = annotate_corpus(corpus_b1, batch_id="b1")
     iob_data_b2, _unique_tags = annotate_corpus(corpus_b2, batch_id="b2")
-    
+
     assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
 
     label2id = {l:c for c,l in enumerate(unique_tags)}
     id2label = {c:l for c,l in enumerate(unique_tags)}
 
     print("Unique tags: ", unique_tags)
-        
+
     iob_data = iob_data_b1 + iob_data_b2
 
-    partial_tokenize_and_align_labels = partial(tokenize_and_align_labels, 
-                                                tokenizer=tokenizer, 
+    partial_tokenize_and_align_labels = partial(tokenize_and_align_labels,
+                                                tokenizer=tokenizer,
                                                 label2id=label2id)
 
     iob_data_dataset = Dataset.from_list(iob_data)
@@ -198,17 +245,42 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         batched=True,
     )
 
-    with open(Output, 'w', encoding='utf-8') as fw:
+    # given a max_length tokens we want to center the context around all spans in the documents and extract them as a seperate documents. Each separate extraction needs to get a separate sub_id.
+
+
+
+    max_seq_length = max(len(entry['input_ids']) for entry in iob_data_dataset_tokenized)
+    print(f"Maximum sequence length after tokenization: {max_seq_length}")
+
+    with open(annotation_loc, 'w', encoding='utf-8') as fw:
         for entry in iob_data_dataset_tokenized:
+            entry.update({'label2id': label2id, 'id2label': id2label})
             json.dump(entry, fw)
             fw.write('\n')
 
     return iob_data_dataset_tokenized, unique_tags
 
 
-def train(tokenized_data, unique_tags, Model: str='CLTL/MedRoBERTa.nl'):
-    print("Not implemented yet")
-    pass
+def train(tokenized_data: List[Dict],
+          Model: str='CLTL/MedRoBERTa.nl',
+          Splits: List[List[str]] | int = 5):
+
+    label2id = tokenized_data[0]['label2id']
+    id2label = tokenized_data[0]['id2label']
+
+    if isinstance(Splits, int):
+        splitter = KFold(n_splits=Splits, shuffle=True, random_state=42)
+        # get the splits
+        SplitList = list(splitter.split(tokenized_data))
+    else:
+        SplitList = Splits
+
+    TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, model=Model)
+
+    for train_idx, test_idx in SplitList:
+        train_data = [tokenized_data[i] for i in train_idx]
+        test_data = [tokenized_data[i] for i in test_idx]
+        TrainClass.train(train_data=train_data, eval_data=test_data)
 
 
 if __name__ == "__main__":
@@ -223,11 +295,33 @@ if __name__ == "__main__":
     argparsers.add_argument('--Model', type=str, default='CLTL/MedRoBERTa.nl')
     argparsers.add_argument('--Corpus_b1', type=str, default='../../assets/annotations_from_ann_b1.jsonl')
     argparsers.add_argument('--Corpus_b2', type=str, default='../../assets/annotations_from_ann_b2.jsonl')
-    argparsers.add_argument('--Output', type=str, default='../../assets/annotations_from_ann_tokenized.jsonl')
+    argparsers.add_argument('--annotation_loc', type=str, default='../../assets/annotations_from_ann_tokenized.jsonl')
+    argparsers.add_argument('--parse_annotations', action="store_true", default=False)
+    argparsers.add_argument('--train_model', action="store_true", default=False)
+    args = argparsers.parse_args()
 
-    kwargs = vars(argparsers.parse_args())
 
-    print("Loading and prepping data..")
-    tokenized_data, tags = prepare(**kwargs)
+    tokenized_data = None
+    tags = None
 
-    train(tokenized_data, tags, Model='CLTL/MedRoBERTa.nl')
+    _model = args.Model
+    _corpus_b1 = args.Corpus_b1
+    _corpus_b2 = args.Corpus_b2
+    _annotation_loc = args.annotation_loc
+    parse_annotations = args.parse_annotations
+    train_model = args.train_model
+
+    if parse_annotations:
+        print("Loading and prepping data..")
+        tokenized_data, tags = prepare(Model=_model,
+                                    Corpus_b1=_corpus_b1,
+                                    Corpus_b2=_corpus_b2,
+                                    annotation_loc=_annotation_loc)
+
+    if train_model:
+        print("Training the model..")
+        if tokenized_data is None:
+            with open(_annotation_loc, 'r', encoding='utf-8') as fr:
+                tokenized_data = [json.loads(line) for line in fr]
+        #tokenized_data = Dataset.from_list(tokenized_data)
+        train(tokenized_data, Model=_model, Splits=10)
