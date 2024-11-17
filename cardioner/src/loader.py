@@ -84,6 +84,7 @@ def annotate_corpus_standard(corpus,
             chunk_tags = token_tags[i:end_index]
 
             annotated_data.append({
+                "gid": entry["id"],
                 "id": entry["id"] + f"_{i//chunk_size}",  # Modify ID to reflect chunk
                 "batch": batch_id,
                 "tokens": chunk_tokens,
@@ -171,6 +172,7 @@ def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
             chunk_tags = token_tags[left_context:right_context]
 
             annotated_data.append({
+                "gid": entry["id"],
                 "id": entry["id"] + f"_span_{start}_{end}",
                 "batch": batch_id,
                 "tokens": chunk_tokens,

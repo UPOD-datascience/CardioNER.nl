@@ -17,7 +17,7 @@ import argparse
 import numpy as np
 from functools import partial
 
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split, KFold, GroupKFold
 
 from loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, align_labels_with_tokens
 from trainer import ModelTrainer
@@ -116,8 +116,8 @@ def train(tokenized_data: List[Dict],
 
     if isinstance(Splits, int):
         splitter = KFold(n_splits=Splits, shuffle=True, random_state=42)
-        # get the splits
-        SplitList = list(splitter.split(tokenized_data))
+        groups = [entry['gid'] for entry in tokenized_data]
+        SplitList = list(splitter.split(tokenized_data, groups=groups))
     else:
         SplitList = Splits
     
