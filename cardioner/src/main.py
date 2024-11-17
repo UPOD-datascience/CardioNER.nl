@@ -69,8 +69,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
 
-    label2id = {l:c for c,l in enumerate(unique_tags)}
-    id2label = {c:l for c,l in enumerate(unique_tags)}
+    label2id = {l:int(c) for c,l in enumerate(unique_tags)}
+    id2label = {int(c):l for c,l in enumerate(unique_tags)}
 
     print("Unique tags: ", unique_tags)
 
@@ -110,6 +110,9 @@ def train(tokenized_data: List[Dict],
 
     label2id = tokenized_data[0]['label2id']
     id2label = tokenized_data[0]['id2label']
+
+    label2id = {str(k):int(v) for k,v in label2id.items()}
+    id2label = {int(k):str(v) for k,v in id2label.items()}
 
     if isinstance(Splits, int):
         splitter = KFold(n_splits=Splits, shuffle=True, random_state=42)

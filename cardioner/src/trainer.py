@@ -124,6 +124,7 @@ class ModelTrainer():
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
         print("Number of labels:", len(self.label2id))
         print("Labels:", self.label2id)
+        print("id2lagel:", self.id2label)
         print("Model config:", self.model.config)
 
 
