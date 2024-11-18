@@ -101,6 +101,7 @@ class ModelTrainer():
             'weight_decay': weight_decay,
             'eval_strategy':'epoch',
             'save_strategy': 'epoch',
+            'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,
             'logging_dir': f"{output_dir}/logs",

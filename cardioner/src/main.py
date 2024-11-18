@@ -18,6 +18,7 @@ import numpy as np
 from functools import partial
 
 from sklearn.model_selection import train_test_split, KFold, GroupKFold
+from sklearn.utils import shuffle
 
 from loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, align_labels_with_tokens
 from trainer import ModelTrainer
@@ -88,8 +89,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     # given a max_length tokens we want to center the context around all spans in the documents and extract them as a seperate documents. Each separate extraction needs to get a separate sub_id.
 
-
-
     max_seq_length = max(len(entry['input_ids']) for entry in iob_data_dataset_tokenized)
     print(f"Maximum sequence length after tokenization: {max_seq_length}")
 
@@ -115,15 +114,17 @@ def train(tokenized_data: List[Dict],
     id2label = {int(k):str(v) for k,v in id2label.items()}
 
     if isinstance(Splits, int):
-        splitter = KFold(n_splits=Splits, shuffle=True, random_state=42)
+        splitter = GroupKFold(n_splits=Splits)
         groups = [entry['gid'] for entry in tokenized_data]
-        SplitList = list(splitter.split(tokenized_data, groups=groups))
+        shuffled_data, shuffled_groups = shuffle(tokenized_data, groups, random_state=42)
+        SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
     else:
         SplitList = Splits
     
     print(f"Splitting data into {len(SplitList)} folds")
     for k, (train_idx, test_idx) in enumerate(SplitList):
-        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, model=Model, output_dir=f"{output_dir}/fold_{k}")
+        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, 
+                                  model=Model, output_dir=f"{output_dir}/fold_{k}")
         print(f"Training on split {k}")
         train_data = [tokenized_data[i] for i in train_idx]
         test_data = [tokenized_data[i] for i in test_idx]
@@ -149,7 +150,8 @@ if __name__ == "__main__":
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
     argparsers.add_argument('--max_token_length', type=int, default=514)
-    argparsers.add_argument('--num_labels', type=int, default='9')
+    argparsers.add_argument('--num_labels', type=int, default=9)
+    argparsers.add_argument('--num_splits', type=int, default=10)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
     args = argparsers.parse_args()
 
@@ -167,6 +169,7 @@ if __name__ == "__main__":
     parse_annotations = args.parse_annotations
     train_model = args.train_model
     num_labels = args.num_labels
+    num_splits = args.num_splits
 
     if parse_annotations:
         print("Loading and prepping data..")
@@ -198,4 +201,4 @@ if __name__ == "__main__":
         
             
         #tokenized_data = Dataset.from_list(tokenized_data)
-        train(tokenized_data, Model=_model, Splits=10, output_dir=OutputDir)
+        train(tokenized_data, Model=_model, Splits=num_splits, output_dir=OutputDir)
