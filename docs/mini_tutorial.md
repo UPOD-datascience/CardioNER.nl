@@ -35,7 +35,9 @@ Note: we only care about ```2_validated_w_sugs```.
 # Step 1
 >[!TIP]
 > before you continue
+>
 > do ```poetry install```
+>
 > do ```poetry shell```
 
 The first thing we want to do is collect .ann's per document-id, so for ```casos_clinicos_cardiologia3``` we want to
@@ -125,6 +127,7 @@ We are not done yet, unfortunately, these tokens and tags and not yet in the rig
 "input_ids": [132,4125,5234,2356,23,88,36,...],
 "labels": [0,0,0,0,0,0,0,1,2,2,0,0,0,0,3,4,4,...]
 }
+```
 
 To create the jsonl with this format, run
 ```
