@@ -33,6 +33,11 @@ We start with the following file/folder structure
 Note: we only care about ```2_validated_w_sugs```.
 
 # Step 1
+>[!TIP]
+> before you continue
+> do ```poetry install```
+> do ```poetry shell```
+
 The first thing we want to do is collect .ann's per document-id, so for ```casos_clinicos_cardiologia3``` we want to
 have one .ann. To do this you e.g. do ```python Pubscience\pubscience\share\collect_ann.py --basefolder \some_root_folder\b1\2_validated_w_sugs\YOUR_LANGUAGE --classname dis med proc symp```,
 this will create an ```ann``` folder with .ann's in ```\some_root_folder\b1\2_validated_w_sugs\YOUR_LANGUAGE```. We also want to have one folder with the txts, in principle the ```\txt``` folders
@@ -123,7 +128,16 @@ We are not done yet, unfortunately, these tokens and tags and not yet in the rig
 
 To create the jsonl with this format, run
 ```
-python main.py --parse_annotations --Corpus_b1 /loc/of/step1_b1.jsonl --Corpus_b2 /loc/of/step1_b2.jsonl --annotation_loc /loc/of/final.jsonl --chunk_size xx --chunk_type centered
+python main.py --parse_annotations --Corpus_b1 /loc/of/step1_b1.jsonl --Corpus_b2 /loc/of/step1_b2.jsonl --annotation_loc /loc/of/final.jsonl --chunk_size xx --chunk_type centered --Model YOUR_MODEL_LOCATION
 ```
 
 Where ```chunk_size``` is the number of words (not tokens) per chunk, and ```chunk_type``` can be centered or standard. Centered chunking does just what it says, the labeled span is centered in the context window. Each span is represented by its own document as it where. Default chunking on the other hand just splits up the original document in chunks of xx words. The benefit of the latter is that we end up with a small multiple of the original number of documents versus the almost 100-fold increase if we create a new document around each span. The benefit of the former is that the model is more agnostic with regard to the location of the span in the document. We can try both.
+
+# Step 3, training
+
+To train simply do
+```
+python main.py --train_model --annotation_loc /loc/of/final.jsonl --num_splits 10
+```
+
+A possible improvement here: add location of ```model_settings.yaml``` to parse the arguments for the model training, now it is hard coded.. Also we need arguments for the locations of the splits.
