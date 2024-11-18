@@ -31,9 +31,9 @@ from functools import partial
 
 
 def annotate_corpus_standard(corpus,
-                    batch_id: str="b1", 
+                    batch_id: str="b1",
                     chunk_size: int = 256,
-                    max_allowed_chunk_size: int = None):
+                    max_allowed_chunk_size: int = 450):
     annotated_data = []
     unique_tags = set()
 
@@ -91,7 +91,7 @@ def annotate_corpus_standard(corpus,
                 "tags": chunk_tags,
             })
 
-            i = end_index   
+            i = end_index
 
     tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
     tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
