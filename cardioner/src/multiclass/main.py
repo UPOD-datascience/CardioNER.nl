@@ -2,7 +2,6 @@ from os import environ
 import spacy
 
 # Load a spaCy model for tokenization
-nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
@@ -22,34 +21,36 @@ from sklearn.utils import shuffle
 
 from loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, align_labels_with_tokens
 from trainer import ModelTrainer
-import evaluate
-metric = evaluate.load("seqeval")
+
+import os
+from datetime import datetime
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
-         Corpus_b1: str='../../assets/annotations_from_ann_b1.jsonl',
-         Corpus_b2: str='../../assets/annotations_from_ann_b2.jsonl',
-         annotation_loc: str='../../assets/annotations_from_ann_tokenized.jsonl',
-         label2id: Optional[Dict[str, int]]=None,
-         id2label: Optional[Dict[int, str]]=None,
-         ChunkSize: int=256,
-         max_length: int=514,
-         ChunkType: Literal['standard', 'centered']='standard'
+            lang: str='nl',
+            Corpus_tr: str='../../assets/annotations_from_ann_b1.jsonl',
+            Corpus_vl: str='../../assets/annotations_from_ann_b2.jsonl',
+            annotation_loc: str='../../assets/annotations_from_ann_tokenized.jsonl',
+            label2id: Optional[Dict[str, int]]=None,
+            id2label: Optional[Dict[int, str]]=None,
+            ChunkSize: int=256,
+            max_length: int=514,
+            ChunkType: Literal['standard', 'centered']='standard'
          ):
 
-    corpus_b1 = []
+    corpus_tr = []
     # read jsonl
-    with open(Corpus_b1, 'r', encoding='utf-8') as fr:
+    with open(Corpus_tr, 'r', encoding='utf-8') as fr:
         for line in fr:
-            corpus_b1.append(json.loads(line))
+            corpus_tr.append(json.loads(line))
 
-    corpus_b2 = []
+    corpus_vl = []
     # read jsonl
-    with open(Corpus_b2, 'r', encoding='utf-8') as fr:
+    with open(Corpus_vl, 'r', encoding='utf-8') as fr:
         for line in fr:
-            corpus_b2.append(json.loads(line))
+            corpus_vl.append(json.loads(line))
 
     tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True)
     tokenizer.model_max_length = max_length
@@ -62,11 +63,11 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     # Run the transformation
     if ChunkType == 'standard':
-        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_b1, batch_id="b1", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
-        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_b2, batch_id="b2", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
+        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_tr, lang, batch_id="train", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
+        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_vl, lang, batch_id="validation", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
     elif ChunkType == 'centered':
-        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_b1, batch_id="b1", chunk_size=ChunkSize)
-        iob_data_b2, _unique_tags = annotate_corpus_centered(corpus_b2, batch_id="b2", chunk_size=ChunkSize)
+        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_tr, lang, batch_id="train", chunk_size=ChunkSize)
+        iob_data_b2, _unique_tags = annotate_corpus_centered(corpus_vl, lang, batch_id="validation", chunk_size=ChunkSize)
 
     assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
 
@@ -102,10 +103,13 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     return iob_data_dataset_tokenized, unique_tags
 
 
-def train(tokenized_data: List[Dict],
+def train(tokenized_data_tr: List[Dict],
+          tokenized_data_vl: List[Dict],
           Model: str='CLTL/MedRoBERTa.nl',
           Splits: List[List[str]] | int = 5, 
-          output_dir: str="../output"):
+          num_train_epochs: int=3,
+          batch_size: int=32,
+          output_dir: str="output"):
 
     label2id = tokenized_data[0]['label2id']
     id2label = tokenized_data[0]['id2label']
@@ -113,23 +117,31 @@ def train(tokenized_data: List[Dict],
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
 
-    if isinstance(Splits, int):
-        splitter = GroupKFold(n_splits=Splits)
-        groups = [entry['gid'] for entry in tokenized_data]
-        shuffled_data, shuffled_groups = shuffle(tokenized_data, groups, random_state=42)
-        SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
+    if tokenized_data_vl is None:
+        if isinstance(Splits, int):
+            splitter = GroupKFold(n_splits=Splits)
+            groups = [entry['gid'] for entry in tokenized_data]
+            shuffled_data, shuffled_groups = shuffle(tokenized_data, groups, random_state=42)
+            SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
+        else:
+            SplitList = Splits
+    
+        print(f"Splitting data into {len(SplitList)} folds")
+        for k, (train_idx, test_idx) in enumerate(SplitList):
+            TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, 
+                                    model=Model, output_dir=f"{output_dir}/fold_{k}")
+            print(f"Training on split {k}")
+            train_data = [tokenized_data[i] for i in train_idx]
+            test_data = [tokenized_data[i] for i in test_idx]
+            TrainClass.train(train_data=train_data, eval_data=test_data)
     else:
         SplitList = Splits
-    
-    print(f"Splitting data into {len(SplitList)} folds")
-    for k, (train_idx, test_idx) in enumerate(SplitList):
-        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, 
-                                  model=Model, output_dir=f"{output_dir}/fold_{k}")
-        print(f"Training on split {k}")
-        train_data = [tokenized_data[i] for i in train_idx]
-        test_data = [tokenized_data[i] for i in test_idx]
-        TrainClass.train(train_data=train_data, eval_data=test_data)
-        
+        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
+                                    model=Model, output_dir=output_dir, num_train_epochs=num_train_epochs, batch_size=batch_size)
+        # print(tokenized_data_tr[0]["labels"])
+        # print("\n")
+        # print(tokenized_data_vl[0]["labels"])
+        TrainClass.train(train_data=tokenized_data_tr, eval_data=tokenized_data_vl)        
 
 
 if __name__ == "__main__":
@@ -141,26 +153,31 @@ if __name__ == "__main__":
     """
 
     argparsers = argparse.ArgumentParser()
-    argparsers.add_argument('--Model', type=str, default='CLTL/MedRoBERTa.nl')
-    argparsers.add_argument('--Corpus_b1', type=str, default='../../assets/annotations_from_ann_b1.jsonl')
-    argparsers.add_argument('--Corpus_b2', type=str, default='../../assets/annotations_from_ann_b2.jsonl')
-    argparsers.add_argument('--annotation_loc', type=str, default='../../assets/annotations_from_ann_tokenized.jsonl')
-    argparsers.add_argument('--output_dir', type=str, default='../../output')
+    argparsers.add_argument('--Model', type=str, required=True)
+    argparsers.add_argument('--lang', type=str, required=True, choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'])
+    argparsers.add_argument('--mention_class', type=str, required=True)
+    argparsers.add_argument('--Corpus_tr', type=str, default=None)
+    argparsers.add_argument('--Corpus_vl', type=str, default=None)
+    argparsers.add_argument('--annotation_loc', type=str, default=None)
+    argparsers.add_argument('--output_dir', type=str, default=None)
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
     argparsers.add_argument('--max_token_length', type=int, default=514)
-    argparsers.add_argument('--num_labels', type=int, default=9)
-    argparsers.add_argument('--num_splits', type=int, default=10)
+    argparsers.add_argument('--num_splits', type=int, default=1)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
+    argparsers.add_argument('--epochs', type=int, default=3)
+    argparsers.add_argument('--batch_size', type=int, default=64)
     args = argparsers.parse_args()
 
     tokenized_data = None
     tags = None
 
     _model = args.Model
-    _corpus_b1 = args.Corpus_b1
-    _corpus_b2 = args.Corpus_b2
+    _mention_class = args.mention_class
+    _lang = args.lang if args.lang != 'cz' else 'cs'
+    _corpus_tr = args.Corpus_tr
+    _corpus_vl = args.Corpus_vl
     _annotation_loc = args.annotation_loc
     OutputDir = args.output_dir
     ChunkSize = args.chunk_size
@@ -170,12 +187,30 @@ if __name__ == "__main__":
     train_model = args.train_model
     num_labels = args.num_labels
     num_splits = args.num_splits
+    epochs = args.epochs
+    batch_size = args.batch_size
 
+    model_name = _model.split("/")[-1]
+    
+    if _corpus_tr is None:
+        _corpus_tr = f'assets/train/{_lang}/{_mention_class}/annotations.jsonl'
+    if _corpus_vl is None:
+        _corpus_vl = f'assets/validation/{_lang}/{_mention_class}/annotations.jsonl'
+    if _annotation_loc is None:
+        _annotation_loc = f'assets/train/{_lang}/{_mention_class}/ann_loc.jsonl'
+    if OutputDir is None:
+        OutputDir = f'output/{_lang}/{_mention_class}/{model_name}'
+    now = datetime.now()
+    dt_string = now.strftime("%d-%m-%Y_%H-%M-%S")
+    OutputDir = f"{OutputDir}/{dt_string}"
+        
+    OutputDir = os.path.abspath(OutputDir)
     if parse_annotations:
         print("Loading and prepping data..")
         tokenized_data, tags = prepare(Model=_model,
-                                    Corpus_b1=_corpus_b1,
-                                    Corpus_b2=_corpus_b2,
+                                       lang=_lang,
+                                    Corpus_tr=_corpus_tr,
+                                    Corpus_vl=_corpus_vl,
                                     annotation_loc=_annotation_loc,
                                     ChunkSize=ChunkSize,
                                     ChunkType=ChunkType,
@@ -201,4 +236,7 @@ if __name__ == "__main__":
         
             
         #tokenized_data = Dataset.from_list(tokenized_data)
-        train(tokenized_data, Model=_model, Splits=num_splits, output_dir=OutputDir)
+        tokenized_data_tr = [entry for entry in tokenized_data if entry['batch'] == 'train']
+        tokenized_data_vl = [entry for entry in tokenized_data if entry['batch'] == 'validation']
+        
+        train(tokenized_data_tr, tokenized_data_vl, Model=_model, Splits=num_splits, output_dir=OutputDir, num_train_epochs=epochs, batch_size=batch_size)

@@ -101,7 +101,7 @@ def annotate_corpus_standard(corpus,
     tag_list = {'O'}
     for tag in unique_tags:
         tag_list.update({f"B-{tag}", f"I-{tag}"})
-    tag_list = sorted(tag_list)
+    #tag_list = sorted(tag_list)
     return annotated_data, tag_list
 
 def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
@@ -202,7 +202,7 @@ def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
     tag_list = {'O'}
     for tag in unique_tags:
         tag_list.update({f"B-{tag}", f"I-{tag}"})
-    tag_list = sorted(tag_list)
+    #tag_list = sorted(tag_list)
     return annotated_data, tag_list
 
 def count_tokens_with_multiple_labels(annotated_data):

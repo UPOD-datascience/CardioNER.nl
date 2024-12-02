@@ -2,7 +2,6 @@ from os import environ
 import spacy
 
 # Load a spaCy model for tokenization
-nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 

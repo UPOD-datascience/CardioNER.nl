@@ -62,10 +62,15 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     # Run the transformation
     if ChunkType == 'standard':
-        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_b1, batch_id="b1", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
-        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_b2, batch_id="b2", chunk_size=ChunkSize, max_allowed_chunk_size=max_allowed_chunk_size)
+        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_b1, batch_id="b1", 
+                                                             chunk_size=ChunkSize,
+                                                             max_allowed_chunk_size=max_allowed_chunk_size)
+        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_b2, batch_id="b2", 
+                                                             chunk_size=ChunkSize, 
+                                                             max_allowed_chunk_size=max_allowed_chunk_size)
     elif ChunkType == 'centered':
-        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_b1, batch_id="b1", chunk_size=ChunkSize)
+        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_b1, batch_id="b1", 
+                                                             chunk_size=ChunkSize)
         iob_data_b2, _unique_tags = annotate_corpus_centered(corpus_b2, batch_id="b2", chunk_size=ChunkSize)
     # paragraph
 
@@ -116,7 +121,8 @@ def train(tokenized_data: List[Dict],
           Model: str='CLTL/MedRoBERTa.nl',
           Splits: List[List[str]] | int = 5,
           output_dir: str="../output",
-          max_length: int=514):
+          max_length: int=514,
+          num_epochs: int=10):
 
     label2id = tokenized_data[0]['label2id']
     id2label = tokenized_data[0]['id2label']
@@ -146,7 +152,9 @@ def train(tokenized_data: List[Dict],
     print(f"Splitting data into {len(SplitList)} folds")
     for k, (train_idx, test_idx) in enumerate(SplitList):
         TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                  model=Model, output_dir=f"{output_dir}/fold_{k}", max_length=max_length)
+                                  model=Model, output_dir=f"{output_dir}/fold_{k}", 
+                                  max_length=max_length,
+                                  num_train_epochs=num_epochs)
         print(f"Training on split {k}")
         train_data = [tokenized_data[i] for i in train_idx]
         test_data = [tokenized_data[i] for i in test_idx]
@@ -172,8 +180,9 @@ if __name__ == "__main__":
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
     argparsers.add_argument('--max_token_length', type=int, default=514)
+    argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
-    argparsers.add_argument('--num_splits', type=int, default=10)
+    argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
 
@@ -194,6 +203,7 @@ if __name__ == "__main__":
     train_model = args.train_model
     num_labels = args.num_labels
     num_splits = args.num_splits
+    num_epochs = args.num_epochs
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -228,4 +238,9 @@ if __name__ == "__main__":
 
 
         #tokenized_data = Dataset.from_list(tokenized_data)
-        train(tokenized_data, Model=_model, Splits=num_splits, output_dir=OutputDir, max_length=max_length)
+        train(tokenized_data, 
+              Model=_model, 
+              Splits=num_splits, 
+              output_dir=OutputDir, 
+              max_length=max_length,
+              num_epochs=num_epochs)

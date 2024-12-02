@@ -55,12 +55,12 @@ class MultiLabelDataCollatorForTokenClassification:
         padded_labels = torch.full(
             (batch_size, max_seq_length, num_labels),
             self.label_pad_token_id,
-            dtype=torch.long
+            dtype=torch.float
         )
 
         for i, label in enumerate(labels):
             seq_length = len(label)
-            padded_labels[i, :seq_length, :] = torch.tensor(label, dtype=torch.long)
+            padded_labels[i, :seq_length, :] = torch.tensor(label, dtype=torch.float)
 
         batch['labels'] = padded_labels
 
@@ -108,16 +108,31 @@ class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
         )
 
 class MultiLabelTrainer(Trainer):
+    def __init__(self, *args, class_weights: Optional[torch.FloatTensor] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if class_weights is not None:
+            class_weights = class_weights.to(self.args.device)
+            logging.info(f"Using multi-label classification with class weights", class_weights)
+        self.loss_fct = nn.BCEWithLogitsLoss(weight=class_weights, reduction='none')
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
-        logits = model(**inputs)['logits']
-        # Define BCEWithLogitsLoss here
-        loss_fct = nn.BCEWithLogitsLoss(reduction='none')  # Adjust reduction as needed
-        mask = (labels != -100).float()
-        labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
-        loss_tensor = loss_fct(logits, labels.float())
-        loss = (loss_tensor * mask).sum() / mask.sum()  # Mask invalid positions
-        return (loss, logits) if return_outputs else loss
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        # Compute the loss tensor with reduction='none'
+        loss_tensor = self.loss_fct(logits.view(-1, model.num_labels),
+                                     labels.view(-1, model.num_labels))
+
+        # Apply mask to ignore padding (-100 labels)
+        mask = (labels.view(-1, model.num_labels) != -100).float()
+        loss_tensor = loss_tensor * mask
+
+        # Reduce the loss tensor to a scalar
+        loss = loss_tensor.sum() / mask.sum()
+
+        return (loss, outputs) if return_outputs else loss
+
 
 class ModelTrainer():
     def __init__(self,
@@ -129,7 +144,7 @@ class ModelTrainer():
                  max_length: int=514,
                  learning_rate: float=1e-4,
                  weight_decay: float=0.01,
-                 num_train_epochs: int=3,
+                 num_train_epochs: int=20,
                  output_dir: str="../../output"
     ):
         self.label2id = label2id
