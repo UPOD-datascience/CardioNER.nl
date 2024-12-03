@@ -6,22 +6,19 @@ nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Union, Tuple, Literal
-from collections import defaultdict
+from typing import List, Dict, Optional, Literal
 import json
-from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoConfig, DataCollatorForTokenClassification, AutoModelForTokenClassification, TrainingArguments, Trainer
-from torch.utils.data import DataLoader
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoConfig
 import argparse
-import numpy as np
 from functools import partial
 
-from sklearn.model_selection import train_test_split, KFold, GroupKFold
+from sklearn.model_selection import train_test_split, GroupKFold
 from sklearn.utils import shuffle
 
-from loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, align_labels_with_tokens, count_tokens_with_multiple_labels
-from trainer import ModelTrainer
+from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
+from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
+
 import evaluate
 metric = evaluate.load("seqeval")
 
@@ -36,8 +33,14 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          id2label: Optional[Dict[int, str]]=None,
          ChunkSize: int=256,
          max_length: int=514,
-         ChunkType: Literal['standard', 'centered']='standard'
+         ChunkType: Literal['standard', 'centered']='standard',
+         multi_class: bool=False
          ):
+    
+    if multi_class:
+        from multiclass.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels
+    else:
+        from multilabel.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, count_tokens_with_multiple_labels
 
     corpus_b1 = []
     # read jsonl
@@ -83,7 +86,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     iob_data = iob_data_b1 + iob_data_b2
 
-    count_tokens_with_multiple_labels(iob_data)
+    if multi_class==False:
+        count_tokens_with_multiple_labels(iob_data)
 
 
     partial_tokenize_and_align_labels = partial(tokenize_and_align_labels,
@@ -123,7 +127,8 @@ def train(tokenized_data: List[Dict],
           output_dir: str="../output",
           max_length: int=514,
           num_epochs: int=10, 
-          profile: bool=False):
+          profile: bool=False,
+          multi_class: bool=False):
 
     label2id = tokenized_data[0]['label2id']
     id2label = tokenized_data[0]['id2label']
@@ -152,10 +157,17 @@ def train(tokenized_data: List[Dict],
 
     print(f"Splitting data into {len(SplitList)} folds")
     for k, (train_idx, test_idx) in enumerate(SplitList):
-        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
+        if multi_class:
+            TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                   model=Model, output_dir=f"{output_dir}/fold_{k}", 
                                   max_length=max_length,
                                   num_train_epochs=num_epochs)
+        else:
+            TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
+                                  model=Model, output_dir=f"{output_dir}/fold_{k}", 
+                                  max_length=max_length,
+                                  num_train_epochs=num_epochs)
+            
         print(f"Training on split {k}")
         train_data = [tokenized_data[i] for i in train_idx]
         test_data = [tokenized_data[i] for i in test_idx]
@@ -185,6 +197,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--num_labels', type=int, default=9)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
+    argparsers.add_argument('--multi_class', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
 
@@ -207,6 +220,7 @@ if __name__ == "__main__":
     num_splits = args.num_splits
     num_epochs = args.num_epochs
     profile = args.profile
+    multi_class = args.multi_class
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -247,4 +261,5 @@ if __name__ == "__main__":
               output_dir=OutputDir, 
               max_length=max_length,
               num_epochs=num_epochs,
-              profile=profile)
+              profile=profile, 
+              multi_class=multi_class)

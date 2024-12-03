@@ -158,7 +158,7 @@ class ModelTrainer():
         }
 
 
-    def train(self, train_data: List[Dict], eval_data: List[Dict]):
+    def train(self, train_data: List[Dict], eval_data: List[Dict], profile: bool=False):
         trainer = Trainer(
             model=self.model,
             args=self.args,
@@ -168,7 +168,17 @@ class ModelTrainer():
             compute_metrics=self.compute_metrics,
             processing_class=self.tokenizer,
         )
-        trainer.train()
+        if profile:
+            with torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+            ) as prof:
+                trainer.train()
+        else:
+            trainer.train()
         metrics = trainer.evaluate()
         try:
             trainer.save_model(r""+self.output_dir)
