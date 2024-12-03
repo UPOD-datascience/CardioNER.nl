@@ -122,7 +122,8 @@ def train(tokenized_data: List[Dict],
           Splits: List[List[str]] | int = 5,
           output_dir: str="../output",
           max_length: int=514,
-          num_epochs: int=10):
+          num_epochs: int=10, 
+          profile: bool=False):
 
     label2id = tokenized_data[0]['label2id']
     id2label = tokenized_data[0]['id2label']
@@ -158,7 +159,7 @@ def train(tokenized_data: List[Dict],
         print(f"Training on split {k}")
         train_data = [tokenized_data[i] for i in train_idx]
         test_data = [tokenized_data[i] for i in test_idx]
-        TrainClass.train(train_data=train_data, eval_data=test_data)
+        TrainClass.train(train_data=train_data, eval_data=test_data, profile=profile)
 
 
 
@@ -175,7 +176,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--Corpus_b1', type=str, default='../../../assets/annotations_from_ann_b1.jsonl')
     argparsers.add_argument('--Corpus_b2', type=str, default='../../../assets/annotations_from_ann_b2.jsonl')
     argparsers.add_argument('--annotation_loc', type=str, default='../../../assets/annotations_from_ann_tokenized.jsonl')
-    argparsers.add_argument('--output_dir', type=str, default='../../../output')
+    argparsers.add_argument('--output_dir', type=str, default=None)
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
@@ -184,6 +185,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--num_labels', type=int, default=9)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
+    argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
 
     args = argparsers.parse_args()
@@ -204,6 +206,7 @@ if __name__ == "__main__":
     num_labels = args.num_labels
     num_splits = args.num_splits
     num_epochs = args.num_epochs
+    profile = args.profile
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -243,4 +246,5 @@ if __name__ == "__main__":
               Splits=num_splits, 
               output_dir=OutputDir, 
               max_length=max_length,
-              num_epochs=num_epochs)
+              num_epochs=num_epochs,
+              profile=profile)

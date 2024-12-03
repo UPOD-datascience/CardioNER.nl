@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Union, Tuple, Literal
 from collections import defaultdict
 from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoModel
 from transformers import AutoConfig, DataCollatorForTokenClassification
-from transformers import TrainingArguments, Trainer
+from transformers import TrainingArguments, Trainer, PreTrainedTokenizerBase
 from transformers.modeling_outputs import TokenClassifierOutput
 import numpy as np
 import torch
@@ -25,21 +25,60 @@ import evaluate
 metric = evaluate.load("seqeval")
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
+# @dataclass
+# class MultiLabelDataCollatorForTokenClassification:
+#     tokenizer: AutoTokenizer
+#     padding: Union[bool, str] = "max_length"
+#     max_length: Optional[int] = None
+#     label_pad_token_id: int = -100
+
+#     def __call__(self, features):
+#         labels = [feature.pop('labels') for feature in features]
+#         # Remove keys not expected by the model
+#         # for feature in features:
+#         #     keys_to_remove = ['id2label', 'tags', 'label2id', 'gid', 'batch', 'tokens', 'id']
+#         #     for key in keys_to_remove:
+#         #         feature.pop(key, None)
+
+#         batch = self.tokenizer.pad(
+#             features,
+#             padding=self.padding,
+#             max_length=self.max_length,
+#             return_tensors='pt'
+#         )
+
+#         max_seq_length = batch['input_ids'].shape[1]
+#         batch_size = len(labels)
+#         num_labels = len(labels[0][0])
+
+#         # Initialize padded labels tensor
+#         padded_labels = torch.full(
+#             (batch_size, max_seq_length, num_labels),
+#             self.label_pad_token_id,
+#             dtype=torch.float
+#         )
+
+#         for i, label in enumerate(labels):
+#             seq_length = len(label)
+#             padded_labels[i, :seq_length, :] = torch.tensor(label, dtype=torch.float)
+
+#         batch['labels'] = padded_labels
+
+#         return batch
+
+
 @dataclass
 class MultiLabelDataCollatorForTokenClassification:
-    tokenizer: AutoTokenizer
+    tokenizer: PreTrainedTokenizerBase
     padding: Union[bool, str] = "max_length"
     max_length: Optional[int] = None
     label_pad_token_id: int = -100
 
     def __call__(self, features):
         labels = [feature.pop('labels') for feature in features]
-        # Remove keys not expected by the model
-        for feature in features:
-            keys_to_remove = ['id2label', 'tags', 'label2id', 'gid', 'batch', 'tokens', 'id']
-            for key in keys_to_remove:
-                feature.pop(key, None)
+        # Remove unnecessary keys if needed
 
+        # Pad the inputs using the tokenizer's pad method
         batch = self.tokenizer.pad(
             features,
             padding=self.padding,
@@ -47,28 +86,33 @@ class MultiLabelDataCollatorForTokenClassification:
             return_tensors='pt'
         )
 
-        max_seq_length = batch['input_ids'].shape[1]
-        batch_size = len(labels)
-        num_labels = len(labels[0][0])
-
-        # Initialize padded labels tensor
-        padded_labels = torch.full(
-            (batch_size, max_seq_length, num_labels),
-            self.label_pad_token_id,
-            dtype=torch.float
+        # Convert labels to tensors
+        labels_tensors = [torch.tensor(label, dtype=torch.float) for label in labels]
+        padded_labels = torch.nn.utils.rnn.pad_sequence(
+            labels_tensors,
+            batch_first=True,
+            padding_value=self.label_pad_token_id
         )
 
-        for i, label in enumerate(labels):
-            seq_length = len(label)
-            padded_labels[i, :seq_length, :] = torch.tensor(label, dtype=torch.float)
+        # Ensure labels are padded to max_seq_length
+        max_seq_length = batch['input_ids'].shape[1]
+        if padded_labels.shape[1] < max_seq_length:
+            padding_size = max_seq_length - padded_labels.shape[1]
+            padding = torch.full(
+                (len(labels), padding_size, padded_labels.shape[2]),
+                fill_value=self.label_pad_token_id,
+                dtype=torch.float
+            )
+            padded_labels = torch.cat([padded_labels, padding], dim=1)
+        elif padded_labels.shape[1] > max_seq_length:
+            padded_labels = padded_labels[:, :max_seq_length, :]
 
         batch['labels'] = padded_labels
 
-        #print(f"Input IDs shape: {batch['input_ids'].shape}")
-        #print(f"Labels shape: {batch['labels'].shape}")
-
         return batch
 
+
+    
 class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
@@ -120,10 +164,9 @@ class MultiLabelTrainer(Trainer):
         outputs = model(**inputs)
         logits = outputs.logits
 
-        # Compute the loss tensor with reduction='none'
+        # # Compute the loss tensor with reduction='none'
         loss_tensor = self.loss_fct(logits.view(-1, model.num_labels),
                                      labels.view(-1, model.num_labels))
-
         # Apply mask to ignore padding (-100 labels)
         mask = (labels.view(-1, model.num_labels) != -100).float()
         loss_tensor = loss_tensor * mask
@@ -163,6 +206,7 @@ class ModelTrainer():
             'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,
+            'fp16': True,
             'logging_dir': f"{output_dir}/logs",
             'logging_strategy': 'steps',
             'logging_steps': 256,
@@ -241,7 +285,10 @@ class ModelTrainer():
             'rauc_macro': roc_auc_macro,
         }
 
-    def train(self, train_data: List[Dict], eval_data: List[Dict]):
+    def train(self, 
+              train_data: List[Dict],
+              eval_data: List[Dict], 
+              profile: bool=False):
         trainer = MultiLabelTrainer(
             model=self.model,
             args=self.args,
@@ -251,12 +298,25 @@ class ModelTrainer():
             compute_metrics=self.compute_metrics,
             processing_class=self.tokenizer,
         )
-        trainer.train()
+
+        if profile:
+            with torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+            ) as prof:
+                trainer.train()
+        else:
+            trainer.train()
         metrics = trainer.evaluate()
         try:
-            trainer.save_model(r""+self.output_dir)
-            trainer.save_metrics(r""+self.output_dir, metrics=metrics)
+            trainer.save_model(self.output_dir)
+            trainer.save_metric(self.output_dir, metrics=metrics)
         except:
+            trainer.save_model('output')
+            trainer.save_metric('output', metrics=metrics)
             print("Failed to save model and metrics")
         torch.cuda.empty_cache()
         return True

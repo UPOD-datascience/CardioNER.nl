@@ -98,10 +98,14 @@ def annotate_corpus_standard(corpus,
             i = end_index
 
     # Collect unique tags with B- and I- prefixes
-    tag_list = {'O'}
-    for tag in unique_tags:
-        tag_list.update({f"B-{tag}", f"I-{tag}"})
+    # tag_list = {'O'}
+    # for tag in unique_tags:
+    #     tag_list.update({f"B-{tag}", f"I-{tag}"})
     #tag_list = sorted(tag_list)
+
+    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+
     return annotated_data, tag_list
 
 def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
@@ -199,10 +203,13 @@ def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
             })
 
     # Collect unique tags with B- and I- prefixes
-    tag_list = {'O'}
-    for tag in unique_tags:
-        tag_list.update({f"B-{tag}", f"I-{tag}"})
+    # tag_list = {'O'}
+    # for tag in unique_tags:
+    #     tag_list.update({f"B-{tag}", f"I-{tag}"})
     #tag_list = sorted(tag_list)
+
+    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
     return annotated_data, tag_list
 
 def count_tokens_with_multiple_labels(annotated_data):
