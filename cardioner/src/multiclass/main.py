@@ -106,13 +106,13 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 def train(tokenized_data_tr: List[Dict],
           tokenized_data_vl: List[Dict],
           Model: str='CLTL/MedRoBERTa.nl',
-          Splits: List[List[str]] | int = 5, 
+          Splits: List[List[str]] | int = 5,
           num_train_epochs: int=3,
           batch_size: int=32,
           output_dir: str="output"):
 
-    label2id = tokenized_data[0]['label2id']
-    id2label = tokenized_data[0]['id2label']
+    label2id = tokenized_data_tr[0]['label2id']
+    id2label = tokenized_data_tr[0]['id2label']
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
@@ -120,28 +120,30 @@ def train(tokenized_data_tr: List[Dict],
     if tokenized_data_vl is None:
         if isinstance(Splits, int):
             splitter = GroupKFold(n_splits=Splits)
-            groups = [entry['gid'] for entry in tokenized_data]
-            shuffled_data, shuffled_groups = shuffle(tokenized_data, groups, random_state=42)
+            groups = [entry['gid'] for entry in tokenized_data_tr]
+            shuffled_data, shuffled_groups = shuffle(tokenized_data_tr, groups, random_state=42)
             SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
         else:
             SplitList = Splits
-    
+
         print(f"Splitting data into {len(SplitList)} folds")
         for k, (train_idx, test_idx) in enumerate(SplitList):
-            TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None, 
+            TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                     model=Model, output_dir=f"{output_dir}/fold_{k}")
             print(f"Training on split {k}")
-            train_data = [tokenized_data[i] for i in train_idx]
-            test_data = [tokenized_data[i] for i in test_idx]
+            train_data = [tokenized_data_tr[i] for i in train_idx]
+            test_data = [tokenized_data_tr[i] for i in test_idx]
             TrainClass.train(train_data=train_data, eval_data=test_data)
     else:
         SplitList = Splits
-        TrainClass = ModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                    model=Model, output_dir=output_dir, num_train_epochs=num_train_epochs, batch_size=batch_size)
-        # print(tokenized_data_tr[0]["labels"])
-        # print("\n")
-        # print(tokenized_data_vl[0]["labels"])
-        TrainClass.train(train_data=tokenized_data_tr, eval_data=tokenized_data_vl)        
+        TrainClass = ModelTrainer(label2id=label2id,
+                                  id2label=id2label,
+                                  tokenizer=None,
+                                  model=Model,
+                                  output_dir=output_dir,
+                                  num_train_epochs=num_train_epochs,
+                                  batch_size=batch_size)
+        TrainClass.train(train_data=tokenized_data_tr, eval_data=tokenized_data_vl)
 
 
 if __name__ == "__main__":
@@ -191,7 +193,7 @@ if __name__ == "__main__":
     batch_size = args.batch_size
 
     model_name = _model.split("/")[-1]
-    
+
     if _corpus_tr is None:
         _corpus_tr = f'assets/train/{_lang}/{_mention_class}/annotations.jsonl'
     if _corpus_vl is None:
@@ -203,7 +205,7 @@ if __name__ == "__main__":
     now = datetime.now()
     dt_string = now.strftime("%d-%m-%Y_%H-%M-%S")
     OutputDir = f"{OutputDir}/{dt_string}"
-        
+
     OutputDir = os.path.abspath(OutputDir)
     if parse_annotations:
         print("Loading and prepping data..")
@@ -222,10 +224,10 @@ if __name__ == "__main__":
             with open(_annotation_loc, 'r', encoding='utf-8') as fr:
                 tokenized_data = [json.loads(line) for line in fr]
 
-        # check if input_ids and labels have the same length, are smaller than max_length and if the labels are within range 
+        # check if input_ids and labels have the same length, are smaller than max_length and if the labels are within range
         for entry in tokenized_data:
             assert(len(entry['input_ids']) == len(entry['labels'])), f"Input_ids and labels have different lengths for entry {entry['id']}"
-            assert(len(entry['input_ids']) <= max_length), f"Input_ids are longer than max_length for entry {entry['id']}"
+            assert(len(entry['input_ids']) <= max_leModel=_model, Splits=num_splits, output_dir=OutputDir, num_train_epochs=epochs, batch_size=batch_size)ngth), f"Input_ids are longer than max_length for entry {entry['id']}"
 
             # assert that all labels are within range, >=0 and < num_labels
             for label in entry['labels']:
@@ -233,10 +235,16 @@ if __name__ == "__main__":
 
             if len(entry['input_ids']) < max_length:
                 print(f"{entry['id']} has length {len(entry['input_ids'])} and is smaller than max_length {max_length}")
-        
-            
+
+
         #tokenized_data = Dataset.from_list(tokenized_data)
         tokenized_data_tr = [entry for entry in tokenized_data if entry['batch'] == 'train']
         tokenized_data_vl = [entry for entry in tokenized_data if entry['batch'] == 'validation']
-        
-        train(tokenized_data_tr, tokenized_data_vl, Model=_model, Splits=num_splits, output_dir=OutputDir, num_train_epochs=epochs, batch_size=batch_size)
+
+        train(tokenized_data_tr,
+              tokenized_data_vl,
+              Model=_model,
+              Splits=num_splits,
+              output_dir=OutputDir,
+              num_train_epochs=epochs,
+              batch_size=batch_size)

@@ -1,4 +1,5 @@
 from os import environ
+import os
 import spacy
 
 # Load a spaCy model for tokenization
@@ -26,33 +27,36 @@ metric = evaluate.load("seqeval")
 
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
-         Corpus_b1: str='../../assets/annotations_from_ann_b1.jsonl',
-         Corpus_b2: str='../../assets/annotations_from_ann_b2.jsonl',
+         lang: str='en',
+         corpus_train: Optional[str]=None,
+         corpus_validation: Optional[str]=None,
+         split_file: Optional[str]=None,
          annotation_loc: Optional[str] = None,
          label2id: Optional[Dict[str, int]]=None,
          id2label: Optional[Dict[int, str]]=None,
-         ChunkSize: int=256,
+         chunk_size: int=256,
          max_length: int=514,
-         ChunkType: Literal['standard', 'centered']='standard',
+         chunk_type: Literal['standard', 'centered']='standard',
          multi_class: bool=False
          ):
-    
+
     if multi_class:
         from multiclass.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels
     else:
         from multilabel.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, count_tokens_with_multiple_labels
 
-    corpus_b1 = []
+    corpus_train_list = []
     # read jsonl
-    with open(Corpus_b1, 'r', encoding='utf-8') as fr:
+    with open(corpus_train, 'r', encoding='utf-8') as fr:
         for line in fr:
-            corpus_b1.append(json.loads(line))
+            corpus_train_list.append(json.loads(line))
 
-    corpus_b2 = []
-    # read jsonl
-    with open(Corpus_b2, 'r', encoding='utf-8') as fr:
-        for line in fr:
-            corpus_b2.append(json.loads(line))
+    if corpus_validation is not None:
+        corpus_validation_list = []
+        # read jsonl
+        with open(corpus_validation, 'r', encoding='utf-8') as fr:
+            for line in fr:
+                corpus_validation_list.append(json.loads(line))
 
     tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True)
     tokenizer.model_max_length = max_length
@@ -62,29 +66,70 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)  # 2
     max_allowed_chunk_size = max_model_length - num_special_tokens  # 512
 
+    if split_file is not None:
+        with open(split_file, 'r', encoding='utf-8') as fr:
+            split_data = json.load(fr)
+            corpus_train_ids = split_data[lang]['train']
+            corpus_test_ids = split_data[lang]['test']
+            corpus_validation_ids = split_data[lang]['validation']
+
+        corpus_train = [entry for entry in corpus_train_list if entry['id'] in corpus_train_ids]
+        corpus_test = [entry for entry in corpus_train_list if entry['id'] in corpus_test_ids]
+        corpus_validation = [entry for entry in corpus_train_list if entry['id'] in corpus_validation_ids]
 
     # Run the transformation
-    if ChunkType == 'standard':
-        iob_data_b1, unique_tags  = annotate_corpus_standard(corpus_b1, batch_id="b1", 
-                                                             chunk_size=ChunkSize,
-                                                             max_allowed_chunk_size=max_allowed_chunk_size)
-        iob_data_b2, _unique_tags = annotate_corpus_standard(corpus_b2, batch_id="b2", 
-                                                             chunk_size=ChunkSize, 
-                                                             max_allowed_chunk_size=max_allowed_chunk_size)
-    elif ChunkType == 'centered':
-        iob_data_b1, unique_tags  = annotate_corpus_centered(corpus_b1, batch_id="b1", 
-                                                             chunk_size=ChunkSize)
-        iob_data_b2, _unique_tags = annotate_corpus_centered(corpus_b2, batch_id="b2", chunk_size=ChunkSize)
-    # paragraph
+    annotate_functions = {
+        'standard': annotate_corpus_standard,
+        'centered': annotate_corpus_centered
+    }
 
-    assert(unique_tags == _unique_tags), "Tags are not the same in both batches"
+    annotate_kwargs = {
+        'standard': {
+            'chunk_size': chunk_size,
+            'max_allowed_chunk_size': max_allowed_chunk_size
+        },
+        'centered': {
+            'chunk_size': chunk_size
+        }
+    }
+
+    datasets = {
+        'train': corpus_train,
+        'test': corpus_test,
+        'validation': corpus_validation
+    }
+
+    # Remove datasets that are None
+    datasets = {k: v for k, v in datasets.items() if v is not None}
+
+    # Initialize variables
+    iob_data_train = iob_data_test = iob_data_validation = []
+    unique_tags = None
+
+    annotate_func = annotate_functions[chunk_type]
+    kwargs = annotate_kwargs[chunk_type]
+
+    for batch_id, corpus in datasets.items():
+        iob_data, _unique_tags = annotate_func(corpus, batch_id=batch_id, **kwargs)
+
+        if batch_id == 'train':
+            iob_data_train = iob_data
+            unique_tags = _unique_tags
+        elif batch_id == 'test':
+            iob_data_test = iob_data
+        elif batch_id == 'validation':
+            iob_data_validation = iob_data
+
+        if batch_id != 'train':
+            assert(unique_tags == _unique_tags), "Tags are not the same in train/val"
+    # paragraph?
 
     label2id = {l:int(c) for c,l in enumerate(unique_tags)}
     id2label = {int(c):l for c,l in enumerate(unique_tags)}
 
     print("Unique tags: ", unique_tags)
 
-    iob_data = iob_data_b1 + iob_data_b2
+    iob_data = iob_data_train + iob_data_test + iob_data_validation
 
     if multi_class==False:
         count_tokens_with_multiple_labels(iob_data)
@@ -121,57 +166,87 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     return iob_data_dataset_tokenized_with_labels, unique_tags
 
 
-def train(tokenized_data: List[Dict],
+def train(tokenized_data_tr: List[Dict],
+          tokenized_data_vl: List[Dict],
+          force_splitter: bool=False,
           Model: str='CLTL/MedRoBERTa.nl',
           Splits: List[List[str]] | int = 5,
           output_dir: str="../output",
           max_length: int=514,
-          num_epochs: int=10, 
+          num_epochs: int=10,
+          batch_size: int=32,
           profile: bool=False,
           multi_class: bool=False):
 
-    label2id = tokenized_data[0]['label2id']
-    id2label = tokenized_data[0]['id2label']
+    label2id = tokenized_data_tr[0]['label2id']
+    id2label = tokenized_data_tr[0]['id2label']
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
 
     # Ensure labels are correct
     num_labels = len(label2id)
-    for entry in tokenized_data:
+    for entry in tokenized_data_tr:
         labels = entry['labels']
         for token_labels in labels:
             if isinstance(token_labels, list):
-                assert len(token_labels) == num_labels, "Mismatch in label dimensions."
+                assert len(token_labels) == num_labels, "Mismatch in label dimensions, in train set."
+            else:
+                assert token_labels == -100, "Labels should be lists or -100."
+
+    for entry in tokenized_data_vl:
+        labels = entry['labels']
+        for token_labels in labels:
+            if isinstance(token_labels, list):
+                assert len(token_labels) == num_labels, "Mismatch in label dimensions, in validation set."
             else:
                 assert token_labels == -100, "Labels should be lists or -100."
 
 
-    if isinstance(Splits, int):
-        splitter = GroupKFold(n_splits=Splits)
-        groups = [entry['gid'] for entry in tokenized_data]
-        shuffled_data, shuffled_groups = shuffle(tokenized_data, groups, random_state=42)
-        SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
-    else:
-        SplitList = Splits
+    if tokenized_data_vl is None:
+        if isinstance(Splits, int):
+            splitter = GroupKFold(n_splits=Splits)
+            groups = [entry['gid'] for entry in tokenized_data_tr]
+            shuffled_data, shuffled_groups = shuffle(tokenized_data_tr, groups, random_state=42)
+            SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
+        else:
+            SplitList = Splits
 
-    print(f"Splitting data into {len(SplitList)} folds")
-    for k, (train_idx, test_idx) in enumerate(SplitList):
+        print(f"Splitting data into {len(SplitList)} folds")
+        for k, (train_idx, test_idx) in enumerate(SplitList):
+            if multi_class:
+                TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
+                                    model=Model, output_dir=f"{output_dir}/fold_{k}",
+                                    max_length=max_length,
+                                    num_train_epochs=num_epochs,
+                                    batch_size=batch_size)
+            else:
+                TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
+                                    model=Model, output_dir=f"{output_dir}/fold_{k}",
+                                    max_length=max_length,
+                                    num_train_epochs=num_epochs,
+                                    batch_size=batch_size)
+
+            print(f"Training on split {k}")
+            train_data = [tokenized_data[i] for i in train_idx]
+            test_data = [tokenized_data[i] for i in test_idx]
+            TrainClass.train(train_data=train_data, eval_data=test_data, profile=profile)
+    else:
         if multi_class:
             TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                  model=Model, output_dir=f"{output_dir}/fold_{k}", 
-                                  max_length=max_length,
-                                  num_train_epochs=num_epochs)
+                                model=Model, output_dir=output_dir,
+                                max_length=max_length,
+                                num_train_epochs=num_epochs,
+                                batch_size=batch_size)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                  model=Model, output_dir=f"{output_dir}/fold_{k}", 
-                                  max_length=max_length,
-                                  num_train_epochs=num_epochs)
-            
-        print(f"Training on split {k}")
-        train_data = [tokenized_data[i] for i in train_idx]
-        test_data = [tokenized_data[i] for i in test_idx]
-        TrainClass.train(train_data=train_data, eval_data=test_data, profile=profile)
+                                model=Model, output_dir=output_dir,
+                                max_length=max_length,
+                                num_train_epochs=num_epochs,
+                                batch_size=batch_size)
+
+        print("Training on full dataset")
+        TrainClass.train(train_data=tokenized_data_tr, eval_data=tokenized_data_vl, profile=profile)
 
 
 
@@ -185,8 +260,10 @@ if __name__ == "__main__":
 
     argparsers = argparse.ArgumentParser()
     argparsers.add_argument('--Model', type=str, default='CLTL/MedRoBERTa.nl')
-    argparsers.add_argument('--Corpus_b1', type=str, default='../../../assets/annotations_from_ann_b1.jsonl')
-    argparsers.add_argument('--Corpus_b2', type=str, default='../../../assets/annotations_from_ann_b2.jsonl')
+    argparsers.add_argument('--lang', type=str, required=True, choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'])
+    argparsers.add_argument('--Corpus_train', type=str, required=False)
+    argparsers.add_argument('--Corpus_validation', type=str, required=False)
+    argparsers.add_argument('--split_file', type=str, required=False)
     argparsers.add_argument('--annotation_loc', type=str, default='../../../assets/annotations_from_ann_tokenized.jsonl')
     argparsers.add_argument('--output_dir', type=str, default=None)
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
@@ -195,10 +272,12 @@ if __name__ == "__main__":
     argparsers.add_argument('--max_token_length', type=int, default=514)
     argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
+    argparsers.add_argument('--batch_size', type=int, default=32)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--chunk_type', type=str, default='standard')
     argparsers.add_argument('--multi_class', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
+    argparsers.add_argument('--force_splitter', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
 
     args = argparsers.parse_args()
@@ -207,8 +286,31 @@ if __name__ == "__main__":
     tags = None
 
     _model = args.Model
-    _corpus_b1 = args.Corpus_b1
-    _corpus_b2 = args.Corpus_b2
+    corpus_train = args.Corpus_train
+    corpus_validation = args.Corpus_validation
+    split_file = args.split_file
+    force_splitter =args.force_splitter
+
+    assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None))), "Either provide a split file or a train and validation corpus"
+
+    if corpus_train is not None:
+        assert os.path.isfile(corpus_train), f"Corpus_train file {corpus_train} does not exist."
+    if corpus_validation is not None:
+        assert os.path.isfile(corpus_validation), f"Corpus_validation file {corpus_validation} does not exist."
+    if split_file is not None:
+        assert os.path.isfile(split_file), f"Split_file {split_file} does not exist."
+
+    if (split_file is not None) and (corpus_validation is not None):
+        print("Split file and validation corpus provided, ignoring validation corpus file in favor of split file.")
+        corpus_validation = None
+
+    if force_splitter:
+        if corpus_validation is not None:
+            print("Force splitter is on, and validation set is provided, therefore, ignoring split file.")
+            split_file = None
+        elif split_file is not None:
+            print("Force splitter is on, and split file is provided, therefore, ignoring the test in the split file (if present).")
+
     _annotation_loc = args.annotation_loc
     OutputDir = args.output_dir
     ChunkSize = args.chunk_size
@@ -219,8 +321,10 @@ if __name__ == "__main__":
     num_labels = args.num_labels
     num_splits = args.num_splits
     num_epochs = args.num_epochs
+    batch_size = args.batch_size
     profile = args.profile
     multi_class = args.multi_class
+    language = args.lang
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -228,11 +332,13 @@ if __name__ == "__main__":
     if parse_annotations:
         print("Loading and prepping data..")
         tokenized_data, tags = prepare(Model=_model,
-                                    Corpus_b1=_corpus_b1,
-                                    Corpus_b2=_corpus_b2,
+                                    lang = language,
+                                    corpus_train=corpus_train,
+                                    corpus_validation=corpus_validation,
+                                    split_file=split_file,
                                     annotation_loc=_annotation_loc,
-                                    ChunkSize=ChunkSize,
-                                    ChunkType=ChunkType,
+                                    chunk_size=ChunkSize,
+                                    chunk_type=ChunkType,
                                     max_length=max_length)
 
     if train_model:
@@ -250,16 +356,25 @@ if __name__ == "__main__":
             for label in entry['labels']:
                 assert(all([((_label >= 0) and (_label < num_labels)) | (_label==-100) for _label in label])), f"Label {label}, {type(label)} is not within range for entry {entry['id']}"
 
-            #if len(entry['input_ids']) < max_length:
+            #if len(entry['inpurt_ids']) < max_length:
             #    print(f"{entry['id']} has length {len(entry['input_ids'])} and is smaller than max_length {max_length}")
 
+        tokenized_data_train = [entry for entry in tokenized_data if entry['batch'] == 'train']
+        tokenized_data_test = [entry for entry in tokenized_data if entry['batch'] == 'test']
+        tokenized_data_validation = [entry for entry in tokenized_data if entry['batch'] == 'validation']
 
-        #tokenized_data = Dataset.from_list(tokenized_data)
-        train(tokenized_data, 
-              Model=_model, 
-              Splits=num_splits, 
-              output_dir=OutputDir, 
+        # train-> split-> validation (if train is available, validation is available, and force_splitter = True)
+        # train-> test -> validation (if train is available, test is available, and validation is available)
+        # train-> validation (if train is available, and validation is available)
+        train(tokenized_data_train,
+              tokenized_data_test,
+              tokenized_data_validation,
+              force_splitter=force_splitter,
+              Model=_model,
+              Splits=num_splits,
+              output_dir=OutputDir,
               max_length=max_length,
               num_epochs=num_epochs,
-              profile=profile, 
+              batch_size=batch_size,
+              profile=profile,
               multi_class=multi_class)

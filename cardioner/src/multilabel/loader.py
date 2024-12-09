@@ -32,6 +32,7 @@ from functools import partial
 
 def annotate_corpus_standard(corpus,
                     batch_id: str="b1",
+                    lang: str="nl",
                     chunk_size: int = 256,
                     max_allowed_chunk_size: int = 450):
     annotated_data = []
@@ -108,7 +109,11 @@ def annotate_corpus_standard(corpus,
 
     return annotated_data, tag_list
 
-def annotate_corpus_centered(corpus, batch_id="b1", chunk_size=512):
+def annotate_corpus_centered(corpus,
+    batch_id: str="b1",
+    lang: str="nl",
+    chunk_size: int=512):
+
     annotated_data = []
     unique_tags = set()
 
