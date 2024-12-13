@@ -21,17 +21,17 @@ metric = evaluate.load("seqeval")
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
 class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassification):
-    def __call__(self, features):
+    def __call__(self, features, *args, **kwargs):
         # Call the superclass method to process the batch
         batch = super().__call__(features)
-        
+
         # Retrieve input_ids and labels from the batch
         input_ids = batch['input_ids']
         labels = batch['labels']
-        
+
         def has_nan_or_inf(tensor):
             return torch.isnan(tensor).any() or torch.isinf(tensor).any()
-    
+
         for key in batch:
             if has_nan_or_inf(batch[key]):
                 print(f"Tensor {key} contains NaN or Inf values.")
@@ -45,12 +45,12 @@ class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassificatio
             # This might involve padding or truncating labels
             #labels = self._adjust_labels(labels, input_ids.shape)
             #batch['labels'] = labels
-            
+
             # Option 2: Skip this batch
-   
+
             # Option 3: Raise an exception
             # raise ValueError("Mismatch between input_ids and labels shapes")
-        
+
         return batch
 
 
@@ -61,19 +61,19 @@ class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassificatio
         """
         # Get current shape
         current_shape = labels.shape
-        
+
         # If labels are shorter, pad them
         if current_shape[1] < target_shape[1]:
             padding_length = target_shape[1] - current_shape[1]
             padding = torch.full((current_shape[0], padding_length), self.label_pad_token_id, dtype=labels.dtype)
             labels = torch.cat([labels, padding], dim=1)
-        
+
         # If labels are longer, truncate them
         elif current_shape[1] > target_shape[1]:
             labels = labels[:, :target_shape[1]]
-        
+
         return labels
-    
+
 class ModelTrainer():
     def __init__(self,
                  label2id: Dict[str, int],
@@ -115,9 +115,9 @@ class ModelTrainer():
             self.tokenizer = tokenizer
 
         self.tokenizer.model_max_length = max_length
-        self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length, 
+        self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length,
                                                                 padding="max_length", label_pad_token_id=-100)
-        self.model = AutoModelForTokenClassification.from_pretrained(model, id2label=self.id2label, label2id=self.label2id, 
+        self.model = AutoModelForTokenClassification.from_pretrained(model, id2label=self.id2label, label2id=self.label2id,
                                                                      num_labels=len(self.label2id))
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
@@ -179,6 +179,8 @@ class ModelTrainer():
                 trainer.train()
         else:
             trainer.train()
+
+        # TODO: if there is a test set and evaluation set, evaluate on both
         metrics = trainer.evaluate()
         try:
             trainer.save_model(r""+self.output_dir)

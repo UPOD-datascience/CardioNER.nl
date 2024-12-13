@@ -14,7 +14,6 @@ from os import environ
 import spacy
 
 # Load a spaCy model for tokenization
-nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
@@ -37,6 +36,8 @@ def annotate_corpus_standard(corpus,
                     max_allowed_chunk_size: int = 450):
     annotated_data = []
     unique_tags = set()
+
+    nlp = spacy.blank(lang)
 
     for entry in corpus:
         text = entry["text"]
@@ -116,6 +117,8 @@ def annotate_corpus_centered(corpus,
 
     annotated_data = []
     unique_tags = set()
+
+    nlp = spacy.blank(lang)
 
     for entry in corpus:
         text = entry["text"]

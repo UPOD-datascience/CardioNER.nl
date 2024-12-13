@@ -69,9 +69,11 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     if split_file is not None:
         with open(split_file, 'r', encoding='utf-8') as fr:
             split_data = json.load(fr)
-            corpus_train_ids = split_data[lang]['train']
-            corpus_test_ids = split_data[lang]['test']
-            corpus_validation_ids = split_data[lang]['validation']
+            corpus_train_ids = split_data[lang]['train']['symp']
+            corpus_test_ids = split_data[lang]['test']['symp']
+            corpus_validation_ids = split_data[lang]['validation']['symp']
+
+            print(f"{len(corpus_train_ids)} training samples, {len(corpus_test_ids)} test samples, {len(corpus_validation_ids)} validation samples")
 
         corpus_train = [entry for entry in corpus_train_list if entry['id'] in corpus_train_ids]
         corpus_test = [entry for entry in corpus_train_list if entry['id'] in corpus_test_ids]
@@ -166,27 +168,28 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     return iob_data_dataset_tokenized_with_labels, unique_tags
 
 
-def train(tokenized_data_tr: List[Dict],
-          tokenized_data_vl: List[Dict],
+def train(tokenized_data_train: List[Dict],
+          tokenized_data_test: List[Dict],
+          tokenized_data_validation: List[Dict],
           force_splitter: bool=False,
           Model: str='CLTL/MedRoBERTa.nl',
           Splits: List[List[str]] | int = 5,
           output_dir: str="../output",
           max_length: int=514,
           num_epochs: int=10,
-          batch_size: int=32,
+          batch_size: int=20,
           profile: bool=False,
           multi_class: bool=False):
 
-    label2id = tokenized_data_tr[0]['label2id']
-    id2label = tokenized_data_tr[0]['id2label']
+    label2id = tokenized_data_train[0]['label2id']
+    id2label = tokenized_data_validation[0]['id2label']
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
 
     # Ensure labels are correct
     num_labels = len(label2id)
-    for entry in tokenized_data_tr:
+    for entry in tokenized_data_train:
         labels = entry['labels']
         for token_labels in labels:
             if isinstance(token_labels, list):
@@ -194,7 +197,7 @@ def train(tokenized_data_tr: List[Dict],
             else:
                 assert token_labels == -100, "Labels should be lists or -100."
 
-    for entry in tokenized_data_vl:
+    for entry in tokenized_data_validation:
         labels = entry['labels']
         for token_labels in labels:
             if isinstance(token_labels, list):
@@ -203,11 +206,12 @@ def train(tokenized_data_tr: List[Dict],
                 assert token_labels == -100, "Labels should be lists or -100."
 
 
-    if tokenized_data_vl is None:
+    if (tokenized_data_validation is None) | ((tokenized_data_validation is not None) & (force_splitter==True)):
+        print("Using cross-validation for model training and validation..")
         if isinstance(Splits, int):
             splitter = GroupKFold(n_splits=Splits)
-            groups = [entry['gid'] for entry in tokenized_data_tr]
-            shuffled_data, shuffled_groups = shuffle(tokenized_data_tr, groups, random_state=42)
+            groups = [entry['gid'] for entry in tokenized_data_train]
+            shuffled_data, shuffled_groups = shuffle(tokenized_data_train, groups, random_state=42)
             SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
         else:
             SplitList = Splits
@@ -230,8 +234,13 @@ def train(tokenized_data_tr: List[Dict],
             print(f"Training on split {k}")
             train_data = [tokenized_data[i] for i in train_idx]
             test_data = [tokenized_data[i] for i in test_idx]
-            TrainClass.train(train_data=train_data, eval_data=test_data, profile=profile)
-    else:
+
+            if (tokenized_data_validation is not None) & (force_splitter==True):
+                TrainClass.train(train_data=train_data, test_data=test_data, eval_data=test_data, profile=profile)
+            else:
+                TrainClass.train(train_data=train_data, test_data=[], eval_data=tokenized_data_validation, profile=profile)
+    elif (tokenized_data_validation is not None) and (tokenized_data_test is not None):
+        print("Using preset train/test/validation split for model training and validation..")
         if multi_class:
             TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                 model=Model, output_dir=output_dir,
@@ -246,9 +255,9 @@ def train(tokenized_data_tr: List[Dict],
                                 batch_size=batch_size)
 
         print("Training on full dataset")
-        TrainClass.train(train_data=tokenized_data_tr, eval_data=tokenized_data_vl, profile=profile)
-
-
+        TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)
+    else:
+        raise ValueError("No validation data provided, and no cross-validation splits provided. Please provide either a validation set or a split file.")
 
 if __name__ == "__main__":
     """
@@ -264,17 +273,17 @@ if __name__ == "__main__":
     argparsers.add_argument('--Corpus_train', type=str, required=False)
     argparsers.add_argument('--Corpus_validation', type=str, required=False)
     argparsers.add_argument('--split_file', type=str, required=False)
-    argparsers.add_argument('--annotation_loc', type=str, default='../../../assets/annotations_from_ann_tokenized.jsonl')
-    argparsers.add_argument('--output_dir', type=str, default=None)
+    argparsers.add_argument('--annotation_loc', type=str, required=False)
+    argparsers.add_argument('--output_dir', type=str, default="../../output")
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
+    argparsers.add_argument('--chunk_type', type=str, default='standard', choices=['standard', 'centered'])
     argparsers.add_argument('--max_token_length', type=int, default=514)
     argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
-    argparsers.add_argument('--batch_size', type=int, default=32)
+    argparsers.add_argument('--batch_size', type=int, default=16)
     argparsers.add_argument('--num_splits', type=int, default=5)
-    argparsers.add_argument('--chunk_type', type=str, default='standard')
     argparsers.add_argument('--multi_class', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--force_splitter', action="store_true", default=False)
@@ -290,8 +299,13 @@ if __name__ == "__main__":
     corpus_validation = args.Corpus_validation
     split_file = args.split_file
     force_splitter =args.force_splitter
+    _annotation_loc = args.annotation_loc
+    parse_annotations = args.parse_annotations
+    train_model = args.train_model
 
     assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None))), "Either provide a split file or a train and validation corpus"
+    assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"
+    assert((train_model is True) | (parse_annotations is True)), "Either parse annotations or train the model, or both..do something!"
 
     if corpus_train is not None:
         assert os.path.isfile(corpus_train), f"Corpus_train file {corpus_train} does not exist."
@@ -299,6 +313,9 @@ if __name__ == "__main__":
         assert os.path.isfile(corpus_validation), f"Corpus_validation file {corpus_validation} does not exist."
     if split_file is not None:
         assert os.path.isfile(split_file), f"Split_file {split_file} does not exist."
+
+    ################################################
+    ################################################
 
     if (split_file is not None) and (corpus_validation is not None):
         print("Split file and validation corpus provided, ignoring validation corpus file in favor of split file.")
@@ -311,13 +328,10 @@ if __name__ == "__main__":
         elif split_file is not None:
             print("Force splitter is on, and split file is provided, therefore, ignoring the test in the split file (if present).")
 
-    _annotation_loc = args.annotation_loc
     OutputDir = args.output_dir
     ChunkSize = args.chunk_size
     max_length = args.max_token_length
     ChunkType = args.chunk_type
-    parse_annotations = args.parse_annotations
-    train_model = args.train_model
     num_labels = args.num_labels
     num_splits = args.num_splits
     num_epochs = args.num_epochs
@@ -363,9 +377,12 @@ if __name__ == "__main__":
         tokenized_data_test = [entry for entry in tokenized_data if entry['batch'] == 'test']
         tokenized_data_validation = [entry for entry in tokenized_data if entry['batch'] == 'validation']
 
+        if (len(tokenized_data_validation)==0) and (len(tokenized_data_test)>0):
+            tokenized_data_validation = tokenized_data_test
+
         # train-> split-> validation (if train is available, validation is available, and force_splitter = True)
         # train-> test -> validation (if train is available, test is available, and validation is available)
-        # train-> validation (if train is available, and validation is available)
+        # [x] train-> validation (if train is available, and validation is available)
         train(tokenized_data_train,
               tokenized_data_test,
               tokenized_data_validation,

@@ -24,49 +24,6 @@ logging.set_verbosity_debug()
 import evaluate
 metric = evaluate.load("seqeval")
 
-# https://huggingface.co/learn/nlp-course/en/chapter7/2
-# @dataclass
-# class MultiLabelDataCollatorForTokenClassification:
-#     tokenizer: AutoTokenizer
-#     padding: Union[bool, str] = "max_length"
-#     max_length: Optional[int] = None
-#     label_pad_token_id: int = -100
-
-#     def __call__(self, features):
-#         labels = [feature.pop('labels') for feature in features]
-#         # Remove keys not expected by the model
-#         # for feature in features:
-#         #     keys_to_remove = ['id2label', 'tags', 'label2id', 'gid', 'batch', 'tokens', 'id']
-#         #     for key in keys_to_remove:
-#         #         feature.pop(key, None)
-
-#         batch = self.tokenizer.pad(
-#             features,
-#             padding=self.padding,
-#             max_length=self.max_length,
-#             return_tensors='pt'
-#         )
-
-#         max_seq_length = batch['input_ids'].shape[1]
-#         batch_size = len(labels)
-#         num_labels = len(labels[0][0])
-
-#         # Initialize padded labels tensor
-#         padded_labels = torch.full(
-#             (batch_size, max_seq_length, num_labels),
-#             self.label_pad_token_id,
-#             dtype=torch.float
-#         )
-
-#         for i, label in enumerate(labels):
-#             seq_length = len(label)
-#             padded_labels[i, :seq_length, :] = torch.tensor(label, dtype=torch.float)
-
-#         batch['labels'] = padded_labels
-
-#         return batch
-
-
 @dataclass
 class MultiLabelDataCollatorForTokenClassification:
     tokenizer: PreTrainedTokenizerBase
@@ -74,7 +31,7 @@ class MultiLabelDataCollatorForTokenClassification:
     max_length: Optional[int] = None
     label_pad_token_id: int = -100
 
-    def __call__(self, features):
+    def __call__(self, features, *args, **kwargs):
         labels = [feature.pop('labels') for feature in features]
         # Remove unnecessary keys if needed
 
@@ -111,8 +68,6 @@ class MultiLabelDataCollatorForTokenClassification:
 
         return batch
 
-
-    
 class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
@@ -175,7 +130,6 @@ class MultiLabelTrainer(Trainer):
         loss = loss_tensor.sum() / mask.sum()
 
         return (loss, outputs) if return_outputs else loss
-
 
 class ModelTrainer():
     def __init__(self,
@@ -241,7 +195,7 @@ class ModelTrainer():
 
 
         self.args = TrainingArguments(
-            output_dir=r""+output_dir,
+            output_dir=output_dir,
             **self.train_kwargs
         )
 
@@ -285,15 +239,22 @@ class ModelTrainer():
             'rauc_macro': roc_auc_macro,
         }
 
-    def train(self, 
+    def train(self,
               train_data: List[Dict],
-              eval_data: List[Dict], 
+              test_data: List[Dict],
+              eval_data: List[Dict],
               profile: bool=False):
+
+        if len(test_data)>0:
+            _eval_data = test_data
+        else:
+            _eval_data = eval_data
+
         trainer = MultiLabelTrainer(
             model=self.model,
             args=self.args,
             train_dataset=train_data,
-            eval_dataset=eval_data,
+            eval_dataset=_eval_data,
             data_collator=self.data_collator,
             compute_metrics=self.compute_metrics,
             processing_class=self.tokenizer,
@@ -303,20 +264,22 @@ class ModelTrainer():
             with torch.profiler.profile(
                 schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                record_shapes=True,
+                record_shapes=False,
                 profile_memory=True,
                 with_stack=True
             ) as prof:
                 trainer.train()
         else:
             trainer.train()
-        metrics = trainer.evaluate()
+
+        # TODO: if there is a test set and evaluation set, evaluate on the eval set
+        metrics = trainer.evaluate(eval_dataset=eval_data)
         try:
             trainer.save_model(self.output_dir)
-            trainer.save_metric(self.output_dir, metrics=metrics)
+            trainer.save_metrics(self.output_dir, metrics=metrics)
         except:
             trainer.save_model('output')
-            trainer.save_metric('output', metrics=metrics)
+            trainer.save_metrics('output', metrics=metrics)
             print("Failed to save model and metrics")
         torch.cuda.empty_cache()
         return True
