@@ -104,7 +104,7 @@ def annotate_corpus_centered(corpus, lang:str='nl', batch_id="b1", chunk_size=51
     unique_tags = set()
 
     nlp = spacy.blank(lang)
-    
+
     for entry in corpus:
         text = entry["text"]
         tags = entry["tags"]
@@ -187,29 +187,6 @@ def annotate_corpus_centered(corpus, lang:str='nl', batch_id="b1", chunk_size=51
     tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
     return annotated_data, tag_list
 
-
-# def align_labels_with_tokens(labels, word_ids):
-#     new_labels = []
-#     current_word = None
-#     for word_id in word_ids:
-#         if word_id != current_word:
-#             # Start of a new word!
-#             current_word = word_id
-#             label = -100 if word_id is None else labels[word_id]
-#             new_labels.append(label)
-#         elif word_id is None:
-#             # Special token
-#             new_labels.append(-100)
-#         else:
-#             # Same word as previous token
-#             label = labels[word_id]
-#             # If the label is B-XXX we change it to I-XXX
-#             if label % 2 == 1:
-#                 label += 1
-#             new_labels.append(label)
-
-#     return new_labels
-
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
     current_word = None
@@ -240,14 +217,16 @@ def align_labels_with_tokens(labels, word_ids):
     return new_labels
 
 
-def tokenize_and_align_labels(docs, tokenizer, label2id: Optional[Dict[str, int]]=None):
+def tokenize_and_align_labels(docs,
+                              tokenizer, label2id: Optional[Dict[str, int]]=None,
+                              max_length: Optional[int]=None):
     '''
     Tokenizes and aligns labels with tokens.
     '''
     tokenized_inputs = tokenizer(
         docs["tokens"],
         is_split_into_words=True,
-        max_length=tokenizer.model_max_length,            # Set max_length to 514
+        max_length=tokenizer.model_max_length if max_length is None else max_length,
         padding='max_length',      # Pad sequences to max_length
         truncation=True,           # Truncate sequences longer than max_length
         return_offsets_mapping=True

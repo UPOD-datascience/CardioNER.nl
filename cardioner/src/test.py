@@ -1,6 +1,6 @@
 '''
-This is meant as a test script to apply trained models via the huggingface 
-transformer pipeline. 
+This is meant as a test script to apply trained models via the huggingface
+transformer pipeline.
 '''
 
 import argparse
@@ -28,10 +28,16 @@ lang_dict = {
     'cz': Czech
 }
 
-def process_pipe(text: str, 
+def process_pipe(text: str,
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
                  lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]:
+    '''
+      text: The text to process
+      pipe: The transformers pipeline to use
+      max_word_per_chunk: The maximum number of words per chunk, we need this to avoid exceeding the maximum input size of the model
+      lang: The language of the text
+    '''
     assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
 
     nlp = lang_dict[lang]()
@@ -52,7 +58,7 @@ def process_pipe(text: str,
         sentence_bag.append(sent.text)
     if len(sentence_bag) > 0:
         _named_ents = pipe(".".join(sentence_bag))
-        named_ents.extend(_named_ents)   
+        named_ents.extend(_named_ents)
 
     return named_ents
 

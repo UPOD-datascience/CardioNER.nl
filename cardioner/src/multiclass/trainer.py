@@ -8,71 +8,133 @@ environ["WANDB_DISABLED"] = "true"
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Union, Tuple, Literal
 from collections import defaultdict
-from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModelForTokenClassification, TrainingArguments, Trainer
+from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModel
+from transformers import AutoModelForTokenClassification, TrainingArguments, Trainer
+from transformers import AutoConfig
+from transformers import RobertaModel
+from transformers.modeling_outputs import TokenClassifierOutput
 import numpy as np
 import torch
 from sklearn.model_selection import train_test_split, KFold
 from transformers.utils import logging
+from torchcrf import CRF
+
 logging.set_verbosity_debug()
+
+from torch import nn
 
 import evaluate
 metric = evaluate.load("seqeval")
 
-# https://huggingface.co/learn/nlp-course/en/chapter7/2
+class TokenClassificationModelCRF(AutoModelForTokenClassification):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.roberta = RobertaModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        # Initialize CRF layer
+        self.crf = CRF(self.num_labels, batch_first=True)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
+        **kwargs
+    ):
+        outputs = self.roberta(input_ids, attention_mask=attention_mask, **kwargs)
+        sequence_output = self.dropout(outputs.last_hidden_state)
+        logits = self.classifier(sequence_output)  # Emissions for CRF
+
+        loss = None
+        predictions = []
+        if labels is not None:
+            # CRF calculates the log-likelihood of the correct sequence
+            # We use a negative sign to convert it into a loss
+            loss = -self.crf(logits, labels, mask=attention_mask.bool(), reduction='mean')
+
+        predictions = self.crf.decode(logits, mask=attention_mask.bool())
+        # If no labels provided, we return decoded predictions
+        # If labels are provided and you still want predictions, you can decode here too
+
+        # Return a TokenClassifierOutput for interoperability
+        return TokenClassifierOutput(
+            loss=loss,
+            logits=predictions,             # raw emissions (logits)
+            hidden_states=outputs.hidden_states if hasattr(outputs, 'hidden_states') else None,
+            attentions=outputs.attentions if hasattr(outputs, 'attentions') else None
+        )
+
+class TokenClassificationModel(AutoModelForTokenClassification):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.roberta = RobertaModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
+        labels=None,
+        **kwargs
+    ):
+        # Run inputs through the RoBERTa backbone
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            **kwargs
+        )
+
+        sequence_output = outputs.last_hidden_state
+        sequence_output = self.dropout(sequence_output)
+        logits = self.classifier(sequence_output)
+
+        loss = None
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            if attention_mask is not None:
+                # Only keep active parts of the sequence
+                active_loss = attention_mask.view(-1) == 1
+                active_logits = logits.view(-1, self.num_labels)[active_loss]
+                active_labels = labels.view(-1)[active_loss]
+                loss = loss_fct(active_logits, active_labels)
+            else:
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+        return TokenClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
 
 class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassification):
     def __call__(self, features, *args, **kwargs):
         # Call the superclass method to process the batch
+        #
+        for feature in features:
+            if 'labels' in feature:
+                lbls = feature['labels']
+                # If lbls is one-hot encoded (e.g. [seq_length, num_labels] per example),
+                # first convert to a tensor and then argmax:
+                if torch.Tensor(lbls).ndim == 2:
+                    lbls_tensor = torch.tensor(lbls, dtype=torch.float)
+                    lbls = lbls_tensor.argmax(dim=-1).tolist()
+                    if len(lbls) < len(feature['input_ids']):
+                        lbls = lbls + [-100] * (len(feature['input_ids']) - len(lbls))
+                    # Now lbls is a simple list of integers
+                feature['labels'] = lbls
+
+        # Now call the superclass, which will handle converting everything to tensors
         batch = super().__call__(features)
-
-        # Retrieve input_ids and labels from the batch
-        input_ids = batch['input_ids']
-        labels = batch['labels']
-
-        def has_nan_or_inf(tensor):
-            return torch.isnan(tensor).any() or torch.isinf(tensor).any()
-
-        for key in batch:
-            if has_nan_or_inf(batch[key]):
-                print(f"Tensor {key} contains NaN or Inf values.")
-                return None
-
-        # Check for shape mismatch
-            if input_ids.shape != labels.shape:
-                raise ValueError(f"Shape mismatch: input_ids {input_ids.shape}, labels {labels.shape}")
-
-            # Option 1: Adjust labels to match input_ids
-            # This might involve padding or truncating labels
-            #labels = self._adjust_labels(labels, input_ids.shape)
-            #batch['labels'] = labels
-
-            # Option 2: Skip this batch
-
-            # Option 3: Raise an exception
-            # raise ValueError("Mismatch between input_ids and labels shapes")
-
         return batch
 
-
-    def _adjust_labels(self, labels, target_shape):
-        """
-        Adjusts the labels tensor to match the target_shape.
-        This function pads or truncates the labels tensor.
-        """
-        # Get current shape
-        current_shape = labels.shape
-
-        # If labels are shorter, pad them
-        if current_shape[1] < target_shape[1]:
-            padding_length = target_shape[1] - current_shape[1]
-            padding = torch.full((current_shape[0], padding_length), self.label_pad_token_id, dtype=labels.dtype)
-            labels = torch.cat([labels, padding], dim=1)
-
-        # If labels are longer, truncate them
-        elif current_shape[1] > target_shape[1]:
-            labels = labels[:, :target_shape[1]]
-
-        return labels
 
 class ModelTrainer():
     def __init__(self,
@@ -80,10 +142,11 @@ class ModelTrainer():
                  id2label: Dict[int, str],
                  tokenizer=None,
                  model: str='CLTL/MedRoBERTa.nl',
+                 use_crf: bool=False,
                  batch_size: int=48,
                  max_length: int=514,
                  learning_rate: float=1e-4,
-                 weight_decay: float=0.01,
+                 weight_decay: float=0.001,
                  num_train_epochs: int=3,
                  output_dir: str="../../output"
     ):
@@ -107,8 +170,9 @@ class ModelTrainer():
             'logging_strategy': 'steps',
             'logging_steps': 256,
         }
-
+        self.crf=use_crf
         if tokenizer is None:
+            print("LOADING TOKENIZER")
             self.tokenizer = AutoTokenizer.from_pretrained(model,
                 add_prefix_space=True, model_max_length=max_length, padding="max_length", truncation=True)
         else:
@@ -117,25 +181,36 @@ class ModelTrainer():
         self.tokenizer.model_max_length = max_length
         self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length,
                                                                 padding="max_length", label_pad_token_id=-100)
-        self.model = AutoModelForTokenClassification.from_pretrained(model, id2label=self.id2label, label2id=self.label2id,
-                                                                     num_labels=len(self.label2id))
 
+        config = AutoConfig.from_pretrained(model, num_labels=len(self.label2id),
+            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1)
+
+        if use_crf:
+            print("USING CRF:", self.crf)
+            self.model = TokenClassificationModelCRF.from_pretrained(model, config=config)
+        else:
+            self.model = TokenClassificationModel.from_pretrained(model, config=config)
+
+        print("Model:", type(self.model))
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
         print("Number of labels:", len(self.label2id))
         print("Labels:", self.label2id)
-        print("id2lagel:", self.id2label)
+        print("id2label:", self.id2label)
         print("Model config:", self.model.config)
 
 
         self.args = TrainingArguments(
-            output_dir=r""+output_dir,
+            output_dir=output_dir,
             **self.train_kwargs
         )
 
     def compute_metrics(self, eval_preds):
         logits, labels = eval_preds
-        predictions = np.argmax(logits, axis=-1)
+        if self.crf:
+            predictions = logits # CRF returns predictions directly
+        else:
+            predictions = np.argmax(logits, -1)
 
         # Access the id2label mapping
         id2label = self.id2label  # Dictionary mapping IDs to labels
@@ -145,11 +220,18 @@ class ModelTrainer():
             [id2label[l] for l in label if l != -100]
             for label in labels
         ]
-        true_predictions = [
-            [id2label[p] for (p, l) in zip(prediction, label) if l != -100]
-            for prediction, label in zip(predictions, labels)
-        ]
-        all_metrics = metric.compute(predictions=true_predictions, references=true_labels)
+
+        try:
+            true_predictions = [
+                [id2label[p] for (p, l) in zip(prediction, label) if l != -100]
+                for prediction, label in zip(predictions, labels)
+            ]
+        except Exception as e:
+            print(f"Predictions: {predictions}")
+            print(f"Labels: {labels}")
+
+        all_metrics = metric.compute(predictions=true_predictions,
+            references=true_labels)
         return {
             "precision": all_metrics["overall_precision"],
             "recall": all_metrics["overall_recall"],
@@ -158,21 +240,32 @@ class ModelTrainer():
         }
 
 
-    def train(self, train_data: List[Dict], eval_data: List[Dict], profile: bool=False):
+    def train(self,
+        train_data: List[Dict],
+        test_data: List[Dict],
+        eval_data: List[Dict],
+        profile: bool=False):
+
+        if len(test_data)>0:
+            _eval_data = test_data
+        else:
+            _eval_data = eval_data
+
         trainer = Trainer(
             model=self.model,
             args=self.args,
             train_dataset=train_data,
-            eval_dataset=eval_data,
+            eval_dataset=_eval_data,
             data_collator=self.data_collator,
             compute_metrics=self.compute_metrics,
             processing_class=self.tokenizer,
         )
+
         if profile:
             with torch.profiler.profile(
                 schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                record_shapes=True,
+                record_shapes=False,
                 profile_memory=True,
                 with_stack=True
             ) as prof:
@@ -180,12 +273,14 @@ class ModelTrainer():
         else:
             trainer.train()
 
-        # TODO: if there is a test set and evaluation set, evaluate on both
-        metrics = trainer.evaluate()
+        # TODO: if there is a test set and evaluation set, evaluate on the eval set
+        metrics = trainer.evaluate(eval_dataset=eval_data)
         try:
-            trainer.save_model(r""+self.output_dir)
-            trainer.save_metrics(r""+self.output_dir, metrics=metrics)
+            trainer.save_model(self.output_dir)
+            trainer.save_metrics(self.output_dir, metrics=metrics)
         except:
+            trainer.save_model('output')
+            trainer.save_metrics('output', metrics=metrics)
             print("Failed to save model and metrics")
         torch.cuda.empty_cache()
         return True

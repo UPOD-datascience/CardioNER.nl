@@ -51,8 +51,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         for line in fr:
             corpus_train_list.append(json.loads(line))
 
+    corpus_validation_list = []
     if corpus_validation is not None:
-        corpus_validation_list = []
         # read jsonl
         with open(corpus_validation, 'r', encoding='utf-8') as fr:
             for line in fr:
@@ -69,6 +69,7 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     if split_file is not None:
         with open(split_file, 'r', encoding='utf-8') as fr:
             split_data = json.load(fr)
+            # TODO: check if the split file is correct, seems redundant to have separate entries for class/language.
             corpus_train_ids = split_data[lang]['train']['symp']
             corpus_test_ids = split_data[lang]['test']['symp']
             corpus_validation_ids = split_data[lang]['validation']['symp']
@@ -78,6 +79,10 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         corpus_train = [entry for entry in corpus_train_list if entry['id'] in corpus_train_ids]
         corpus_test = [entry for entry in corpus_train_list if entry['id'] in corpus_test_ids]
         corpus_validation = [entry for entry in corpus_train_list if entry['id'] in corpus_validation_ids]
+    else:
+        corpus_train = corpus_train_list
+        corpus_validation = corpus_validation_list
+        corpus_test = []
 
     # Run the transformation
     annotate_functions = {
@@ -122,7 +127,7 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         elif batch_id == 'validation':
             iob_data_validation = iob_data
 
-        if batch_id != 'train':
+        if (batch_id != 'train') & (len(corpus)>0):
             assert(unique_tags == _unique_tags), "Tags are not the same in train/val"
     # paragraph?
 
@@ -167,7 +172,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
 
     return iob_data_dataset_tokenized_with_labels, unique_tags
 
-
 def train(tokenized_data_train: List[Dict],
           tokenized_data_test: List[Dict],
           tokenized_data_validation: List[Dict],
@@ -179,10 +183,17 @@ def train(tokenized_data_train: List[Dict],
           num_epochs: int=10,
           batch_size: int=20,
           profile: bool=False,
-          multi_class: bool=False):
+          multi_class: bool=False,
+          use_crf: bool=False):
 
     label2id = tokenized_data_train[0]['label2id']
-    id2label = tokenized_data_validation[0]['id2label']
+    id2label = tokenized_data_train[0]['id2label']
+
+    label2id_tr = tokenized_data_train[0]['label2id']
+    label2id_vl = tokenized_data_validation[0]['label2id']
+    label2d_test = tokenized_data_train[0]['label2id']
+
+    assert(label2id_tr==label2id_vl==label2d_test), "Label2id mismatch between train, validation and test sets."
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
@@ -191,20 +202,25 @@ def train(tokenized_data_train: List[Dict],
     num_labels = len(label2id)
     for entry in tokenized_data_train:
         labels = entry['labels']
-        for token_labels in labels:
-            if isinstance(token_labels, list):
-                assert len(token_labels) == num_labels, "Mismatch in label dimensions, in train set."
-            else:
-                assert token_labels == -100, "Labels should be lists or -100."
+        if multi_class == False:
+            for token_labels in labels:
+                if isinstance(token_labels, list):
+                    assert len(token_labels) == num_labels, "Mismatch in label dimensions, in train set."
+                else:
+                    assert token_labels == -100, "Labels should be lists or -100."
+        else:
+            assert all([label in [-100]+list(range(num_labels)) for label in labels]), f"Labels should be in range (0,{num_labels})  or -100."
 
     for entry in tokenized_data_validation:
         labels = entry['labels']
-        for token_labels in labels:
-            if isinstance(token_labels, list):
-                assert len(token_labels) == num_labels, "Mismatch in label dimensions, in validation set."
-            else:
-                assert token_labels == -100, "Labels should be lists or -100."
-
+        if multi_class == False:
+            for token_labels in labels:
+                if isinstance(token_labels, list):
+                    assert len(token_labels) == num_labels, "Mismatch in label dimensions, in validation set."
+                else:
+                    assert token_labels == -100, "Labels should be lists or -100."
+        else:
+            assert all([label in [-100]+list(range(num_labels)) for label in labels]), f"Labels should be in range (0,{num_labels})  or -100."
 
     if (tokenized_data_validation is None) | ((tokenized_data_validation is not None) & (force_splitter==True)):
         print("Using cross-validation for model training and validation..")
@@ -232,8 +248,8 @@ def train(tokenized_data_train: List[Dict],
                                     batch_size=batch_size)
 
             print(f"Training on split {k}")
-            train_data = [tokenized_data[i] for i in train_idx]
-            test_data = [tokenized_data[i] for i in test_idx]
+            train_data = [shuffled_data[i] for i in train_idx]
+            test_data = [shuffled_data[i] for i in test_idx]
 
             if (tokenized_data_validation is not None) & (force_splitter==True):
                 TrainClass.train(train_data=train_data, test_data=test_data, eval_data=test_data, profile=profile)
@@ -243,7 +259,7 @@ def train(tokenized_data_train: List[Dict],
         print("Using preset train/test/validation split for model training and validation..")
         if multi_class:
             TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                model=Model, output_dir=output_dir,
+                                model=Model, use_crf=use_crf, output_dir=output_dir,
                                 max_length=max_length,
                                 num_train_epochs=num_epochs,
                                 batch_size=batch_size)
@@ -285,6 +301,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--batch_size', type=int, default=16)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--multi_class', action="store_true", default=False)
+    argparsers.add_argument('--use_crf', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--force_splitter', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
@@ -303,7 +320,7 @@ if __name__ == "__main__":
     parse_annotations = args.parse_annotations
     train_model = args.train_model
 
-    assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None))), "Either provide a split file or a train and validation corpus"
+    assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None)) | ((corpus_train is not None) and (force_splitter))), "Either provide a split file or a train and validation corpus"
     assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"
     assert((train_model is True) | (parse_annotations is True)), "Either parse annotations or train the model, or both..do something!"
 
@@ -338,6 +355,7 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     profile = args.profile
     multi_class = args.multi_class
+    use_crf = args.use_crf
     language = args.lang
 
     if args.write_annotations == False:
@@ -348,12 +366,13 @@ if __name__ == "__main__":
         tokenized_data, tags = prepare(Model=_model,
                                     lang = language,
                                     corpus_train=corpus_train,
-                                    corpus_validation=corpus_validation,
+                                    corpus_validation = corpus_validation,
                                     split_file=split_file,
                                     annotation_loc=_annotation_loc,
                                     chunk_size=ChunkSize,
                                     chunk_type=ChunkType,
-                                    max_length=max_length)
+                                    max_length=max_length,
+                                    multi_class = multi_class)
 
     if train_model:
         print("Training the model..")
@@ -368,14 +387,18 @@ if __name__ == "__main__":
 
             # assert that all labels are within range, >=0 and < num_labels
             for label in entry['labels']:
-                assert(all([((_label >= 0) and (_label < num_labels)) | (_label==-100) for _label in label])), f"Label {label}, {type(label)} is not within range for entry {entry['id']}"
+                if multi_class == False:
+                    assert(all([((_label >= 0) and (_label < num_labels)) | (_label==-100) for _label in label])), f"Label {label}, {type(label)} is not within range for entry {entry['id']}"
+                else:
+                    assert(label in [-100]+list(range(num_labels))), f"Label {label} is not within range for entry {entry['id']}"
 
-            #if len(entry['inpurt_ids']) < max_length:
-            #    print(f"{entry['id']} has length {len(entry['input_ids'])} and is smaller than max_length {max_length}")
-
+        # TODO: this is extremely ugly and needs to be refactored
         tokenized_data_train = [entry for entry in tokenized_data if entry['batch'] == 'train']
         tokenized_data_test = [entry for entry in tokenized_data if entry['batch'] == 'test']
         tokenized_data_validation = [entry for entry in tokenized_data if entry['batch'] == 'validation']
+
+        if len(tokenized_data_train)==0:
+            tokenized_data_train = tokenized_data
 
         if (len(tokenized_data_validation)==0) and (len(tokenized_data_test)>0):
             tokenized_data_validation = tokenized_data_test
@@ -394,4 +417,5 @@ if __name__ == "__main__":
               num_epochs=num_epochs,
               batch_size=batch_size,
               profile=profile,
-              multi_class=multi_class)
+              multi_class=multi_class,
+              use_crf=use_crf)

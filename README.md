@@ -3,7 +3,7 @@
 We develop a NER-model for the cardiology domain based on manually annotated translated documents as part of a multilingual NLP-effort.
 The model is validated on original Dutch EHR documents from the Amsterdam UMC.
 
-We use different models: 
+We use different models:
 * Transformer
  * RobBERTv2
  * MedRoBERTa.nl -> _baseline model for the Datatools4Heart project_, via [simpletransformers](https://simpletransformers.ai/docs/ner-model/)?
@@ -49,12 +49,12 @@ The ```.tsv``` file is structured as follows.
 
 ```
 name	tag	start_span	end_span	text	note
-casos_clinicos_cardiologia286	SYMPTOM	109	116	dyspneu	
-casos_clinicos_cardiologia286	SYMPTOM	120	151	oedeem in de onderste ledematen	
-casos_clinicos_cardiologia286	SYMPTOM	1055	1099	progressieve dyspneu tot minimale inspanning	
-casos_clinicos_cardiologia286	SYMPTOM	1103	1134	oedeem in de onderste ledematen	
-casos_clinicos_cardiologia286	SYMPTOM	1214	1223	orthopnoe	
-casos_clinicos_cardiologia286	SYMPTOM	1227	1258	paroxismale nachtelijke dyspnoe	
+casos_clinicos_cardiologia286	SYMPTOM	109	116	dyspneu
+casos_clinicos_cardiologia286	SYMPTOM	120	151	oedeem in de onderste ledematen
+casos_clinicos_cardiologia286	SYMPTOM	1055	1099	progressieve dyspneu tot minimale inspanning
+casos_clinicos_cardiologia286	SYMPTOM	1103	1134	oedeem in de onderste ledematen
+casos_clinicos_cardiologia286	SYMPTOM	1214	1223	orthopnoe
+casos_clinicos_cardiologia286	SYMPTOM	1227	1258	paroxismale nachtelijke dyspnoe
 casos_clinicos_cardiologia286	SYMPTOM	1591	1617	Algemene conditie behouden
 ...
 ```
@@ -84,3 +84,61 @@ id2labels = {0: 'disease', 1: 'medication', 2: 'procedure', 3: 'symptom'}
 ```
 
 This can be directly loaded into huggingface datasets.
+
+# Instructions
+
+Example:
+
+Suppose in ```annotations.jsonl```we have the annotations in the following format
+
+```
+{
+ "id": "casos_clinicos_cardiologia83",
+ "tags": [{"start": 117, "end": 138, "tag": "DISEASE"}, {"start": 140, "end": 160, "tag": "DISEASE"},...
+ "text": "Patiënte is bekend met een aortaklepstenose en een mitralisklepinsufficiëntie."
+ },
+ ...
+```
+
+and in ```splits.json```we have
+```
+{
+"en":{
+   "train":{
+      "symp":[
+         "casos_clinicos_cardiologia3",
+         "casos_clinicos_cardiologia10",
+         ...
+      ]
+   }
+}
+}
+```
+
+Then, to parse the annotations and train the multilabel model, we can run the following command for the Dutch language:
+```
+poetry shell
+cd cardioner/src
+python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
+```
+
+To train a multiclass model, simply add ```--multi_class``` to the command.
+
+The languages are referred to as:
+```
+'es' : Spanish,
+'nl' : Dutch,
+'en' : English,
+'it' : Italian,
+'ro' : Romanian,
+'sv' : Swedish,
+'cz' : Czech
+```
+
+To test a model, you can run the following command:
+
+```
+poetry shell
+cd cardioner/src
+python test.py --model /location/of/model --lang nl
+```
