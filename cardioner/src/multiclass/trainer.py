@@ -26,11 +26,13 @@ from torch import nn
 import evaluate
 metric = evaluate.load("seqeval")
 
-class TokenClassificationModelCRF(AutoModelForTokenClassification):
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-        self.roberta = RobertaModel(config)
+class TokenClassificationModelCRF(nn.Module):
+    def __init__(self, base_model, config):
+        super().__init__()
+        self.config = config
+        self.num_labels = config.num_labels + 1 # Extra label to acocunt for the -100 padding label
+        self.pad_label = self.num_labels + 1
+        self.roberta = base_model
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
         # Initialize CRF layer
@@ -48,29 +50,31 @@ class TokenClassificationModelCRF(AutoModelForTokenClassification):
         logits = self.classifier(sequence_output)  # Emissions for CRF
 
         loss = None
-        predictions = []
         if labels is not None:
             # CRF calculates the log-likelihood of the correct sequence
             # We use a negative sign to convert it into a loss
+            labels = labels.long()
             loss = -self.crf(logits, labels, mask=attention_mask.bool(), reduction='mean')
-
-        predictions = self.crf.decode(logits, mask=attention_mask.bool())
-        # If no labels provided, we return decoded predictions
-        # If labels are provided and you still want predictions, you can decode here too
 
         # Return a TokenClassifierOutput for interoperability
         return TokenClassifierOutput(
-            loss=loss,
-            logits=predictions,             # raw emissions (logits)
-            hidden_states=outputs.hidden_states if hasattr(outputs, 'hidden_states') else None,
-            attentions=outputs.attentions if hasattr(outputs, 'attentions') else None
+             loss=loss,
+             logits=logits,             # raw emissions (logits)
+             hidden_states=outputs.hidden_states if hasattr(outputs, 'hidden_states') else None,
+             attentions=outputs.attentions if hasattr(outputs, 'attentions') else None
         )
 
-class TokenClassificationModel(AutoModelForTokenClassification):
-    def __init__(self, config):
-        super().__init__(config)
+    @property
+    def device_info(self):
+        return next(self.parameters()).device
+
+
+class TokenClassificationModel(nn.Module):
+    def __init__(self, base_model, config):
+        super().__init__()
+        self.config = config
         self.num_labels = config.num_labels
-        self.roberta = RobertaModel(config)
+        self.roberta = base_model
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
 
@@ -126,9 +130,17 @@ class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassificatio
                 if torch.Tensor(lbls).ndim == 2:
                     lbls_tensor = torch.tensor(lbls, dtype=torch.float)
                     lbls = lbls_tensor.argmax(dim=-1).tolist()
+                    lbls = [label if label != -100 else self.label_pad_token_id for label in lbls]
                     if len(lbls) < len(feature['input_ids']):
-                        lbls = lbls + [-100] * (len(feature['input_ids']) - len(lbls))
+                        lbls = lbls + [self.label_pad_token_id] * (len(feature['input_ids']) - len(lbls))
                     # Now lbls is a simple list of integers
+                else:
+                    lbls = [label if label != -100 else self.label_pad_token_id for label in lbls]
+                    lbls = lbls + [self.label_pad_token_id] * (len(feature['input_ids']) - len(lbls))
+
+                if (-100 in lbls) & (self.label_pad_token_id!=-100):
+                    print("Warning: -100 found in labels after replacement!")
+
                 feature['labels'] = lbls
 
         # Now call the superclass, which will handle converting everything to tensors
@@ -171,6 +183,16 @@ class ModelTrainer():
             'logging_steps': 256,
         }
         self.crf=use_crf
+
+        if use_crf:
+            self.pad_token_id = len(label2id) + 1
+            num_labels = len(label2id) + 1
+            id2label[self.pad_token_id]='PADDING'
+            label2id['PADDING'] = self.pad_token_id
+        else:
+            self.pad_token_id  = -100
+            num_labels = len(label2id)
+
         if tokenizer is None:
             print("LOADING TOKENIZER")
             self.tokenizer = AutoTokenizer.from_pretrained(model,
@@ -180,18 +202,23 @@ class ModelTrainer():
 
         self.tokenizer.model_max_length = max_length
         self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length,
-                                                                padding="max_length", label_pad_token_id=-100)
+                                                                padding="max_length", label_pad_token_id=self.pad_token_id )
 
-        config = AutoConfig.from_pretrained(model, num_labels=len(self.label2id),
+        config = AutoConfig.from_pretrained(model, num_labels=num_labels,
             id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1)
 
         if use_crf:
             print("USING CRF:", self.crf)
-            self.model = TokenClassificationModelCRF.from_pretrained(model, config=config)
+            base_model = RobertaModel.from_pretrained(model, config=config)
+            self.model = TokenClassificationModelCRF(base_model, config)
         else:
-            self.model = TokenClassificationModel.from_pretrained(model, config=config)
+            base_model = RobertaModel.from_pretrained(model, config=config)
+            self.model = TokenClassificationModel(base_model, config)
+
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         print("Model:", type(self.model))
+        print("Device:", self.device)
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
         print("Number of labels:", len(self.label2id))
@@ -208,7 +235,14 @@ class ModelTrainer():
     def compute_metrics(self, eval_preds):
         logits, labels = eval_preds
         if self.crf:
-            predictions = logits # CRF returns predictions directly
+            mask = labels != self.pad_token_id
+            mask[:, 0] = True
+
+            # self.model.device_info()
+            emissions_torch = torch.from_numpy(logits).float().to(self.device)
+            mask_torch = torch.from_numpy(mask).bool().to(self.device)
+
+            predictions = self.model.crf.decode(emissions=emissions_torch, mask=mask_torch)
         else:
             predictions = np.argmax(logits, -1)
 
@@ -217,13 +251,13 @@ class ModelTrainer():
 
         # Remove ignored index (special tokens) and convert to label names
         true_labels = [
-            [id2label[l] for l in label if l != -100]
+            [id2label[l] for l in label if l != self.pad_token_id]
             for label in labels
         ]
 
         try:
             true_predictions = [
-                [id2label[p] for (p, l) in zip(prediction, label) if l != -100]
+                [id2label[p] for (p, l) in zip(prediction, label) if l != self.pad_token_id]
                 for prediction, label in zip(predictions, labels)
             ]
         except Exception as e:
@@ -232,12 +266,7 @@ class ModelTrainer():
 
         all_metrics = metric.compute(predictions=true_predictions,
             references=true_labels)
-        return {
-            "precision": all_metrics["overall_precision"],
-            "recall": all_metrics["overall_recall"],
-            "f1": all_metrics["overall_f1"],
-            "accuracy": all_metrics["overall_accuracy"],
-        }
+        return all_metrics
 
 
     def train(self,

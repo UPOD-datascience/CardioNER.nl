@@ -190,10 +190,13 @@ def train(tokenized_data_train: List[Dict],
     id2label = tokenized_data_train[0]['id2label']
 
     label2id_tr = tokenized_data_train[0]['label2id']
-    label2id_vl = tokenized_data_validation[0]['label2id']
-    label2d_test = tokenized_data_train[0]['label2id']
+    if (tokenized_data_validation is not None) & (len(tokenized_data_validation)>0):
+        label2id_vl = tokenized_data_validation[0]['label2id']
+        assert(label2id_tr==label2id_vl), "Label2id mismatch between train, validation."
 
-    assert(label2id_tr==label2id_vl==label2d_test), "Label2id mismatch between train, validation and test sets."
+    if (tokenized_data_test is not None) & (len(tokenized_data_test)>0):
+        label2d_test = tokenized_data_train[0]['label2id']
+        assert(label2id_tr==label2d_test), "Label2id mismatch between train, test."
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
