@@ -127,7 +127,7 @@ To train a multiclass model, simply add ```--multi_class``` to the command.
 To run with CPU (handier for debugging for e.g. tensor mismatches), prepend ```CUDA_VISIBLE_DEVICES=``` to the command.
 So,
 ```
-CUDA_VISIBLE_DEVICES= python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
+CUDA_VISIBLE_DEVICES="" python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
 ```
 
 The languages are referred to as:
