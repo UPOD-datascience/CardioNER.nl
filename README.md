@@ -11,9 +11,9 @@ For the base-models we have 2 basic refinements beyond the vanilla finetuning:
 * self-aligned pre-training (sap) on UMLS term/synonym pairs. Alternatives are BIOSYN, KRISSBERT, BioLord, MirrorBERT.
 
 CardioNER.[lang] will then have 3 version:
-* v1: finetuning of pre-trained biomedical model
-* v2: finetuning of pre-trained biomedical model, that is further pre-trained using self-aligned pre-training on UMLS
-* v3: we add a CRF head. 
+* **v1**: finetuning of pre-trained biomedical model
+* **v2**: finetuning of pre-trained biomedical model, that is further pre-trained using self-aligned pre-training on UMLS
+* **v3**: we add a CRF head. 
 
 
 # Data structure
