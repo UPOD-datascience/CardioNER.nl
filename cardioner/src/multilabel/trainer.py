@@ -139,8 +139,8 @@ class ModelTrainer():
                  model: str='CLTL/MedRoBERTa.nl',
                  batch_size: int=48,
                  max_length: int=514,
-                 learning_rate: float=1e-4,
-                 weight_decay: float=0.01,
+                 learning_rate: float=5e-4,
+                 weight_decay: float=0.001,
                  num_train_epochs: int=20,
                  output_dir: str="../../output"
     ):
