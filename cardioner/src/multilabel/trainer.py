@@ -228,9 +228,6 @@ class ModelTrainer():
         f1_macro = f1_score(labels, preds, average='macro', zero_division=0)
         roc_auc_macro = roc_auc_score(labels, preds, average='macro', multi_class='ovr')
 
-        
-
-
         res_dict = {
             'precision_micro': precision_micro,
             'recall_micro': recall_micro,
@@ -241,6 +238,27 @@ class ModelTrainer():
             'f1_macro': f1_macro,
             'rauc_macro': roc_auc_macro,
         }
+
+        precision_all = precision_score(labels, preds, average=None, zero_division=0)
+        recall_all = recall_score(labels, preds, average=None, zero_division=0)
+        f1_all = f1_score(labels, preds, average=None, zero_division=0)
+        roc_auc_all = roc_auc_score(labels, preds, average=None, multi_class='ovr')
+
+        precision_dict = defaultdict(float)
+        recall_dict = defaultdict(float)
+        f1_dict = defaultdict(float)
+        roc_auc_dict = defaultdict(float) 
+
+        for k,v in self.id2label.items():
+            precision_dict[f"precision_{v}"] = precision_all[k]
+            recall_dict[f"recall_{v}"] = recall_all[k]
+            f1_dict[f"f1_{v}"] = f1_all[k]
+            roc_auc_dict[f"roc_auc_{v}"] = roc_auc_all[k]
+
+        res_dict.update(precision_dict)
+        res_dict.update(recall_dict)
+        res_dict.update(f1_dict)
+        res_dict.update(roc_auc_dict)
 
         return res_dict
 

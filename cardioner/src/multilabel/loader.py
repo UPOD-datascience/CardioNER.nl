@@ -73,6 +73,8 @@ def annotate_corpus_standard(corpus,
                         is_first_token = False
                     elif IOB:
                         tag_label = f"I-{tag_type}"
+                    else:
+                        tag_label = tag_type
                     token_tags[i].append(tag_label)
 
         # Split tokens and tags into chunks of max_tokens without splitting entities
@@ -147,11 +149,15 @@ def annotate_corpus_centered(corpus,
                    (token_start < start and token_end > start) or \
                    (token_start < end and token_end > end):
                     # Token overlaps with entity boundary
-                    if is_first_token:
+                    
+                    if is_first_token and IOB:
                         tag_label = f"B-{tag_type}"
                         is_first_token = False
-                    else:
+                    elif IOB:
                         tag_label = f"I-{tag_type}"
+                    else:
+                        tag_label = tag_type
+
                     token_tags[i].append(tag_label)
 
         # Create chunks centered around each span

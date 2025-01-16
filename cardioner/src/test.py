@@ -62,23 +62,29 @@ def process_pipe(text: str,
 
     return named_ents
 
-def main(model, lang):
+def main(model, lang, ignore_zero):
     le_pipe = pipeline('ner', 
                         model=model, 
                         tokenizer=model, aggregation_strategy="simple", 
                         device=-1)
 
     named_ents = process_pipe(text=text_dict[lang], pipe = le_pipe)
+    res_df = pd.DataFrame(named_ents)
+
+    if ignore_zero:
+        res_df = res_df[res_df.entity_group!='LABEL_0']
 
     print("*"*50)
-    print(pd.DataFrame(named_ents))
+    print(res_df)
     print("*"*50)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the trained model')
     parser.add_argument('--model', type=str, help='The model to test, can be a path or a model name', default='StivenLancheros/mBERT-base-Biomedical-NER')
     parser.add_argument('--lang', type=str, help='The language of the text', choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'])
+    parser.add_argument('--ignore_zero', action='store_true', default=False)
+
     args = parser.parse_args()
 
-    main(args.model, args.lang)
+    main(**vars(args))
 

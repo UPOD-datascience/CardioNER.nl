@@ -478,6 +478,8 @@ if __name__ =="__main__":
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
+    if 'Roberta' in model.config.architectures[0]:
+        max_len = max_len - 2
 
     print(f"The maximum length: {max_len}")
 
