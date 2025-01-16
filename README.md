@@ -85,9 +85,14 @@ id2labels = {0: 'disease', 1: 'medication', 2: 'procedure', 3: 'symptom'}
 ```
 
 To cast the CardioCCC in this form persistently you can run 
-```python
-
+```bash
+python ner_caster.py --ann_dir=b1/1_validated_without_sugs/it/dis/ann  --txt_dir=b1/1_validated_without_sugs/it/dis/txt --out_path=/path/to/assets
 ```
+or 
+```bash
+python ner_caster.py --db_path=b1/1_validated_without_sugs/it/dis/tsv/bla.tsv  --txt_dir=b1/1_validated_without_sugs/it/dis/txt --out_path=/path/to/assets
+```
+
 
 This can be directly loaded into huggingface datasets.
 
