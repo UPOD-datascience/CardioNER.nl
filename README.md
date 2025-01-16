@@ -144,7 +144,7 @@ The languages are referred to as:
 
 # Lightning code by Lorenzo 
 
-This code will run faster, and uses paragraph splitting.
+This code will run faster, and uses paragraph splitting, but does not use IOB-tagging (yet).
 
 You can also run the ```light_ner.py``` script.
 ```python
