@@ -33,7 +33,8 @@ def annotate_corpus_standard(corpus,
                     batch_id: str="b1",
                     lang: str="nl",
                     chunk_size: int = 256,
-                    max_allowed_chunk_size: int = 450):
+                    max_allowed_chunk_size: int = 450,
+                    IOB: bool=True):
     annotated_data = []
     unique_tags = set()
 
@@ -67,10 +68,10 @@ def annotate_corpus_standard(corpus,
                    (token_start < start and token_end > start) or \
                    (token_start < end and token_end > end):
                     # Token overlaps with entity boundary
-                    if is_first_token:
+                    if is_first_token and IOB:
                         tag_label = f"B-{tag_type}"
                         is_first_token = False
-                    else:
+                    elif IOB:
                         tag_label = f"I-{tag_type}"
                     token_tags[i].append(tag_label)
 
@@ -99,21 +100,19 @@ def annotate_corpus_standard(corpus,
 
             i = end_index
 
-    # Collect unique tags with B- and I- prefixes
-    # tag_list = {'O'}
-    # for tag in unique_tags:
-    #     tag_list.update({f"B-{tag}", f"I-{tag}"})
-    #tag_list = sorted(tag_list)
-
-    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    if IOB: 
+        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    else:
+        tag_list = ['O'] + [tag for tag in unique_tags]
 
     return annotated_data, tag_list
 
 def annotate_corpus_centered(corpus,
     batch_id: str="b1",
     lang: str="nl",
-    chunk_size: int=512):
+    chunk_size: int=512,
+    IOB: bool=True):
 
     annotated_data = []
     unique_tags = set()
@@ -210,14 +209,11 @@ def annotate_corpus_centered(corpus,
                 "tags": chunk_tags,
             })
 
-    # Collect unique tags with B- and I- prefixes
-    # tag_list = {'O'}
-    # for tag in unique_tags:
-    #     tag_list.update({f"B-{tag}", f"I-{tag}"})
-    #tag_list = sorted(tag_list)
-
-    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    if IOB: 
+        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    else:
+        tag_list = ['O'] + [tag for tag in unique_tags]
     return annotated_data, tag_list
 
 def count_tokens_with_multiple_labels(annotated_data):

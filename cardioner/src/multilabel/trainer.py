@@ -228,7 +228,10 @@ class ModelTrainer():
         f1_macro = f1_score(labels, preds, average='macro', zero_division=0)
         roc_auc_macro = roc_auc_score(labels, preds, average='macro', multi_class='ovr')
 
-        return {
+        
+
+
+        res_dict = {
             'precision_micro': precision_micro,
             'recall_micro': recall_micro,
             'f1_micro': f1_micro,
@@ -238,6 +241,8 @@ class ModelTrainer():
             'f1_macro': f1_macro,
             'rauc_macro': roc_auc_macro,
         }
+
+        return res_dict
 
     def train(self,
               train_data: List[Dict],

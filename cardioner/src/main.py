@@ -25,6 +25,8 @@ metric = evaluate.load("seqeval")
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
+# TODO: add paragraph splitter from Lorenzo
+# TODO: add per label performance
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
          lang: str='en',
@@ -37,7 +39,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          chunk_size: int=256,
          max_length: int=514,
          chunk_type: Literal['standard', 'centered']='standard',
-         multi_class: bool=False
+         multi_class: bool=False,
+         use_iob: bool=True
          ):
 
     if multi_class:
@@ -93,10 +96,12 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     annotate_kwargs = {
         'standard': {
             'chunk_size': chunk_size,
-            'max_allowed_chunk_size': max_allowed_chunk_size
+            'max_allowed_chunk_size': max_allowed_chunk_size,
+            'IOB': use_iob
         },
         'centered': {
-            'chunk_size': chunk_size
+            'chunk_size': chunk_size,
+            'IOB': use_iob
         }
     }
 
@@ -308,6 +313,8 @@ if __name__ == "__main__":
     argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--force_splitter', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
+    argparsers.add_argument('--without_iob_tagging', action="store_true", default=False)
+
 
     args = argparsers.parse_args()
 
@@ -322,6 +329,10 @@ if __name__ == "__main__":
     _annotation_loc = args.annotation_loc
     parse_annotations = args.parse_annotations
     train_model = args.train_model
+
+    if args.without_iob_tagging:
+        use_iob = False
+        print("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
 
     assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None)) | ((corpus_train is not None) and (force_splitter))), "Either provide a split file or a train and validation corpus"
     assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"
@@ -375,7 +386,8 @@ if __name__ == "__main__":
                                     chunk_size=ChunkSize,
                                     chunk_type=ChunkType,
                                     max_length=max_length,
-                                    multi_class = multi_class)
+                                    multi_class = multi_class,
+                                    use_iob=use_iob)
 
     if train_model:
         print("Training the model..")

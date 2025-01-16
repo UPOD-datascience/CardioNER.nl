@@ -63,7 +63,10 @@ def process_pipe(text: str,
     return named_ents
 
 def main(model, lang):
-    le_pipe = pipeline('ner', model=model, tokenizer=model, aggregation_strategy="simple", device=-1)
+    le_pipe = pipeline('ner', 
+                        model=model, 
+                        tokenizer=model, aggregation_strategy="simple", 
+                        device=-1)
 
     named_ents = process_pipe(text=text_dict[lang], pipe = le_pipe)
 
@@ -78,3 +81,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args.model, args.lang)
+

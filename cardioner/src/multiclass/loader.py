@@ -33,7 +33,8 @@ def annotate_corpus_standard(corpus,
                     batch_id: str="b1",
                     lang: str="nl",
                     chunk_size: int = 256,
-                    max_allowed_chunk_size: int = 450):
+                    max_allowed_chunk_size: int = 450,
+                    IOB: bool=True):
     annotated_data = []
     unique_tags = set()
 
@@ -65,12 +66,22 @@ def annotate_corpus_standard(corpus,
                 if token_start >= start and token_end <= end:
                     # Token is inside the entity
                     if token_tags[i] == "O":
-                        token_tags[i] = f"B-{tag_type}"
+                        if IOB:
+                            token_tags[i] = f"B-{tag_type}"
+                        else:
+                            token_tags[i] = tag_type
                     else:
-                        token_tags[i] = f"I-{tag_type}"
+                        if IOB:
+                            token_tags[i] = f"I-{tag_type}"
+                        else:
+                            token_tags[i] = tag_type
+
                 elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
                     # Token overlaps with entity boundary
-                    token_tags[i] = f"I-{tag_type}"
+                    if IOB:
+                        token_tags[i] = f"I-{tag_type}"
+                    else:
+                        token_tags[i] = tag_type
 
         # Split tokens and tags into chunks of max_tokens without splitting entities
         i = 0
@@ -94,12 +105,18 @@ def annotate_corpus_standard(corpus,
             })
 
             i = end_index
-
-    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    if IOB: 
+        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    else:
+        tag_list = ['O'] + [tag for tag in unique_tags]
     return annotated_data, tag_list
 
-def annotate_corpus_centered(corpus, lang:str='nl', batch_id="b1", chunk_size=512):
+def annotate_corpus_centered(corpus, 
+                         lang: str='nl',
+                         batch_id: str="b1",
+                         chunk_size: int=512,
+                         IOB: bool=True):
     annotated_data = []
     unique_tags = set()
 
@@ -131,12 +148,21 @@ def annotate_corpus_centered(corpus, lang:str='nl', batch_id="b1", chunk_size=51
                 if token_start >= start and token_end <= end:
                     # Token is inside the entity
                     if token_tags[i] == "O":
-                        token_tags[i] = f"B-{tag_type}"
+                        if IOB:
+                            token_tags[i] = f"B-{tag_type}"
+                        else:
+                            token_tags[i] = tag_type
                     else:
-                        token_tags[i] = f"I-{tag_type}"
+                        if IOB:
+                            token_tags[i] = f"I-{tag_type}"
+                        else:
+                            token_tags[i] = tag_type
                 elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
                     # Token overlaps with entity boundary
-                    token_tags[i] = f"I-{tag_type}"
+                    if IOB:
+                        token_tags[i] = f"I-{tag_type}"
+                    else:
+                        token_tags[i] = tag_type
 
         # Create chunks centered around each span
         for tag in tags:
@@ -183,8 +209,11 @@ def annotate_corpus_centered(corpus, lang:str='nl', batch_id="b1", chunk_size=51
                 "tags": chunk_tags,
             })
 
-    tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-    tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    if IOB: 
+        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    else:
+        tag_list = ['O'] + [tag for tag in unique_tags]
     return annotated_data, tag_list
 
 def align_labels_with_tokens(labels, word_ids):

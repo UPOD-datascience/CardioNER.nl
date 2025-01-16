@@ -7,7 +7,10 @@ from pathlib import Path
 import pandas as pd
 import json
 
-from transformers import AutoTokenizer, AutoModel, RobertaModel, BertModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
+from transformers import RobertaModel, BertModel, PreTrainedTokenizer
+from transformers import RobertaForTokenClassification, BertForTokenClassification
+from transformers import XLMRobertaForTokenClassification
 from tokenizers import Encoding
 
 import torch
@@ -244,10 +247,10 @@ class NERModule(L.LightningModule):
     def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int):
         super().__init__()
         self.lm = lm
-        self.lm_output_size = lm_output_size
         self.label2tag = label2tag
         self.num_labels = len(label2tag.keys())
         self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
@@ -319,7 +322,124 @@ class NERModule(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=2e-5)
         return optimizer
-    
+
+
+class RobertaNER(RobertaForTokenClassification):
+    """
+    A custom HF model that can load any backbone supported by AutoModel,
+    then adds a linear classification head for multi-label NER.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+        # 1) Instantiate the base model from config:
+        self.base_model = AutoModel.from_config(config)
+
+        # 2) Add your classifier head
+        #    (requires config.hidden_size and config.num_labels to be set properly)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+
+        # HF's recommended approach for final init steps
+        self.post_init()
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        # 3) Forward pass through the base model
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        # The base AutoModel typically returns a last_hidden_state as outputs[0]
+        # But check the docs if you're using a model that returns a different format
+        sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
+
+        # 4) Apply classification head
+        logits = self.classifier(sequence_output)
+
+        # 5) Compute (optional) training loss
+        loss = None
+        if labels is not None:
+            loss = F.binary_cross_entropy_with_logits(logits, labels.float())
+
+        return {"loss": loss, "logits": logits}
+
+class BertNER(BertForTokenClassification):
+    """
+    A custom HF model that can load any backbone supported by AutoModel,
+    then adds a linear classification head for multi-label NER.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+        # 1) Instantiate the base model from config:
+        self.base_model = AutoModel.from_config(config)
+
+        # 2) Add your classifier head
+        #    (requires config.hidden_size and config.num_labels to be set properly)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+
+        # HF's recommended approach for final init steps
+        self.post_init()
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        # 3) Forward pass through the base model
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        # The base AutoModel typically returns a last_hidden_state as outputs[0]
+        # But check the docs if you're using a model that returns a different format
+        sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
+
+        # 4) Apply classification head
+        logits = self.classifier(sequence_output)
+
+        # 5) Compute (optional) training loss
+        loss = None
+        if labels is not None:
+            loss = F.binary_cross_entropy_with_logits(logits, labels.float())
+
+        return {"loss": loss, "logits": logits}
+
+
+class XLMRobertaNER(XLMRobertaForTokenClassification):
+    """
+    A custom HF model that can load any backbone supported by AutoModel,
+    then adds a linear classification head for multi-label NER.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+        # 1) Instantiate the base model from config:
+        self.base_model = AutoModel.from_config(config)
+
+        # 2) Add your classifier head
+        #    (requires config.hidden_size and config.num_labels to be set properly)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+
+        # HF's recommended approach for final init steps
+        self.post_init()
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        # 3) Forward pass through the base model
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        # The base AutoModel typically returns a last_hidden_state as outputs[0]
+        # But check the docs if you're using a model that returns a different format
+        sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
+
+        # 4) Apply classification head
+        logits = self.classifier(sequence_output)
+
+        # 5) Compute (optional) training loss
+        loss = None
+        if labels is not None:
+            loss = F.binary_cross_entropy_with_logits(logits, labels.float())
+
+        return {"loss": loss, "logits": logits}
+
+
 if __name__ =="__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
@@ -333,6 +453,7 @@ if __name__ =="__main__":
     argparser.add_argument("--use_cpu", action='store_true', help="Flag to use CPU for training")
     argparser.add_argument("--file_encoding", type=str, help="Important:encoding of train/val/test files. Check carefully.")
     argparser.add_argument("--with_suggestion", action='store_true', help="Use corpus with suggested annotations")
+    argparser.add_argument("--output_dir", type=str, default=".")
 
     args = argparser.parse_args()
 
@@ -351,6 +472,7 @@ if __name__ =="__main__":
     devices = args.devices
     use_cpu = args.use_cpu
     with_suggestion = args.with_suggestion
+    output_dir = args.output_dir
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
@@ -384,6 +506,7 @@ if __name__ =="__main__":
     strategy = 'ddp' if use_cpu else strategy # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
+        default_root_dir=output_dir,
         callbacks=callbacks,
         devices=devices[0] if use_cpu else devices,
         max_epochs=max_epochs,
@@ -392,3 +515,31 @@ if __name__ =="__main__":
     )
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.test(model=module, dataloaders=test_loader)
+
+
+    # save as huggingface compatible model
+    ########################################
+    # make transformer class
+    base_config = AutoConfig.from_pretrained(model_name)
+    base_config.num_labels = module.num_labels
+    base_config.add_pooling_layer=False
+
+    save_dir = os.path.join(output_dir, 'hf')
+    if os.path.exists(save_dir) == False:
+        os.mkdir(save_dir)
+
+    if base_config.architectures[0].startswith('Roberta'):
+        hf_model = RobertaNER(base_config)
+        print(f"Storing as RobertaNER model in {save_dir}")
+    elif base_config.architectures[0].startswith('Bert'):
+        hf_model = BertNER(base_config)
+        print(f"Storing as BertNER model in {save_dir}")
+    elif base_config.architectures[0].startswith('XLMRoberta'):
+        hf_model = XLMRobertaNER(base_config)
+        print(f"Storing as XLMRobertaNER model in {save_dir}")
+
+    hf_model.base_model.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
+    hf_model.classifier.load_state_dict(module.to("cpu").classifier.state_dict())
+
+    hf_model.save_pretrained(save_dir)
+    tokenizer.save_pretrained(save_dir)
