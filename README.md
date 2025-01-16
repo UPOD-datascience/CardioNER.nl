@@ -84,6 +84,11 @@ with
 id2labels = {0: 'disease', 1: 'medication', 2: 'procedure', 3: 'symptom'}
 ```
 
+To cast the CardioCCC in this form persistently you can run 
+```python
+
+```
+
 This can be directly loaded into huggingface datasets.
 
 # Instructions
@@ -158,7 +163,7 @@ To test a model, you can run the following command:
 ```
 poetry shell
 cd cardioner/src
-python test.py --model /location/of/model --lang nl
+python test.py --model /location/of/model --lang nl --ignore_zero
 ```
 
 
