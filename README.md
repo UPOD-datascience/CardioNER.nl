@@ -144,6 +144,8 @@ The languages are referred to as:
 
 # Lightning code by Lorenzo 
 
+This code will run faster, and uses paragraph splitting.
+
 You can also run the ```light_ner.py``` script.
 ```python
 python light_ner.py --batch_size=8 --patience=5 --num_workers=4 --max_epochs=1 --root_path=/path/to/data --lang=it --devices=0 --model=IVN-RIN/bioBIT --output_dir /output/path
