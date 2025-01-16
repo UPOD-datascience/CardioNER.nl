@@ -49,7 +49,7 @@ The ```.txt``` files contain the original text, as-is.
 
 The ```.tsv``` file is structured as follows.
 
-```
+```tsv
 name	tag	start_span	end_span	text	note
 casos_clinicos_cardiologia286	SYMPTOM	109	116	dyspneu
 casos_clinicos_cardiologia286	SYMPTOM	120	151	oedeem in de onderste ledematen
