@@ -93,7 +93,7 @@ Example:
 
 Suppose in ```annotations.jsonl```we have the annotations in the following format
 
-```
+```json
 {
  "id": "casos_clinicos_cardiologia83",
  "tags": [{"start": 117, "end": 138, "tag": "DISEASE"}, {"start": 140, "end": 160, "tag": "DISEASE"},...
