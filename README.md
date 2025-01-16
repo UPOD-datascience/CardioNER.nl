@@ -62,7 +62,7 @@ casos_clinicos_cardiologia286	SYMPTOM	1591	1617	Algemene conditie behouden
 
 For the purpose of training transformer-based models using the ```transformers``` library we would like to recast the
 datastructure into a JSONL in the following format:
-```
+```json
 [
     {
         'id': ,
@@ -102,7 +102,7 @@ Suppose in ```annotations.jsonl```we have the annotations in the following forma
 ```
 
 and in ```splits.json```we have
-```
+```json
 {
 "en":{
    "train":{
@@ -117,7 +117,7 @@ and in ```splits.json```we have
 ```
 
 Then, to parse the annotations and train the multilabel model, we can run the following command for the Dutch language:
-```
+```bash
 poetry shell
 cd cardioner/src
 python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
@@ -127,7 +127,7 @@ To train a multiclass model, simply add ```--multi_class``` to the command.
 
 To run with CPU (handier for debugging for e.g. tensor mismatches), prepend ```CUDA_VISIBLE_DEVICES=``` to the command.
 So,
-```
+```bash
 CUDA_VISIBLE_DEVICES="" python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
 ```
 
@@ -146,8 +146,10 @@ The languages are referred to as:
 
 You can also run the ```light_ner.py``` script.
 ```python
-python light_ner.py --batch_size=8 --patience=5 --num_workers=4 --max_epochs=1 --root_path=/media/bramiozo/Storage1/bramiozo/DEV/GIT/UPOD/CardioNER.nl/assets --lang=it --devices=0 --model=IVN-RIN/bioBIT --output_dir /media/bramiozo/Storage1/bramiozo/DEV/GIT/UPOD/CardioNER.nl/output
+python light_ner.py --batch_size=8 --patience=5 --num_workers=4 --max_epochs=1 --root_path=/path/to/data --lang=it --devices=0 --model=IVN-RIN/bioBIT --output_dir /output/path
 ```
+
+This will train a model and store a HuggingFace version in ```--output_dir```.
 
 To test a model, you can run the following command:
 
@@ -156,3 +158,5 @@ poetry shell
 cd cardioner/src
 python test.py --model /location/of/model --lang nl
 ```
+
+
