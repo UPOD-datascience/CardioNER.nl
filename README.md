@@ -18,7 +18,7 @@ CardioNER.[lang] will then have 3 version:
 
 # Data structure
 
-```
+```yaml
 /assets/b1
         /nl
             dis
@@ -39,7 +39,7 @@ CardioNER.[lang] will then have 3 version:
 
 
 The file ```casos_clinicos_cardiologia3.ann``` has the following format
-```
+```tsv
 T5	SYMPTOM 2508 2525	febriele syndroom
 T1	SYMPTOM 2794 2850	HEMOCULTUREN: 23/07: positief voor Staphylococcus aureus
 T7	SYMPTOM 3127 3182	cardiothoracale index (CTI) op de grens van normaliteit
@@ -49,7 +49,7 @@ The ```.txt``` files contain the original text, as-is.
 
 The ```.tsv``` file is structured as follows.
 
-```
+```tsv
 name	tag	start_span	end_span	text	note
 casos_clinicos_cardiologia286	SYMPTOM	109	116	dyspneu
 casos_clinicos_cardiologia286	SYMPTOM	120	151	oedeem in de onderste ledematen
@@ -58,20 +58,19 @@ casos_clinicos_cardiologia286	SYMPTOM	1103	1134	oedeem in de onderste ledematen
 casos_clinicos_cardiologia286	SYMPTOM	1214	1223	orthopnoe
 casos_clinicos_cardiologia286	SYMPTOM	1227	1258	paroxismale nachtelijke dyspnoe
 casos_clinicos_cardiologia286	SYMPTOM	1591	1617	Algemene conditie behouden
-...
 ```
 
 For the purpose of training transformer-based models using the ```transformers``` library we would like to recast the
 datastructure into a JSONL in the following format:
-```
+```json
 [
     {
-        'id': ,
-        'tokens': [],
-        'pos_tags': [],
-        'chunk_tags': [],
-        'ner_tags': [],
-        'annotation_batch': 'b1',
+        "id": ,
+        "tokens": [],
+        "pos_tags": [],
+        "chunk_tags" [],
+        "ner_tags" [],
+        "annotation_batch": "b1",
     },
     {
         ...
@@ -85,6 +84,11 @@ with
 id2labels = {0: 'disease', 1: 'medication', 2: 'procedure', 3: 'symptom'}
 ```
 
+To cast the CardioCCC in this form persistently you can run 
+```python
+
+```
+
 This can be directly loaded into huggingface datasets.
 
 # Instructions
@@ -93,7 +97,7 @@ Example:
 
 Suppose in ```annotations.jsonl```we have the annotations in the following format
 
-```
+```json
 {
  "id": "casos_clinicos_cardiologia83",
  "tags": [{"start": 117, "end": 138, "tag": "DISEASE"}, {"start": 140, "end": 160, "tag": "DISEASE"},...
@@ -103,7 +107,7 @@ Suppose in ```annotations.jsonl```we have the annotations in the following forma
 ```
 
 and in ```splits.json```we have
-```
+```json
 {
 "en":{
    "train":{
@@ -118,7 +122,7 @@ and in ```splits.json```we have
 ```
 
 Then, to parse the annotations and train the multilabel model, we can run the following command for the Dutch language:
-```
+```bash
 poetry shell
 cd cardioner/src
 python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
@@ -128,7 +132,7 @@ To train a multiclass model, simply add ```--multi_class``` to the command.
 
 To run with CPU (handier for debugging for e.g. tensor mismatches), prepend ```CUDA_VISIBLE_DEVICES=``` to the command.
 So,
-```
+```bash
 CUDA_VISIBLE_DEVICES="" python main.py --lang nl --Corpus_train /location/of/annotations.jsonl --split_file /location/of/splits.json --parse_annotations --train_model --max_token_length 64 --batch_size 32 --chunk_size 64 --chunk_type centered
 ```
 
@@ -143,10 +147,23 @@ The languages are referred to as:
 'cz' : Czech
 ```
 
+# Lightning code by Lorenzo 
+
+This code will run faster, and uses paragraph splitting, but does not use IOB-tagging (yet).
+
+You can also run the ```light_ner.py``` script.
+```python
+python light_ner.py --batch_size=8 --patience=5 --num_workers=4 --max_epochs=1 --root_path=/path/to/data --lang=it --devices=0 --model=IVN-RIN/bioBIT --output_dir /output/path
+```
+
+This will train a model and store a HuggingFace version in ```--output_dir```.
+
 To test a model, you can run the following command:
 
 ```
 poetry shell
 cd cardioner/src
-python test.py --model /location/of/model --lang nl
+python test.py --model /location/of/model --lang nl --ignore_zero
 ```
+
+
