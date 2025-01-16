@@ -143,6 +143,13 @@ The languages are referred to as:
 'cz' : Czech
 ```
 
+# Lightning code by Lorenzo 
+
+You can also run the ```light_ner.py``` script.
+```python
+python light_ner.py --batch_size=8 --patience=5 --num_workers=4 --max_epochs=1 --root_path=/media/bramiozo/Storage1/bramiozo/DEV/GIT/UPOD/CardioNER.nl/assets --lang=it --devices=0 --model=IVN-RIN/bioBIT --output_dir /media/bramiozo/Storage1/bramiozo/DEV/GIT/UPOD/CardioNER.nl/output
+```
+
 To test a model, you can run the following command:
 
 ```
