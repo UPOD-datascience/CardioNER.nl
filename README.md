@@ -62,15 +62,15 @@ casos_clinicos_cardiologia286	SYMPTOM	1591	1617	Algemene conditie behouden
 
 For the purpose of training transformer-based models using the ```transformers``` library we would like to recast the
 datastructure into a JSONL in the following format:
-```jsonl
+```json
 [
     {
-        'id': ,
-        'tokens': [],
-        'pos_tags': [],
-        'chunk_tags': [],
-        'ner_tags': [],
-        'annotation_batch': 'b1',
+        "id": ,
+        "tokens": [],
+        "pos_tags": [],
+        "chunk_tags" [],
+        "ner_tags" [],
+        "annotation_batch": "b1",
     },
     {
         ...
