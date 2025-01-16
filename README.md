@@ -18,7 +18,7 @@ CardioNER.[lang] will then have 3 version:
 
 # Data structure
 
-```
+```yaml
 /assets/b1
         /nl
             dis
@@ -39,7 +39,7 @@ CardioNER.[lang] will then have 3 version:
 
 
 The file ```casos_clinicos_cardiologia3.ann``` has the following format
-```
+```tsv
 T5	SYMPTOM 2508 2525	febriele syndroom
 T1	SYMPTOM 2794 2850	HEMOCULTUREN: 23/07: positief voor Staphylococcus aureus
 T7	SYMPTOM 3127 3182	cardiothoracale index (CTI) op de grens van normaliteit
@@ -58,7 +58,6 @@ casos_clinicos_cardiologia286	SYMPTOM	1103	1134	oedeem in de onderste ledematen
 casos_clinicos_cardiologia286	SYMPTOM	1214	1223	orthopnoe
 casos_clinicos_cardiologia286	SYMPTOM	1227	1258	paroxismale nachtelijke dyspnoe
 casos_clinicos_cardiologia286	SYMPTOM	1591	1617	Algemene conditie behouden
-...
 ```
 
 For the purpose of training transformer-based models using the ```transformers``` library we would like to recast the
