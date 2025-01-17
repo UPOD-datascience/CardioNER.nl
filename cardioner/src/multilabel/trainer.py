@@ -199,6 +199,43 @@ class ModelTrainer():
             **self.train_kwargs
         )
 
+    def compute_seq_metrics(self, eval_preds):
+        logits, labels = eval_preds
+        if self.crf:
+            mask = labels != self.pad_token_id
+            mask[:, 0] = True
+
+            # self.model.device_info()
+            emissions_torch = torch.from_numpy(logits).float().to(self.device)
+            mask_torch = torch.from_numpy(mask).bool().to(self.device)
+
+            predictions = self.model.crf.decode(emissions=emissions_torch, mask=mask_torch)
+        else:
+            predictions = np.argmax(logits, -1)
+
+        # Access the id2label mapping
+        id2label = self.id2label  # Dictionary mapping IDs to labels
+
+        # Remove ignored index (special tokens) and convert to label names
+        true_labels = [
+            [id2label[l] for l in label if l != self.pad_token_id]
+            for label in labels
+        ]
+
+        try:
+            true_predictions = [
+                [id2label[p] for (p, l) in zip(prediction, label) if l != self.pad_token_id]
+                for prediction, label in zip(predictions, labels)
+            ]
+        except Exception as e:
+            print(f"Predictions: {predictions}")
+            print(f"Labels: {labels}")
+
+        all_metrics = metric.compute(predictions=true_predictions,
+                        references=true_labels)
+        return all_metrics
+
+
     def compute_metrics(self, eval_preds):
         logits, labels = eval_preds
         probs = torch.sigmoid(torch.tensor(logits))
@@ -260,6 +297,9 @@ class ModelTrainer():
         res_dict.update(f1_dict)
         res_dict.update(roc_auc_dict)
 
+        # ADD metrics from seqeval
+        seq_eval = {f'SEQ_{k}':v for k,v in self.compute_seqeval_metrics(eval_preds).items()}
+        res_dict.update(seq_eval)
         return res_dict
 
     def train(self,
