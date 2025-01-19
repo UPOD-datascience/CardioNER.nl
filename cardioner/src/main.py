@@ -189,7 +189,9 @@ def train(tokenized_data_train: List[Dict],
           batch_size: int=20,
           profile: bool=False,
           multi_class: bool=False,
-          use_crf: bool=False):
+          use_crf: bool=False,
+          weight_decay: float=0.001,
+          learning_rate: float=1e-4):
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -247,13 +249,17 @@ def train(tokenized_data_train: List[Dict],
                                     model=Model, output_dir=f"{output_dir}/fold_{k}",
                                     max_length=max_length,
                                     num_train_epochs=num_epochs,
-                                    batch_size=batch_size)
+                                    batch_size=batch_size,
+                                    weight_decay=weight_decay,
+                                    learning_rate=learning_rate)
             else:
                 TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                     model=Model, output_dir=f"{output_dir}/fold_{k}",
                                     max_length=max_length,
                                     num_train_epochs=num_epochs,
-                                    batch_size=batch_size)
+                                    batch_size=batch_size,
+                                    weight_decay=weight_decay,
+                                    learning_rate=learning_rate)
 
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
@@ -270,13 +276,17 @@ def train(tokenized_data_train: List[Dict],
                                 model=Model, use_crf=use_crf, output_dir=output_dir,
                                 max_length=max_length,
                                 num_train_epochs=num_epochs,
-                                batch_size=batch_size)
+                                batch_size=batch_size,
+                                weight_decay=weight_decay,
+                                learning_rate=learning_rate)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                 model=Model, output_dir=output_dir,
                                 max_length=max_length,
                                 num_train_epochs=num_epochs,
-                                batch_size=batch_size)
+                                batch_size=batch_size,
+                                weight_decay=weight_decay,
+                                learning_rate=learning_rate)
 
         print("Training on full dataset")
         TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)
@@ -306,9 +316,11 @@ if __name__ == "__main__":
     argparsers.add_argument('--max_token_length', type=int, default=514)
     argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
+    argparsers.add_argument('--learning_rate', type=float, default=1e-4)
+    argparsers.add_argument('--weight_decay', type=float, default=0.001)
     argparsers.add_argument('--batch_size', type=int, default=16)
     argparsers.add_argument('--num_splits', type=int, default=5)
-    argparsers.add_argument('--multi_class', action="store_true", default=False)
+    argparsers.add_argument('--multiclass', action="store_true", default=False)
     argparsers.add_argument('--use_crf', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
     argparsers.add_argument('--force_splitter', action="store_true", default=False)
@@ -333,6 +345,8 @@ if __name__ == "__main__":
     if args.without_iob_tagging:
         use_iob = False
         print("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
+    else:
+        use_iob = True
 
     assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None)) | ((corpus_train is not None) and (force_splitter))), "Either provide a split file or a train and validation corpus"
     assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"
@@ -368,9 +382,11 @@ if __name__ == "__main__":
     num_epochs = args.num_epochs
     batch_size = args.batch_size
     profile = args.profile
-    multi_class = args.multi_class
+    multi_class = args.multiclass
     use_crf = args.use_crf
     language = args.lang
+    weight_decay = args.weight_decay
+    learning_rate = args.learning_rate
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -433,4 +449,6 @@ if __name__ == "__main__":
               batch_size=batch_size,
               profile=profile,
               multi_class=multi_class,
-              use_crf=use_crf)
+              use_crf=use_crf,
+              weight_decay=weight_decay,
+              learning_rate=learning_rate)
