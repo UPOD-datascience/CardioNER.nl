@@ -139,7 +139,7 @@ class ModelTrainer():
                  model: str='CLTL/MedRoBERTa.nl',
                  batch_size: int=48,
                  max_length: int=514,
-                 learning_rate: float=5e-4,
+                 learning_rate: float=1e-4,
                  weight_decay: float=0.001,
                  num_train_epochs: int=20,
                  output_dir: str="../../output"
@@ -190,7 +190,7 @@ class ModelTrainer():
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
         print("Number of labels:", len(self.label2id))
         print("Labels:", self.label2id)
-        print("id2lagel:", self.id2label)
+        print("id2label:", self.id2label)
         print("Model config:", self.model.config)
 
 
@@ -199,41 +199,37 @@ class ModelTrainer():
             **self.train_kwargs
         )
 
-    def compute_seq_metrics(self, eval_preds):
+    def compute_seqeval_metrics(self, eval_preds):
         logits, labels = eval_preds
-        if self.crf:
-            mask = labels != self.pad_token_id
-            mask[:, 0] = True
+        probs = torch.sigmoid(torch.tensor(logits))
+        preds = (probs > 0.5).int().numpy()
 
-            # self.model.device_info()
-            emissions_torch = torch.from_numpy(logits).float().to(self.device)
-            mask_torch = torch.from_numpy(mask).bool().to(self.device)
-
-            predictions = self.model.crf.decode(emissions=emissions_torch, mask=mask_torch)
-        else:
-            predictions = np.argmax(logits, -1)
+        # we only consider the non-ambiguous labels
+        idcs = np.argwhere(labels.sum(axis=-1)>0)
+        labels = np.argmax(labels[idcs[:,0]], axis=-1)
+        preds = np.argmax(preds[idcs[:,0]], axis=-1)
 
         # Access the id2label mapping
         id2label = self.id2label  # Dictionary mapping IDs to labels
 
         # Remove ignored index (special tokens) and convert to label names
         true_labels = [
-            [id2label[l] for l in label if l != self.pad_token_id]
+            [id2label[l] for l in label if l != -100]
             for label in labels
         ]
 
         try:
             true_predictions = [
-                [id2label[p] for (p, l) in zip(prediction, label) if l != self.pad_token_id]
-                for prediction, label in zip(predictions, labels)
+                [id2label[p] for (p, l) in zip(preds, label) if l != -100]
+                for preds, label in zip(preds, labels)
             ]
-        except Exception as e:
-            print(f"Predictions: {predictions}")
-            print(f"Labels: {labels}")
 
-        all_metrics = metric.compute(predictions=true_predictions,
-                        references=true_labels)
-        return all_metrics
+            all_metrics = metric.compute(predictions=true_predictions,
+                                references=true_labels)
+            return all_metrics
+        except Exception as e:
+            print(f"Seqeval metrics failed: {e}. \n True labels sample: {true_labels[0]} \n Predictions sample: {true_predictions[0]}")
+            return {}        
 
 
     def compute_metrics(self, eval_preds):
@@ -242,7 +238,6 @@ class ModelTrainer():
         preds = (probs > 0.5).int().numpy()
         labels = labels.reshape(-1, labels.shape[-1])
         preds = preds.reshape(-1, preds.shape[-1])
-
 
         print("Labels shape:", labels.shape)
         print("Preds shape:", preds.shape)
@@ -298,8 +293,8 @@ class ModelTrainer():
         res_dict.update(roc_auc_dict)
 
         # ADD metrics from seqeval
-        seq_eval = {f'SEQ_{k}':v for k,v in self.compute_seqeval_metrics(eval_preds).items()}
-        res_dict.update(seq_eval)
+        #seq_eval = {f'SEQ_{k}':v for k,v in self.compute_seqeval_metrics(eval_preds).items()}
+        #res_dict.update(seq_eval)
         return res_dict
 
     def train(self,
