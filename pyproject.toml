@@ -26,6 +26,7 @@ accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"
 torchmetrics = "^1.6.1"
 lightning = "^2.5.0.post0"
+python-dotenv = "^1.0.1"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.1.1"
