@@ -1,10 +1,3 @@
 """
-    Given the prior synonyms, extend the synonyms using medical embeddings 
-    and LLMs
+    Given the prior synonyms, extend the synonyms using medical embeddings (BioLORD and RotatE) and LLMs, and add negatives.
 """
-
-import dotenv
-import pandas
-import json
-import re
-import os
