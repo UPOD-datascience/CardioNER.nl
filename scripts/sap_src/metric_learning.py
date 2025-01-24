@@ -52,7 +52,7 @@ class Sap_Metric_Learning(nn.Module):
         print ("miner:", self.miner)
         print ("loss:", self.loss)
 
-    @autocast()
+    #@autocast()
     def forward(self, query_toks1, query_toks2, labels):
         """
         query : (N, h), candidates : (N, topk, h)

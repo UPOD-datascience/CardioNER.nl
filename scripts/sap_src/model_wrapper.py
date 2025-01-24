@@ -46,7 +46,7 @@ class Model_Wrapper(object):
 
     def load_model(self, path, max_length=25, use_cuda=True, lowercase=True, trust_remote_code=False):
         self.load_bert(path, max_length, use_cuda, trust_remote_code=trust_remote_code)
-
+        self.use_cuda = use_cuda
         return self
 
     def load_bert(self, path, max_length, use_cuda, lowercase=True, trust_remote_code=False):
@@ -135,7 +135,10 @@ class Model_Wrapper(object):
 
         res = None
         for i in tqdm(np.arange(0, score_matrix.shape[0], batch_size), disable=not show_progress):
-            score_matrix_tmp = torch.tensor(score_matrix[i:i+batch_size]).cuda()
+            if self.use_cuda:
+                score_matrix_tmp = torch.tensor(score_matrix[i:i+batch_size]).cuda()
+            else:
+                score_matrix_tmp = torch.tensor(score_matrix[i:i+batch_size])
             matrix_sorted = torch.argsort(score_matrix_tmp, dim=1, descending=True)[:, :topk].cpu()
             if res is None:
                 res = matrix_sorted
@@ -180,8 +183,13 @@ class Model_Wrapper(object):
                         truncation=True, max_length=25,
                         padding="max_length", return_tensors='pt')
                 batch_tokenized_names_cuda = {}
-                for k,v in batch_tokenized_names.items():
-                    batch_tokenized_names_cuda[k] = v.cuda()
+                if self.use_cuda:
+                    for k,v in batch_tokenized_names.items():
+                        batch_tokenized_names_cuda[k] = v.cuda()
+                else:
+                    for k,v in batch_tokenized_names.items():
+                        batch_tokenized_names_cuda[k] = v
+
 
                 last_hidden_state = self.encoder(**batch_tokenized_names_cuda)[0]
                 if agg_mode == "cls":
@@ -193,7 +201,11 @@ class Model_Wrapper(object):
                 else:
                     print ("no such agg_mode:", agg_mode)
 
-                batch_dense_embeds = batch_dense_embeds.cpu().detach().numpy()
+                if self.use_cuda:
+                    batch_dense_embeds = batch_dense_embeds.cpu().detach().numpy()
+                else:
+                    batch_dense_embeds = batch_dense_embeds.numpy()
+
                 dense_embeds.append(batch_dense_embeds)
         dense_embeds = np.concatenate(dense_embeds, axis=0)
 

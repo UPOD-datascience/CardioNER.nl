@@ -365,7 +365,7 @@ class MetricLearningDataset(Dataset):
         self.query_names = []
         cuis = []
         for line in lines:
-            cui, _ = line.split("||")
+            cui, _= line.split("||")
             cuis.append(cui)
 
         self.cui2id = {k: v for v, k in enumerate(cuis)}
