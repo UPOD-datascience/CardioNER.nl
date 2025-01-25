@@ -3,6 +3,7 @@ import spacy
 
 # Load a spaCy model for tokenization
 nlp = spacy.blank("nl")
+
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
@@ -156,7 +157,8 @@ class ModelTrainer():
             'num_train_epochs': num_train_epochs,
             'weight_decay': weight_decay,
             'eval_strategy':'epoch',
-            'save_strategy': 'epoch',
+            'save_strategy': 'best',
+            'metric_for_best_model': 'f1_macro', 
             'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,

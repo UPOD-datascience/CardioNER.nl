@@ -317,7 +317,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
     argparsers.add_argument('--learning_rate', type=float, default=1e-4)
-    argparsers.add_argument('--weight_decay', type=float, default=0.001)
+    argparsers.add_argument('--weight_decay', type=float, default=0.01)
     argparsers.add_argument('--batch_size', type=int, default=16)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--multiclass', action="store_true", default=False)
