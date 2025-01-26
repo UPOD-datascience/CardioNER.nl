@@ -20,4 +20,4 @@ CUDA_VISIBLE_DEVICES=0 python sap_training.py \
 	--loss ms_loss \
 	--type_of_triplets "all" \
 	--miner_margin 0.2 \
-	--agg_mode "cls"
+	--agg_mode "mean"

@@ -98,15 +98,15 @@ def push_to_huggingface(repo_id, dataset_path, card, private):
                         repo_type=hf_config.repo_type,
         )
 
-class HuggingFaceDatasetManager:
-    def __init__(self, dataset: Dataset):
-        self.dataset= dataset
+# class HuggingFaceDatasetManager:
+#     def __init__(self, dataset: Dataset):
+#         self.dataset= dataset
 
-    def save_to_disk(self, path):
-        self.dataset.save_to_disk(path)
+#     def save_to_disk(self, path):
+#         self.dataset.save_to_disk(path)
 
-    def push_to_hub(self, repo_name, token):
-        self.dataset.push_to_hub(repo_name, token=TOKEN)
+#     def push_to_hub(self, repo_name, token):
+#         self.dataset.push_to_hub(repo_name, token=TOKEN)
 
 def main():
 
@@ -140,8 +140,8 @@ def main():
     add_collection_item(collection_id, item_id=repo_id, item_type=hf_config.repo_type, exists_ok=True)
 
     if hf_config.repo_type == "model":
-        repo_url = f"https://huggingface.co/datasets/{repo_id}"
-        coll_url = f"https://huggingface.co/datasets/{collection_id}"
+        repo_url = f"https://huggingface.co/models/{repo_id}"
+        coll_url = f"https://huggingface.co/models/{collection_id}"
 
         print(f"Model and card successfully pushed to {repo_url}")
         print(f"Model successfully added to {coll_url}")

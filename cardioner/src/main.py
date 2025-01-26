@@ -6,6 +6,7 @@ import spacy
 nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
+environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from typing import List, Dict, Optional, Literal
 import json
@@ -22,6 +23,8 @@ from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 
 import evaluate
 metric = evaluate.load("seqeval")
+
+
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
@@ -40,7 +43,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          max_length: int=514,
          chunk_type: Literal['standard', 'centered']='standard',
          multi_class: bool=False,
-         use_iob: bool=True
+         use_iob: bool=True,
+         hf_token: str=None
          ):
 
     if multi_class:
@@ -61,10 +65,10 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
             for line in fr:
                 corpus_validation_list.append(json.loads(line))
 
-    tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True)
+    tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True, token=hf_token)
     tokenizer.model_max_length = max_length
 
-    model_config = AutoConfig.from_pretrained(Model)
+    model_config = AutoConfig.from_pretrained(Model, token=hf_token)
     max_model_length = model_config.max_position_embeddings  # 514
     num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)  # 2
     max_allowed_chunk_size = max_model_length - num_special_tokens  # 512
@@ -191,7 +195,8 @@ def train(tokenized_data_train: List[Dict],
           multi_class: bool=False,
           use_crf: bool=False,
           weight_decay: float=0.001,
-          learning_rate: float=1e-4):
+          learning_rate: float=1e-4,
+          hf_token: str=None):
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -251,7 +256,8 @@ def train(tokenized_data_train: List[Dict],
                                     num_train_epochs=num_epochs,
                                     batch_size=batch_size,
                                     weight_decay=weight_decay,
-                                    learning_rate=learning_rate)
+                                    learning_rate=learning_rate,
+                                    hf_token=hf_token)
             else:
                 TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                     model=Model, output_dir=f"{output_dir}/fold_{k}",
@@ -259,7 +265,8 @@ def train(tokenized_data_train: List[Dict],
                                     num_train_epochs=num_epochs,
                                     batch_size=batch_size,
                                     weight_decay=weight_decay,
-                                    learning_rate=learning_rate)
+                                    learning_rate=learning_rate,
+                                    hf_token=hf_token)
 
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
@@ -278,7 +285,8 @@ def train(tokenized_data_train: List[Dict],
                                 num_train_epochs=num_epochs,
                                 batch_size=batch_size,
                                 weight_decay=weight_decay,
-                                learning_rate=learning_rate)
+                                learning_rate=learning_rate,
+                                hf_token=hf_token)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                 model=Model, output_dir=output_dir,
@@ -286,7 +294,8 @@ def train(tokenized_data_train: List[Dict],
                                 num_train_epochs=num_epochs,
                                 batch_size=batch_size,
                                 weight_decay=weight_decay,
-                                learning_rate=learning_rate)
+                                learning_rate=learning_rate,
+                                hf_token=hf_token)
 
         print("Training on full dataset")
         TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)
@@ -320,6 +329,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--weight_decay', type=float, default=0.01)
     argparsers.add_argument('--batch_size', type=int, default=16)
     argparsers.add_argument('--num_splits', type=int, default=5)
+    argparsers.add_argument('--hf_token', type=str, default=None)
     argparsers.add_argument('--multiclass', action="store_true", default=False)
     argparsers.add_argument('--use_crf', action="store_true", default=False)
     argparsers.add_argument('--profile', action="store_true", default=False)
@@ -341,6 +351,7 @@ if __name__ == "__main__":
     _annotation_loc = args.annotation_loc
     parse_annotations = args.parse_annotations
     train_model = args.train_model
+    hf_token = args.hf_token
 
     if args.without_iob_tagging:
         use_iob = False
@@ -403,7 +414,8 @@ if __name__ == "__main__":
                                     chunk_type=ChunkType,
                                     max_length=max_length,
                                     multi_class = multi_class,
-                                    use_iob=use_iob)
+                                    use_iob=use_iob,
+                                    hf_token=hf_token)
 
     if train_model:
         print("Training the model..")
@@ -451,4 +463,5 @@ if __name__ == "__main__":
               multi_class=multi_class,
               use_crf=use_crf,
               weight_decay=weight_decay,
-              learning_rate=learning_rate)
+              learning_rate=learning_rate,
+              hf_token=hf_token)
