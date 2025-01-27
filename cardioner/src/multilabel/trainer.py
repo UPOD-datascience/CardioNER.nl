@@ -3,6 +3,7 @@ import spacy
 
 # Load a spaCy model for tokenization
 nlp = spacy.blank("nl")
+
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
@@ -72,7 +73,7 @@ class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.roberta = AutoModel(config)  # Use the RobertaModel backbone
+        self.roberta = AutoModel.from_pretrained(config)  # Use the RobertaModel backbone
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
 
@@ -142,7 +143,8 @@ class ModelTrainer():
                  learning_rate: float=1e-4,
                  weight_decay: float=0.001,
                  num_train_epochs: int=20,
-                 output_dir: str="../../output"
+                 output_dir: str="../../output",
+                 hf_token: str=None
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -156,7 +158,8 @@ class ModelTrainer():
             'num_train_epochs': num_train_epochs,
             'weight_decay': weight_decay,
             'eval_strategy':'epoch',
-            'save_strategy': 'epoch',
+            'save_strategy': 'best',
+            'metric_for_best_model': 'f1_macro', 
             'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,
@@ -171,7 +174,8 @@ class ModelTrainer():
                 add_prefix_space=True,
                 model_max_length=max_length,
                 padding=False,
-                truncation=False)
+                truncation=False,
+                token=hf_token)
         else:
             self.tokenizer = tokenizer
 
@@ -183,7 +187,8 @@ class ModelTrainer():
             label_pad_token_id=-100
         )
         config = AutoConfig.from_pretrained(model, num_labels=len(self.label2id),
-            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1)
+            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1,
+            token=hf_token)
         self.model = MultiLabelTokenClassificationModel.from_pretrained(model, config=config)
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
