@@ -2,3 +2,4 @@ assets/
 output/
 .idea/
 wandb/
+.pyc
