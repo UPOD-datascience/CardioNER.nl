@@ -1,4 +1,5 @@
-mod_info ='''
+mod_info_dict = {}
+mod_info_dict['sapbert'] ='''
 For more details about training and eval, see SapBERT [github repo](https://github.com/cambridgeltl/sapbert).
 
 
@@ -22,6 +23,13 @@ For more details about training and eval, see SapBERT [github repo](https://gith
 }
 ```
 '''
+
+
+mod_info_dict['cardioner'] ='''
+For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+'''
+
 
 # https://huggingface.co/docs/hub/repositories-licenses
 licenses = [
@@ -49,7 +57,8 @@ collections = {"es": "spanish-66f1460e7972f6224f479a17",
 
 repo_type = "model"
 
-def description_text_model(name, description, data_description, language, license, tags):
+def description_text_model_sap(name, data_organisation, description, data_description, 
+                                language, license, tags, mod_type):
     """
     Template for dataset card
     """
@@ -68,6 +77,11 @@ pipeline_tag: feature-extraction
 ---
 """
 
+    if mod_type == 'cls':
+        mod_string = 'cls_rep = model(**toks_cuda)[0][:,0,:]'
+    elif mod_type == 'mean':
+        mod_string = 'cls_rep = model(**toks_cuda)[0].mean(1)'
+
     mod_requirements = f'''
 ### Expected input and output
 The input should be a string of biomedical entity names, e.g., "covid infection" or "Hydroxychloroquine". The [CLS] embedding of the last layer is regarded as the output.
@@ -81,8 +95,8 @@ import torch
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, AutoModel
 
-tokenizer = AutoTokenizer.from_pretrained("UMCU/{name}")
-model = AutoModel.from_pretrained("UMCU/{name}").cuda()
+tokenizer = AutoTokenizer.from_pretrained("{data_organisation}/{name}")
+model = AutoModel.from_pretrained("{data_organisation}/{name}").cuda()
 
 # replace with your own list of entity names
 all_names = ["covid-19", "Coronavirus infection", "high fever", "Tumor of posterior wall of oropharynx"]
@@ -98,7 +112,7 @@ for i in tqdm(np.arange(0, len(all_names), bs)):
     toks_cuda = {"{}"}
     for k,v in toks.items():
         toks_cuda[k] = v.cuda()
-    cls_rep = model(**toks_cuda)[0][:,0,:] # use CLS representation as the embedding
+    {mod_string} 
     all_embs.append(cls_rep.cpu().detach().numpy())
 
 all_embs = np.concatenate(all_embs, axis=0)
@@ -125,7 +139,91 @@ This is part of the [DT4H project](https://www.datatools4heart.eu/).
 # Doi and reference
 
 
-{mod_info}
+{mod_info_dict['sapbert']}
+
+"""
+    return text
+
+######################################
+######################################
+
+def description_text_model_ner(name, data_organisation, description, data_description, 
+                                language, license, tags, mod_type, base_model):
+    """
+    Template for dataset card
+    """
+    minimal_tag_list = ['biomedical', 'lexical semantic', 'bionlp', 'biology', 'science', 'clinical ner', 'span classification']
+    tags = list(set(minimal_tag_list).union(set(tags)))
+
+    metadata = f"""
+---
+id: {name}
+name: {name}
+description: {description}
+license: {license}
+language: {language}
+tags: {tags}
+base_model : {base_model}
+pipeline_tag: token-classification
+---
+"""
+    if mod_type == 'multiclass':
+        mod_specific = f'{name} is a multilabel-multiclass span classification model.' 
+    else:
+        mod_specific = f'{name} is a muticlass span classification model.'
+
+    mod_requirements = f'''
+
+This a {base_model} base model finetuned for span classification. This specific model is 
+the average of the best checkpoints per fold over a ten-fold cross-validation. For this model
+we used the IOB-tagged. Using the IOB-tagging schema facilitates the aggregation of predictions
+over sequences.
+
+### Expected input and output
+The input should be a string with **Dutch** cardio clinical text. 
+
+{mod_specific} 
+The classes that can be predicted are disease, medication, procedure and symptom. 
+
+#### Extracting span classification from {name}
+
+The following script converts a string of <512 tokens to a list of span predictions.
+```python
+from transformers import pipeline
+
+le_pipe = pipeline('ner', 
+                    model=model, 
+                    tokenizer=model, aggregation_strategy="simple", 
+                    device=-1)
+
+named_ents = le_pipe(SOME_TEXT)
+```
+
+To process a string of arbitrary length you can split the string into sentences or paragraphs 
+using e.g. pysbd or spacy(sentencizer) and iteratively parse the list of with the span-classification pipe.
+
+'''
+
+
+    text = f"""{metadata}
+# Model Card for {" ".join(name.split("_")).title()}
+
+
+{mod_requirements}
+
+# Data description
+
+{data_description}
+
+
+# Acknowledgement
+
+This is part of the [DT4H project](https://www.datatools4heart.eu/).
+
+# Doi and reference
+
+
+{mod_info_dict['cardioner']}
 
 """
     return text

@@ -160,7 +160,8 @@ class ModelTrainer():
                  learning_rate: float=1e-4,
                  weight_decay: float=0.001,
                  num_train_epochs: int=3,
-                 output_dir: str="../../output"
+                 output_dir: str="../../output",
+                 hf_token: str=None
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -196,7 +197,7 @@ class ModelTrainer():
         if tokenizer is None:
             print("LOADING TOKENIZER")
             self.tokenizer = AutoTokenizer.from_pretrained(model,
-                add_prefix_space=True, model_max_length=max_length, padding="max_length", truncation=True)
+                add_prefix_space=True, model_max_length=max_length, padding="max_length", truncation=True, token=hf_token)
         else:
             self.tokenizer = tokenizer
 
@@ -205,7 +206,7 @@ class ModelTrainer():
                                                                 padding="max_length", label_pad_token_id=self.pad_token_id )
 
         config = AutoConfig.from_pretrained(model, num_labels=num_labels,
-            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1)
+            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1, token=hf_token)
 
         if use_crf:
             print("USING CRF:", self.crf)

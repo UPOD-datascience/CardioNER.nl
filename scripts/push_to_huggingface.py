@@ -40,11 +40,21 @@ def create_dataset_card(name, description, language, license, tags):
 
     return card
 
-def create_model_card(name, description, data_description, language, license, tags):
+def create_model_card(name, data_organisation, description, 
+                      data_description, language, license, tags, mod_type, 
+                      mod_target, base_model):
     """
     Gets main information and creates a dataset card using the template in config.py
     """
-    text = hf_config.description_text_model(name, description, data_description, language, license, tags)
+    if mod_target == 'sap':
+        text = hf_config.description_text_model_sap(name, data_organisation, description,
+                                                        data_description, language,
+                                                         license, tags, mod_type)
+    elif mod_target == 'ner':
+        text = hf_config.description_text_model_ner(name, data_organisation, description,
+                                                        data_description, language,
+                                                         license, tags, mod_type, base_model)
+
     # Using the Template
     card = ModelCard(content=text)
 
@@ -121,15 +131,24 @@ def main():
     parser.add_argument("--data_description", required=True, help="Description of the dataset")
     parser.add_argument("--language", required=True, help="Language of the dataset")
     parser.add_argument("--license", default="mit", choices=hf_config.licenses, help="License of the dataset")
+    parser.add_argument("--mod_type", choices=["mean", "cls", "multilabel", "multiclass"], required=True)
+    parser.add_argument("--mod_target", choices=["sap", "ner"], required=True)
+    parser.add_argument("--base_model", type=str, help="Base model used for the finetuning")
     parser.add_argument("--tags", nargs="+", default=[], help="Tags for the dataset")
 
     args = parser.parse_args()
+
+    assert ((args.mod_target=='ner') & (args.mod_type in ["multilabel", "multiclass"]) |\
+            (args.mod_target=='sap') & (args.mod_type in ["mean", "cls"])), \
+        "If target is NER then the mod_type MUST be multilabel/multiclass, if SAP then mean/cls"
 
     repo_id = args.name.replace(" ", "_").lower()
     repo_id = f"{args.data_organization}/{repo_id}" if args.data_organization else repo_id
 
     # Create dataset card
-    card = create_model_card(args.name, args.description, args.data_description, args.language, args.license, args.tags)
+    card = create_model_card(args.name, args.data_organization, args.description, args.data_description,
+                              args.language, args.license, args.tags, 
+                              args.mod_type, args.mod_target, args.base_model)
 
     # Push dataset and card to Hugging Face
     push_to_huggingface(repo_id, args.dataset_path, card, private=args.private)

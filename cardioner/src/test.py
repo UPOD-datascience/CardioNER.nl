@@ -35,7 +35,8 @@ def process_pipe(text: str,
     '''
       text: The text to process
       pipe: The transformers pipeline to use
-      max_word_per_chunk: The maximum number of words per chunk, we need this to avoid exceeding the maximum input size of the model
+      max_word_per_chunk: The maximum number of words per chunk, 
+        we need this to avoid exceeding the maximum input size of the model
       lang: The language of the text
     '''
     assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
