@@ -46,10 +46,10 @@ def create_model_card(name, data_organisation, description,
     """
     Gets main information and creates a dataset card using the template in config.py
     """
-    if mod_target == 'sap':
-        text = hf_config.description_text_model_sap(name, data_organisation, description,
+    if mod_target in ['sap', 'mirrorbert']:
+        text = hf_config.description_text_model_norm(name, data_organisation, description,
                                                         data_description, language,
-                                                         license, tags, mod_type)
+                                                         license, tags, mod_type, mod_target)
     elif mod_target == 'ner':
         text = hf_config.description_text_model_ner(name, data_organisation, description,
                                                         data_description, language,
@@ -132,14 +132,14 @@ def main():
     parser.add_argument("--language", required=True, help="Language of the dataset")
     parser.add_argument("--license", default="mit", choices=hf_config.licenses, help="License of the dataset")
     parser.add_argument("--mod_type", choices=["mean", "cls", "multilabel", "multiclass"], required=True)
-    parser.add_argument("--mod_target", choices=["sap", "ner"], required=True)
+    parser.add_argument("--mod_target", choices=["sap", "ner", "mirrorbert"], required=True)
     parser.add_argument("--base_model", type=str, help="Base model used for the finetuning")
     parser.add_argument("--tags", nargs="+", default=[], help="Tags for the dataset")
 
     args = parser.parse_args()
 
     assert ((args.mod_target=='ner') & (args.mod_type in ["multilabel", "multiclass"]) |\
-            (args.mod_target=='sap') & (args.mod_type in ["mean", "cls"])), \
+            (args.mod_target in ['sap', 'mirrorbert']) & (args.mod_type in ["mean", "cls"])), \
         "If target is NER then the mod_type MUST be multilabel/multiclass, if SAP then mean/cls"
 
     repo_id = args.name.replace(" ", "_").lower()

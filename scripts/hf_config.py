@@ -22,6 +22,35 @@ For more details about training and eval, see SapBERT [github repo](https://gith
     abstract = "Despite the widespread success of self-supervised learning via masked language models (MLM), accurately capturing fine-grained semantic relationships in the biomedical domain remains a challenge. This is of paramount importance for entity-level tasks such as entity linking where the ability to model entity relations (especially synonymy) is pivotal. To address this challenge, we propose SapBERT, a pretraining scheme that self-aligns the representation space of biomedical entities. We design a scalable metric learning framework that can leverage UMLS, a massive collection of biomedical ontologies with 4M+ concepts. In contrast with previous pipeline-based hybrid systems, SapBERT offers an elegant one-model-for-all solution to the problem of medical entity linking (MEL), achieving a new state-of-the-art (SOTA) on six MEL benchmarking datasets. In the scientific domain, we achieve SOTA even without task-specific supervision. With substantial improvement over various domain-specific pretrained MLMs such as BioBERT, SciBERTand and PubMedBERT, our pretraining scheme proves to be both effective and robust.",
 }
 ```
+For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+
+'''
+
+mod_info_dict['mirrorbert'] ='''
+For more details about training and eval, see MirrorBERT [github repo](https://github.com/cambridgeltl/mirror-bert).
+
+
+### Citation
+```bibtex
+@inproceedings{liu-etal-2021-fast,
+    title = "Fast, Effective, and Self-Supervised: Transforming Masked Language Models into Universal Lexical and Sentence Encoders",
+    author = "Liu, Fangyu  and
+      Vuli{\'c}, Ivan  and
+      Korhonen, Anna  and
+      Collier, Nigel",
+    booktitle = "Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing",
+    month = nov,
+    year = "2021",
+    address = "Online and Punta Cana, Dominican Republic",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2021.emnlp-main.109",
+    pages = "1442--1459",
+}
+```
+For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+
 '''
 
 
@@ -57,8 +86,8 @@ collections = {"es": "spanish-66f1460e7972f6224f479a17",
 
 repo_type = "model"
 
-def description_text_model_sap(name, data_organisation, description, data_description, 
-                                language, license, tags, mod_type):
+def description_text_model_norm(name, data_organisation, description, data_description, 
+                                language, license, tags, mod_type, mod_target):
     """
     Template for dataset card
     """
@@ -139,7 +168,7 @@ This is part of the [DT4H project](https://www.datatools4heart.eu/).
 # Doi and reference
 
 
-{mod_info_dict['sapbert']}
+{mod_info_dict['sapbert'] if mod_target == 'sap' else mod_info_dict['mirrorbert']}
 
 """
     return text
