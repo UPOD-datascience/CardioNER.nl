@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from torch.optim import Adam, Adadelta, Adamax, Adagrad, RMSprop, Rprop, SGD
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from pytorch_metric_learning import samplers
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
@@ -94,7 +94,7 @@ def train(args, data_loader, model, scaler=None, mirror_bert=None, step_global=0
             batch_x_cuda2[k] = v.cuda()
 
         if args.amp:
-            with autocast("cuda"):
+            with autocast('cuda'):
                 loss = model(batch_x_cuda1, batch_x_cuda2)
         else:
             loss = model(batch_x_cuda1, batch_x_cuda2)  

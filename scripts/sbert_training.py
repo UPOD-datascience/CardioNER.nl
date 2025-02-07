@@ -9,5 +9,7 @@
 
     https://sbert.net/docs/package_reference/sentence_transformer/losses.html
 
+    
+    For this, negatives need to be mined, and for both positives and negatives we need to find longer contexts, e.g. as is done in KRISSBERT
 
 '''

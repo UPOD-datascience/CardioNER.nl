@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from pytorch_metric_learning import miners, losses, distances
 
 LOGGER = logging.getLogger(__name__)
