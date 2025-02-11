@@ -19,7 +19,11 @@ def parse_dir(json_dir: str=None)->Dict[str,List]:
 			floc = os.path.join(json_dir, _json)
 			d = json.load(open(floc, 'rb'))
 			for k,v in d.items():
-				res_dict[k].append(v)
+				if isinstance(v, dict):
+					for _k, _v in v.items():
+						res_dict[f"{k}_{_k}"].append(_v)
+				else:
+					res_dict[k].append(v)
 	return res_dict
 
 
@@ -28,6 +32,7 @@ def get_aggregates(res_dict: dict=None)->Dict[str,Dict]:
 	out_string += "="*50+"\n"
 	out_string += "class\tmean\tmedian\tstdev\n"
 
+	print(res_dict)
 	agg_dict = defaultdict(dict)
 	for k,v in res_dict.items():
 		print(v)

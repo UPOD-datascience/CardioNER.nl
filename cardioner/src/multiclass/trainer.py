@@ -87,6 +87,9 @@ class TokenClassificationModel(nn.Module):
         **kwargs
     ):
         # Run inputs through the RoBERTa backbone
+        # TODO: see https://github.com/huggingface/transformers/pull/35875/files#diff-5707805d290617078f996faf1138de197fa813f78c0aa5ea497e73b5228f1103
+        # drop 'num_items_in_batch' from **kwargs
+        # modeling_roberta.py
         outputs = self.roberta(
             input_ids,
             attention_mask=attention_mask,
