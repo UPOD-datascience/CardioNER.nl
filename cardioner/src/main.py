@@ -41,16 +41,22 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          id2label: Optional[Dict[int, str]]=None,
          chunk_size: int=256,
          max_length: int=514,
-         chunk_type: Literal['standard', 'centered']='standard',
+         chunk_type: Literal['standard', 'centered', 'paragraph']='standard',
          multi_class: bool=False,
          use_iob: bool=True,
          hf_token: str=None
          ):
 
     if multi_class:
-        from multiclass.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels
+        from multiclass.loader import annotate_corpus_standard
+        from multiclass.loader import annotate_corpus_centered
+        from multiclass.loader import tokenize_and_align_labels
     else:
-        from multilabel.loader import annotate_corpus_standard, annotate_corpus_centered, tokenize_and_align_labels, count_tokens_with_multiple_labels
+        from multilabel.loader import annotate_corpus_paragraph 
+        from multilabel.loader import annotate_corpus_standard
+        from multilabel.loader import annotate_corpus_centered
+        from multilabel.loader import tokenize_and_align_labels 
+        from multilabel.loader import count_tokens_with_multiple_labels
 
     corpus_train_list = []
     # read jsonl
@@ -94,11 +100,17 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     # Run the transformation
     annotate_functions = {
         'standard': annotate_corpus_standard,
-        'centered': annotate_corpus_centered
+        'centered': annotate_corpus_centered,
+        'paragraph': annotate_corpus_paragraph
     }
 
     annotate_kwargs = {
         'standard': {
+            'chunk_size': chunk_size,
+            'max_allowed_chunk_size': max_allowed_chunk_size,
+            'IOB': use_iob
+        },
+        'paragraph': {
             'chunk_size': chunk_size,
             'max_allowed_chunk_size': max_allowed_chunk_size,
             'IOB': use_iob
@@ -321,7 +333,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
     argparsers.add_argument('--chunk_size', type=int, default=256)
-    argparsers.add_argument('--chunk_type', type=str, default='standard', choices=['standard', 'centered'])
+    argparsers.add_argument('--chunk_type', type=str, default='standard', choices=['standard', 'centered', 'paragraph'])
     argparsers.add_argument('--max_token_length', type=int, default=514)
     argparsers.add_argument('--num_epochs', type=int, default=10)
     argparsers.add_argument('--num_labels', type=int, default=9)
