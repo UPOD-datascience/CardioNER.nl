@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import pandas as pd
 import json
+import spacy
 
 from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
 from transformers import RobertaModel, BertModel, PreTrainedTokenizer
@@ -25,12 +26,14 @@ from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 import os
 
 import gc
+
 torch.cuda.empty_cache()
 gc.collect()
 
 import argparse
 
-# 
+
+#
 def flatten_list(l):
     if not isinstance(l, list):
         return [l]
@@ -130,16 +133,51 @@ def merge_splits_into_chunks(
     return chunks
 
 
+def split_iob(label: dict, nlp: spacy.Language, orig_text: str):
+    new_labels = []
+    text = label["text"]
+    doc = nlp(text)
+    first_token = doc[0]
+    second_token = None
+    if len(doc) > 1:
+        second_token = doc[1]
+
+    start_span = int(label["start_span"])
+    end_span = int(label["end_span"])
+    b_end_span = start_span + len(first_token.text)
+    b_label = {
+        "tag": "B-" + label["tag"],
+        "start_span": start_span,
+        "end_span": b_end_span,
+        "text": first_token.text,
+    }
+    new_labels.append(b_label)
+    if second_token:
+        i_start_span = start_span + second_token.idx
+        i_label = {
+            "tag": "I-" + label["tag"],
+            "start_span": i_start_span,
+            "end_span": end_span,
+            "text": text[second_token.idx :],
+        }
+        new_labels.append(i_label)
+        assert orig_text[i_start_span:end_span] == i_label["text"]
+    assert orig_text[start_span:b_end_span] == b_label["text"]
+    return new_labels
+
+
 class CardioCCC(Dataset):
     LABEL_FOLDERS = ["dis", "med", "symp", "proc"]
 
-    def __init__(self, 
-        root_path: str, 
-        split: str, 
-        lang: str = "it", 
-        encoding: str = 'UTF-8',
-        with_suggestion: bool=False
-        ):
+    def __init__(
+        self,
+        root_path: str,
+        split: str,
+        lang: str = "it",
+        encoding: str = "UTF-8",
+        with_suggestion: bool = False,
+        iob_tags: bool = False,
+    ):
 
         val_str = "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
         self.root_path = Path(root_path)
@@ -147,6 +185,8 @@ class CardioCCC(Dataset):
         self.lang = lang
         batches = ["b1", "b2"] if lang != "ro" else ["b1"]
         self.annotations = []
+        if iob_tags:
+            nlp = spacy.blank(lang)
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
@@ -161,6 +201,8 @@ class CardioCCC(Dataset):
                 file_name = group[0] + ".txt"
                 text = (lang_path / "dis/txt" / file_name).read_text(encoding=encoding)
                 labels = group[1].loc[:, ["tag", "start_span", "end_span", "text"]].to_dict(orient="records")
+                if iob_tags:
+                    labels = [x for label in labels for x in split_iob(label, nlp, text)]
                 self.annotations.append({"text": text, "labels": labels})
 
     def __len__(self):
@@ -169,20 +211,28 @@ class CardioCCC(Dataset):
     def __getitem__(self, idx):
         return self.annotations[idx]
 
-class ChunkedCardioCCC(Dataset):
-    TAG2LABEL = {"0": 0, "DISEASE": 1, "MEDICATION": 2, "PROCEDURE": 3, "SYMPTOM": 4}
-    LABEL2TAG = {v: k for k, v in TAG2LABEL.items()}
 
-    def __init__(self, dataset: CardioCCC, tokenizer: PreTrainedTokenizer, language: str, iter_by_chunk: bool = False, model_max_len: int = 512):
+class ChunkedCardioCCC(Dataset):
+
+    def __init__(
+        self,
+        dataset: CardioCCC,
+        tokenizer: PreTrainedTokenizer,
+        language: str,
+        tag2label: dict,
+        iter_by_chunk: bool = False,
+        model_max_len: int = 512,
+    ):
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.language = language
         self.chunked_data = []
         self.iter_by_chunk = iter_by_chunk
+        self.tag2label = tag2label
         for i, item in enumerate(dataset):
             text, labels = item["text"], item["labels"]
             splits = split_text(text, tokenizer, model_max_len)
-            chunks = merge_splits_into_chunks(text, splits, tokenizer, model_max_len, labels, self.TAG2LABEL)
+            chunks = merge_splits_into_chunks(text, splits, tokenizer, model_max_len, labels, self.tag2label)
             if iter_by_chunk:
                 for i in range(len(chunks["text"])):
                     self.chunked_data.append(
@@ -200,7 +250,8 @@ class ChunkedCardioCCC(Dataset):
 
     def __getitem__(self, idx):
         return self.chunked_data[idx]
-    
+
+
 def collate_fn_chunked_bert(batch: list[dict]):
     input_ids = [chunk["input_ids"] for chunk in batch]
     labels = [chunk["label_ids"] for chunk in batch]
@@ -329,6 +380,7 @@ class RobertaNER(RobertaForTokenClassification):
     A custom HF model that can load any backbone supported by AutoModel,
     then adds a linear classification head for multi-label NER.
     """
+
     def __init__(self, config):
         super().__init__(config)
         # 1) Instantiate the base model from config:
@@ -343,11 +395,7 @@ class RobertaNER(RobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **kwargs
-        )
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -362,11 +410,13 @@ class RobertaNER(RobertaForTokenClassification):
 
         return {"loss": loss, "logits": logits}
 
+
 class BertNER(BertForTokenClassification):
     """
     A custom HF model that can load any backbone supported by AutoModel,
     then adds a linear classification head for multi-label NER.
     """
+
     def __init__(self, config):
         super().__init__(config)
         # 1) Instantiate the base model from config:
@@ -381,11 +431,7 @@ class BertNER(BertForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **kwargs
-        )
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -406,6 +452,7 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
     A custom HF model that can load any backbone supported by AutoModel,
     then adds a linear classification head for multi-label NER.
     """
+
     def __init__(self, config):
         super().__init__(config)
         # 1) Instantiate the base model from config:
@@ -420,11 +467,7 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **kwargs
-        )
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -440,26 +483,33 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
         return {"loss": loss, "logits": logits}
 
 
-if __name__ =="__main__":
+if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
-    argparser.add_argument("--root_path", type=str, default="T://laupodteam/AIOS/Bram/notebooks/code_dev/CardioNER.nl/assets", help="Root path for the dataset")
+    argparser.add_argument(
+        "--root_path",
+        type=str,
+        default="T://laupodteam/AIOS/Bram/notebooks/code_dev/CardioNER.nl/assets",
+        help="Root path for the dataset",
+    )
     argparser.add_argument("--lang", type=str, default="nl", help="Language of the dataset")
     argparser.add_argument("--model_name", type=str, default="CLTL/MedRoBERTa.nl", help="Name of the pre-trained model")
-    argparser.add_argument("--devices", type=int, nargs='+', default=[4], help="List of devices to use for training")
-    argparser.add_argument("--use_cpu", action='store_true', help="Flag to use CPU for training")
+    argparser.add_argument("--devices", type=int, nargs="+", default=[4], help="List of devices to use for training")
+    argparser.add_argument("--use_cpu", action="store_true", help="Flag to use CPU for training")
     argparser.add_argument("--file_encoding", type=str, help="Important:encoding of train/val/test files. Check carefully.")
-    argparser.add_argument("--with_suggestion", action='store_true', help="Use corpus with suggested annotations")
+    argparser.add_argument("--with_suggestion", action="store_true", help="Use corpus with suggested annotations")
+    argparser.add_argument("--use_iob_tags", action="store_true", help="Use IOB tags for labels")
     argparser.add_argument("--output_dir", type=str, default=".")
 
     args = argparser.parse_args()
 
     if args.file_encoding is None:
         import locale
-        file_encoding = locale.getpreferredencoding(False) # None
+
+        file_encoding = locale.getpreferredencoding(False)  # None
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
 
     batch_size = args.batch_size
@@ -473,30 +523,59 @@ if __name__ =="__main__":
     use_cpu = args.use_cpu
     with_suggestion = args.with_suggestion
     output_dir = args.output_dir
+    use_iob_tags = args.use_iob_tags
+
+    if use_iob_tags:
+        tag2label = {
+            "0": 0,
+            "B-DISEASE": 1,
+            "I-DISEASE": 2,
+            "B-MEDICATION": 3,
+            "I-MEDICATION": 4,
+            "B-PROCEDURE": 5,
+            "I-PROCEDURE": 6,
+            "B-SYMPTOM": 7,
+            "I-SYMPTOM": 8,
+        }
+    else:
+        tag2label = {
+            "0": 0,
+            "DISEASE": 1,
+            "MEDICATION": 2,
+            "PROCEDURE": 3,
+            "SYMPTOM": 4,
+        }
+    label2tag = {v: k for k, v in tag2label.items()}
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
-    if 'Roberta' in model.config.architectures[0]:
+    if "Roberta" in model.config.architectures[0]:
         max_len = max_len - 2
 
     print(f"The maximum length: {max_len}")
 
-    train = CardioCCC(root_path, "train", lang, encoding=file_encoding, with_suggestion=with_suggestion)
-    val = CardioCCC(root_path, "validation", lang, encoding=file_encoding, with_suggestion=with_suggestion)
-    test = CardioCCC(root_path, "test", lang, encoding=file_encoding, with_suggestion=with_suggestion)
-    train = ChunkedCardioCCC(train, tokenizer, lang, iter_by_chunk=True, model_max_len=max_len)
-    val = ChunkedCardioCCC(val, tokenizer, lang, iter_by_chunk=True,  model_max_len=max_len)
-    test = ChunkedCardioCCC(test, tokenizer, lang, iter_by_chunk=True)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers)
+    train = CardioCCC(root_path, "train", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+    val = CardioCCC(root_path, "validation", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+    test = CardioCCC(root_path, "test", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+    train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
+    val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
+    test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
+    train_loader = DataLoader(
+        train, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=True, num_workers=num_workers
+    )
+    val_loader = DataLoader(
+        val, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers
+    )
+    test_loader = DataLoader(
+        test, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers
+    )
 
-    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=train.LABEL2TAG)
+    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag)
     trainer = L.Trainer(max_epochs=1)
 
-    if torch.cuda.is_available() & use_cpu==False:
+    if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         torch.set_float32_matmul_precision("medium")
 
@@ -504,8 +583,8 @@ if __name__ =="__main__":
         EarlyStopping(monitor="val_loss", mode="min", patience=patience),
         ModelCheckpoint(monitor="val_loss", mode="min"),
     ]
-    strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto" 
-    strategy = 'ddp' if use_cpu else strategy # ddp_spawn if use_cpu and not in notebook
+    strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
+    strategy = "ddp" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
         default_root_dir=output_dir,
@@ -518,25 +597,24 @@ if __name__ =="__main__":
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.test(model=module, dataloaders=test_loader)
 
-
     # save as huggingface compatible model
     ########################################
     # make transformer class
     base_config = AutoConfig.from_pretrained(model_name)
     base_config.num_labels = module.num_labels
-    base_config.add_pooling_layer=False
+    base_config.add_pooling_layer = False
 
-    save_dir = os.path.join(output_dir, 'hf')
+    save_dir = os.path.join(output_dir, "hf")
     if os.path.exists(save_dir) == False:
         os.mkdir(save_dir)
 
-    if base_config.architectures[0].startswith('Roberta'):
+    if base_config.architectures[0].startswith("Roberta"):
         hf_model = RobertaNER(base_config)
         print(f"Storing as RobertaNER model in {save_dir}")
-    elif base_config.architectures[0].startswith('Bert'):
+    elif base_config.architectures[0].startswith("Bert"):
         hf_model = BertNER(base_config)
         print(f"Storing as BertNER model in {save_dir}")
-    elif base_config.architectures[0].startswith('XLMRoberta'):
+    elif base_config.architectures[0].startswith("XLMRoberta"):
         hf_model = XLMRobertaNER(base_config)
         print(f"Storing as XLMRobertaNER model in {save_dir}")
 
