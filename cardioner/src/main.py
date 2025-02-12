@@ -332,7 +332,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--output_dir', type=str, default="../../output")
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
-    argparsers.add_argument('--chunk_size', type=int, default=256)
+    argparsers.add_argument('--chunk_size', type=int, default=None)
     argparsers.add_argument('--chunk_type', type=str, default='standard', choices=['standard', 'centered', 'paragraph'])
     argparsers.add_argument('--max_token_length', type=int, default=514)
     argparsers.add_argument('--num_epochs', type=int, default=10)
@@ -397,7 +397,7 @@ if __name__ == "__main__":
             print("Force splitter is on, and split file is provided, therefore, ignoring the test in the split file (if present).")
 
     OutputDir = args.output_dir
-    ChunkSize = args.chunk_size
+    ChunkSize = args.max_token_length if args.chunk_size is None else args.chunk_size
     max_length = args.max_token_length
     ChunkType = args.chunk_type
     num_labels = args.num_labels

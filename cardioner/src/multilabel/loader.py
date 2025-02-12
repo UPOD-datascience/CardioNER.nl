@@ -92,7 +92,7 @@ def annotate_corpus_paragraph(corpus,
                   (end_index - i) < max_allowed_chunk_size:
                 end_index += 1
 
-                if token[i+1] == paragraph_boundary:
+                if tokens[i+1] == paragraph_boundary:
                     break
 
             # Ensure the chunk does not exceed max_allowed_chunk_size
