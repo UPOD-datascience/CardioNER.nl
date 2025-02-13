@@ -81,23 +81,27 @@ def annotate_corpus_paragraph(corpus,
 
         # Split tokens and tags into chunks of max_tokens without splitting entities
         i = 0
+        end_index = 0
         while i < len(tokens):
             ## TODO: make chunker respect paragraph boundaries: paragraph_boundary
             # go to nearest paragraph_boundary < max_allowed_chunk_size
 
-            end_index = min(i + chunk_size, len(tokens))
             # Adjust end_index to avoid splitting entities
-            while end_index < len(tokens) and \
-                  any(label.startswith('I-') for label in token_tags[end_index]) and \
-                  (end_index - i) < max_allowed_chunk_size:
-                end_index += 1
+            while end_index-1 < len(tokens) \
+                        and (end_index-i) < max_allowed_chunk_size :
 
-                if tokens[i+1] == paragraph_boundary:
+                if tokens[end_index] == paragraph_boundary:
                     break
 
-            # Ensure the chunk does not exceed max_allowed_chunk_size
-            if (end_index - i) > max_allowed_chunk_size:
-                end_index = i + max_allowed_chunk_size
+                end_index += 1
+
+
+            # if any(label.startswith('I-') for label in token_tags[end_index]):
+            #     while True: # brrrr
+            #         end_index -= 1
+
+            #         if not any(label.startswith('I-') for label in token_tags[end_index]):
+            #             break
 
             chunk_tokens = tokens[i:end_index]
             chunk_tags = token_tags[i:end_index]
@@ -179,6 +183,7 @@ def annotate_corpus_standard(corpus,
                   any(label.startswith('I-') for label in token_tags[end_index]) and \
                   (end_index - i) < max_allowed_chunk_size:
                 end_index += 1
+
             # Ensure the chunk does not exceed max_allowed_chunk_size
             if (end_index - i) > max_allowed_chunk_size:
                 end_index = i + max_allowed_chunk_size
