@@ -28,6 +28,7 @@ import argparse
 import numpy as np
 from functools import partial
 
+from tqdm import tqdm
 
 # def annotate_corpus_paragraph, use split_text
 def annotate_corpus_paragraph(corpus,
@@ -36,13 +37,15 @@ def annotate_corpus_paragraph(corpus,
                     chunk_size: int = 256,
                     max_allowed_chunk_size: int = 300,
                     paragraph_boundary: str = "\n\n",
+                    min_token_len: int = 8,
+
                     IOB: bool=True):
     annotated_data = []
     unique_tags = set()
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
@@ -87,24 +90,16 @@ def annotate_corpus_paragraph(corpus,
             # go to nearest paragraph_boundary < max_allowed_chunk_size
 
             # Adjust end_index to avoid splitting entities
-            while end_index-1 < len(tokens) \
+            while end_index < len(tokens) \
                         and (end_index-i) < max_allowed_chunk_size :
-
-                if tokens[end_index] == paragraph_boundary:
-                    break
 
                 end_index += 1
 
+                if tokens[end_index-2] == paragraph_boundary:
+                    break
 
-            # if any(label.startswith('I-') for label in token_tags[end_index]):
-            #     while True: # brrrr
-            #         end_index -= 1
-
-            #         if not any(label.startswith('I-') for label in token_tags[end_index]):
-            #             break
-
-            chunk_tokens = tokens[i:end_index]
-            chunk_tags = token_tags[i:end_index]
+            chunk_tokens = tokens[i:end_index-2]
+            chunk_tags = token_tags[i:end_index-2]
 
             annotated_data.append({
                 "gid": entry["id"],
@@ -137,7 +132,7 @@ def annotate_corpus_standard(corpus,
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
@@ -219,7 +214,7 @@ def annotate_corpus_centered(corpus,
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
