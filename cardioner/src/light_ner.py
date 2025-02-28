@@ -95,7 +95,6 @@ def merge_splits_into_chunks(
     char_to_token_list = [encoding.char_to_token(i) for i in range(len(text))]
     text_ids = encoding.input_ids[0]
     text_label_ids = align_labels_to_text(encoding, labels, tag2label)
-    num_labels = len(tag2label.keys())
     assert len(text_ids) == len(text_label_ids)
 
     # Merge splits into chunks without exceeding max_seq_len
@@ -108,23 +107,11 @@ def merge_splits_into_chunks(
             sentence = splits[i]
             token_idx_list = get_tokens_indices(char_to_token_list, start_chunk_idx, end_chunk_idx + len(sentence))
             chunk_ids = text_ids[token_idx_list]
-        if i == len(splits) or len(chunk_ids) > max_seq_len - 2:  # account for [CLS] and [SEP] token
-            # add previous splits as a chunk if current chunk exceeds max_seq_len - 2 or if the splits are finished
+        if i == len(splits) or len(chunk_ids) > max_seq_len:
+            # add previous splits as a chunk if current chunk exceeds max_seq_len or if the splits are finished
             token_idx_list = get_tokens_indices(char_to_token_list, start_chunk_idx, end_chunk_idx)
-            chunk_ids = torch.cat(
-                [
-                    torch.LongTensor([tokenizer.cls_token_id]),
-                    text_ids[token_idx_list],
-                    torch.LongTensor([tokenizer.sep_token_id]),
-                ]
-            )
-            chunk_labels_ids = torch.cat(
-                [
-                    torch.LongTensor([[-100] * num_labels]),
-                    text_label_ids[token_idx_list],
-                    torch.LongTensor([[-100] * num_labels]),
-                ],
-            )
+            chunk_ids = text_ids[token_idx_list]
+            chunk_labels_ids = text_label_ids[token_idx_list]
             chunks["text"].append(text[start_chunk_idx:end_chunk_idx])
             chunks["input_ids"].append(chunk_ids)
             chunks["label_ids"].append(chunk_labels_ids)
