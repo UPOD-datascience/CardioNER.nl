@@ -28,6 +28,7 @@ import argparse
 import numpy as np
 from functools import partial
 
+from tqdm import tqdm
 
 # def annotate_corpus_paragraph, use split_text
 def annotate_corpus_paragraph(corpus,
@@ -36,13 +37,15 @@ def annotate_corpus_paragraph(corpus,
                     chunk_size: int = 256,
                     max_allowed_chunk_size: int = 300,
                     paragraph_boundary: str = "\n\n",
+                    min_token_len: int = 8,
+
                     IOB: bool=True):
     annotated_data = []
     unique_tags = set()
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
@@ -81,26 +84,22 @@ def annotate_corpus_paragraph(corpus,
 
         # Split tokens and tags into chunks of max_tokens without splitting entities
         i = 0
+        end_index = 0
         while i < len(tokens):
             ## TODO: make chunker respect paragraph boundaries: paragraph_boundary
             # go to nearest paragraph_boundary < max_allowed_chunk_size
 
-            end_index = min(i + chunk_size, len(tokens))
             # Adjust end_index to avoid splitting entities
-            while end_index < len(tokens) and \
-                  any(label.startswith('I-') for label in token_tags[end_index]) and \
-                  (end_index - i) < max_allowed_chunk_size:
+            while end_index < len(tokens) \
+                        and (end_index-i) < max_allowed_chunk_size :
+
                 end_index += 1
 
-                if tokens[i+1] == paragraph_boundary:
+                if tokens[end_index-2] == paragraph_boundary:
                     break
 
-            # Ensure the chunk does not exceed max_allowed_chunk_size
-            if (end_index - i) > max_allowed_chunk_size:
-                end_index = i + max_allowed_chunk_size
-
-            chunk_tokens = tokens[i:end_index]
-            chunk_tags = token_tags[i:end_index]
+            chunk_tokens = tokens[i:end_index-2]
+            chunk_tags = token_tags[i:end_index-2]
 
             annotated_data.append({
                 "gid": entry["id"],
@@ -133,7 +132,7 @@ def annotate_corpus_standard(corpus,
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
@@ -179,6 +178,7 @@ def annotate_corpus_standard(corpus,
                   any(label.startswith('I-') for label in token_tags[end_index]) and \
                   (end_index - i) < max_allowed_chunk_size:
                 end_index += 1
+
             # Ensure the chunk does not exceed max_allowed_chunk_size
             if (end_index - i) > max_allowed_chunk_size:
                 end_index = i + max_allowed_chunk_size
@@ -214,7 +214,7 @@ def annotate_corpus_centered(corpus,
 
     nlp = spacy.blank(lang)
 
-    for entry in corpus:
+    for entry in tqdm(corpus):
         text = entry["text"]
         tags = entry["tags"]
 
