@@ -282,7 +282,7 @@ class NEREval(Metric):
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int):
+    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, learning_rate: float = 2e-5):
         super().__init__()
         self.lm = lm
         self.label2tag = label2tag
@@ -290,6 +290,7 @@ class NERModule(L.LightningModule):
         self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
+        self.learning_rate = learning_rate
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
         logits = logits.view(-1, self.num_labels)
@@ -358,7 +359,7 @@ class NERModule(L.LightningModule):
         return new_results
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 
@@ -473,13 +474,15 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
+    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
     argparser.add_argument(
         "--root_path",
         type=str,
-        default="T://laupodteam/AIOS/Bram/notebooks/code_dev/CardioNER.nl/assets",
+        default="/path/to/cardioCCC",
         help="Root path for the dataset",
     )
     argparser.add_argument("--lang", type=str, default="nl", help="Language of the dataset")
@@ -500,6 +503,7 @@ if __name__ == "__main__":
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
 
     batch_size = args.batch_size
+    accumulation_steps = args.accumulation_steps
     patience = args.patience
     num_workers = args.num_workers
     max_epochs = args.max_epochs
@@ -559,7 +563,8 @@ if __name__ == "__main__":
         test, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers
     )
 
-    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag)
+    module = NERModule(lm=model, lm_output_size=model.config.hidden_size,
+        label2tag=label2tag, learning_rate=args.learning_rate)
     trainer = L.Trainer(max_epochs=1)
 
     if torch.cuda.is_available() & use_cpu == False:
@@ -574,6 +579,7 @@ if __name__ == "__main__":
     strategy = "ddp" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
+        accumulate_grad_batches=accumulation_steps,
         default_root_dir=output_dir,
         callbacks=callbacks,
         devices=devices[0] if use_cpu else devices,
