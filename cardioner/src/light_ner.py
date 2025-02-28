@@ -518,7 +518,7 @@ if __name__ == "__main__":
 
     if use_iob_tags:
         tag2label = {
-            "0": 0,
+            "O": 0,
             "B-DISEASE": 1,
             "I-DISEASE": 2,
             "B-MEDICATION": 3,
@@ -530,7 +530,7 @@ if __name__ == "__main__":
         }
     else:
         tag2label = {
-            "0": 0,
+            "O": 0,
             "DISEASE": 1,
             "MEDICATION": 2,
             "PROCEDURE": 3,
@@ -550,9 +550,11 @@ if __name__ == "__main__":
     train = CardioCCC(root_path, "train", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
     val = CardioCCC(root_path, "validation", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
     test = CardioCCC(root_path, "test", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+
     train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
+
     train_loader = DataLoader(
         train, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=True, num_workers=num_workers
     )

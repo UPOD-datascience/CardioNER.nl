@@ -52,10 +52,10 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         from multiclass.loader import annotate_corpus_centered
         from multiclass.loader import tokenize_and_align_labels
     else:
-        from multilabel.loader import annotate_corpus_paragraph 
+        from multilabel.loader import annotate_corpus_paragraph
         from multilabel.loader import annotate_corpus_standard
         from multilabel.loader import annotate_corpus_centered
-        from multilabel.loader import tokenize_and_align_labels 
+        from multilabel.loader import tokenize_and_align_labels
         from multilabel.loader import count_tokens_with_multiple_labels
 
     corpus_train_list = []
@@ -208,6 +208,7 @@ def train(tokenized_data_train: List[Dict],
           use_crf: bool=False,
           weight_decay: float=0.001,
           learning_rate: float=1e-4,
+          accumulation_steps: int=1,
           hf_token: str=None):
 
     label2id = tokenized_data_train[0]['label2id']
@@ -269,6 +270,7 @@ def train(tokenized_data_train: List[Dict],
                                     batch_size=batch_size,
                                     weight_decay=weight_decay,
                                     learning_rate=learning_rate,
+                                    gradient_accumulation_steps=accumulation_steps,
                                     hf_token=hf_token)
             else:
                 TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
@@ -278,6 +280,7 @@ def train(tokenized_data_train: List[Dict],
                                     batch_size=batch_size,
                                     weight_decay=weight_decay,
                                     learning_rate=learning_rate,
+                                    gradient_accumulation_steps=accumulation_steps,
                                     hf_token=hf_token)
 
             print(f"Training on split {k}")
@@ -298,6 +301,7 @@ def train(tokenized_data_train: List[Dict],
                                 batch_size=batch_size,
                                 weight_decay=weight_decay,
                                 learning_rate=learning_rate,
+                                gradient_accumulation_steps=accumulation_steps,
                                 hf_token=hf_token)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
@@ -307,6 +311,7 @@ def train(tokenized_data_train: List[Dict],
                                 batch_size=batch_size,
                                 weight_decay=weight_decay,
                                 learning_rate=learning_rate,
+                                gradient_accumulation_steps=accumulation_steps,
                                 hf_token=hf_token)
 
         print("Training on full dataset")
@@ -321,12 +326,12 @@ if __name__ == "__main__":
 
         and output .jsonl with tokenized and aligned data
     """
-
+    #TODO: add gradient accumulation
     argparsers = argparse.ArgumentParser()
-    argparsers.add_argument('--Model', type=str, default='CLTL/MedRoBERTa.nl')
+    argparsers.add_argument('--model', type=str, default='CLTL/MedRoBERTa.nl')
     argparsers.add_argument('--lang', type=str, required=True, choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'])
-    argparsers.add_argument('--Corpus_train', type=str, required=False)
-    argparsers.add_argument('--Corpus_validation', type=str, required=False)
+    argparsers.add_argument('--corpus_train', type=str, required=False)
+    argparsers.add_argument('--corpus_validation', type=str, required=False)
     argparsers.add_argument('--split_file', type=str, required=False)
     argparsers.add_argument('--annotation_loc', type=str, required=False)
     argparsers.add_argument('--output_dir', type=str, default="../../output")
@@ -340,6 +345,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--learning_rate', type=float, default=1e-4)
     argparsers.add_argument('--weight_decay', type=float, default=0.01)
     argparsers.add_argument('--batch_size', type=int, default=16)
+    argparsers.add_argument('--accumulation_steps', type=int, default=1)
     argparsers.add_argument('--num_splits', type=int, default=5)
     argparsers.add_argument('--hf_token', type=str, default=None)
     argparsers.add_argument('--multiclass', action="store_true", default=False)
@@ -355,9 +361,9 @@ if __name__ == "__main__":
     tokenized_data = None
     tags = None
 
-    _model = args.Model
-    corpus_train = args.Corpus_train
-    corpus_validation = args.Corpus_validation
+    _model = args.model
+    corpus_train = args.corpus_train
+    corpus_validation = args.corpus_validation
     split_file = args.split_file
     force_splitter =args.force_splitter
     _annotation_loc = args.annotation_loc
@@ -410,6 +416,7 @@ if __name__ == "__main__":
     language = args.lang
     weight_decay = args.weight_decay
     learning_rate = args.learning_rate
+    accumulation_steps = args.accumulation_steps
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -476,4 +483,5 @@ if __name__ == "__main__":
               use_crf=use_crf,
               weight_decay=weight_decay,
               learning_rate=learning_rate,
+              accumulation_steps=accumulation_steps,
               hf_token=hf_token)

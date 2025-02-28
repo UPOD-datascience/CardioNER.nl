@@ -142,6 +142,7 @@ class ModelTrainer():
                  max_length: int=514,
                  learning_rate: float=1e-4,
                  weight_decay: float=0.001,
+                 gradient_accumulation_steps: int=1,
                  num_train_epochs: int=20,
                  output_dir: str="../../output",
                  hf_token: str=None
@@ -152,6 +153,7 @@ class ModelTrainer():
 
         self.train_kwargs = {
             'run_name': 'CardioNER',
+            'gradient_accumulation_steps': gradient_accumulation_steps,
             'per_device_train_batch_size': batch_size,
             'per_device_eval_batch_size': batch_size,
             'learning_rate': learning_rate,
@@ -159,7 +161,7 @@ class ModelTrainer():
             'weight_decay': weight_decay,
             'eval_strategy':'epoch',
             'save_strategy': 'best',
-            'metric_for_best_model': 'f1_macro', 
+            'metric_for_best_model': 'f1_macro',
             'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,
@@ -234,7 +236,7 @@ class ModelTrainer():
             return all_metrics
         except Exception as e:
             print(f"Seqeval metrics failed: {e}. \n True labels sample: {true_labels[0]} \n Predictions sample: {true_predictions[0]}")
-            return {}        
+            return {}
 
 
     def compute_metrics(self, eval_preds):
@@ -284,7 +286,7 @@ class ModelTrainer():
         precision_dict = defaultdict(float)
         recall_dict = defaultdict(float)
         f1_dict = defaultdict(float)
-        roc_auc_dict = defaultdict(float) 
+        roc_auc_dict = defaultdict(float)
 
         for k,v in self.id2label.items():
             precision_dict[f"precision_{v}"] = precision_all[k]
