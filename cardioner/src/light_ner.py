@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 import os
-
+from functools import partial
 import gc
 
 torch.cuda.empty_cache()
@@ -47,7 +47,7 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
         tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
         start_token_idx = text_encoding.char_to_token(start_idx)
         end_token_idx = text_encoding.char_to_token(end_idx - 1)
-        text_labels[start_token_idx:end_token_idx, tag2label[tag]] = 1
+        text_labels[start_token_idx : end_token_idx + 1, tag2label[tag]] = 1
     text_labels[~text_labels[:, 1:].any(dim=1), 0] = 1  # Adding null class if no other label is present
     return text_labels
 
@@ -239,11 +239,11 @@ class ChunkedCardioCCC(Dataset):
         return self.chunked_data[idx]
 
 
-def collate_fn_chunked_bert(batch: list[dict]):
+def collate_fn_chunked_bert(batch: list[dict], padding_value: int):
     input_ids = [chunk["input_ids"] for chunk in batch]
     labels = [chunk["label_ids"] for chunk in batch]
     attention_mask = [torch.ones_like(ids) for ids in input_ids]
-    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=0)
+    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=padding_value)
     attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
     labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
     return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
@@ -538,7 +538,7 @@ if __name__ == "__main__":
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
-    if "Roberta" in model.config.architectures[0]:
+    if "Roberta" in model.config.architectures[0] or "Camembert" in model.config.architectures[0]:
         max_len = max_len - 2
 
     print(f"The maximum length: {max_len}")
@@ -549,18 +549,13 @@ if __name__ == "__main__":
     train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
-    train_loader = DataLoader(
-        train, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=True, num_workers=num_workers
-    )
-    val_loader = DataLoader(
-        val, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers
-    )
-    test_loader = DataLoader(
-        test, batch_size=batch_size, collate_fn=collate_fn_chunked_bert, shuffle=False, num_workers=num_workers
-    )
+
+    collate_fn = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
+    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
 
     module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag)
-    trainer = L.Trainer(max_epochs=1)
 
     if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -571,12 +566,13 @@ if __name__ == "__main__":
         ModelCheckpoint(monitor="val_loss", mode="min"),
     ]
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
-    strategy = "ddp" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
+    strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
         default_root_dir=output_dir,
         callbacks=callbacks,
-        devices=devices[0] if use_cpu else devices,
+        accelerator="cpu" if use_cpu else "auto",
+        devices="auto" if use_cpu else devices,
         max_epochs=max_epochs,
         strategy=strategy,
         precision="16-mixed" if isinstance(devices, list) or devices == "cuda" else "bf16",
