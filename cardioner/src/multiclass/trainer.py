@@ -269,7 +269,7 @@ class ModelTrainer():
             print(f"Labels: {labels}")
 
         all_metrics = metric.compute(predictions=true_predictions,
-            references=true_labels)
+                        references=true_labels)
         return all_metrics
 
 

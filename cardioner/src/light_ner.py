@@ -53,22 +53,22 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
 
 
 def split_text(text: str, tokenizer: PreTrainedTokenizer, max_seq_len: int):
-    paragraphs = re.split("(\n\n)", text)
+    paragraphs = re.split(r"(\n\n)", text)
     paragraphs = ["".join(paragraphs[i : i + 2]) for i in range(0, len(paragraphs), 2)]
     for p_idx in range(len(paragraphs)):
         ids = tokenizer.encode(paragraphs[p_idx], add_special_tokens=True)
         if len(ids) > max_seq_len:
-            lines = re.split(("(\n)"), paragraphs[p_idx])
+            lines = re.split((r"(\n)"), paragraphs[p_idx])
             lines = ["".join(lines[i : i + 2]) for i in range(0, len(lines), 2)]
             for l_idx in range(len(lines)):
                 ids = tokenizer.encode(lines[l_idx], add_special_tokens=True)
                 if len(ids) > max_seq_len:
-                    sentences = re.split("([\.!\?]\s+)", lines[l_idx])
+                    sentences = re.split(r"([.!?]\s+)", lines[l_idx])
                     sentences = ["".join(sentences[i : i + 2]) for i in range(0, len(sentences), 2)]
                     for s_idx in range(len(sentences)):
                         ids = tokenizer.encode(sentences[s_idx], add_special_tokens=True)
                         if len(ids) > max_seq_len:
-                            words = re.split("(\s+)", sentences[s_idx])
+                            words = re.split(r"(\s+)", sentences[s_idx])
                             words = ["".join(words[i : i + 2]) for i in range(0, len(words), 2)]
                             sentences[s_idx] = words
                     lines[l_idx] = sentences
@@ -282,7 +282,7 @@ class NEREval(Metric):
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int):
+    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, learning_rate: float = 2e-5):
         super().__init__()
         self.lm = lm
         self.label2tag = label2tag
@@ -290,6 +290,7 @@ class NERModule(L.LightningModule):
         self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
+        self.learning_rate = learning_rate
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
         logits = logits.view(-1, self.num_labels)
@@ -358,7 +359,7 @@ class NERModule(L.LightningModule):
         return new_results
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 
@@ -473,13 +474,15 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
+    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
     argparser.add_argument(
         "--root_path",
         type=str,
-        default="T://laupodteam/AIOS/Bram/notebooks/code_dev/CardioNER.nl/assets",
+        default="/path/to/cardioCCC",
         help="Root path for the dataset",
     )
     argparser.add_argument("--lang", type=str, default="nl", help="Language of the dataset")
@@ -498,8 +501,11 @@ if __name__ == "__main__":
 
         file_encoding = locale.getpreferredencoding(False)  # None
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
+    else:
+        file_encoding = args.file_encoding
 
     batch_size = args.batch_size
+    accumulation_steps = args.accumulation_steps
     patience = args.patience
     num_workers = args.num_workers
     max_epochs = args.max_epochs
@@ -514,7 +520,7 @@ if __name__ == "__main__":
 
     if use_iob_tags:
         tag2label = {
-            "0": 0,
+            "O": 0,
             "B-DISEASE": 1,
             "I-DISEASE": 2,
             "B-MEDICATION": 3,
@@ -526,7 +532,7 @@ if __name__ == "__main__":
         }
     else:
         tag2label = {
-            "0": 0,
+            "O": 0,
             "DISEASE": 1,
             "MEDICATION": 2,
             "PROCEDURE": 3,
@@ -546,6 +552,7 @@ if __name__ == "__main__":
     train = CardioCCC(root_path, "train", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
     val = CardioCCC(root_path, "validation", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
     test = CardioCCC(root_path, "test", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+
     train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
@@ -556,6 +563,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
 
     module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag)
+
 
     if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -569,6 +577,7 @@ if __name__ == "__main__":
     strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
+        accumulate_grad_batches=accumulation_steps,
         default_root_dir=output_dir,
         callbacks=callbacks,
         accelerator="cpu" if use_cpu else "auto",
