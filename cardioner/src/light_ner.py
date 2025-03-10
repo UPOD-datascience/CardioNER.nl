@@ -53,22 +53,22 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
 
 
 def split_text(text: str, tokenizer: PreTrainedTokenizer, max_seq_len: int):
-    paragraphs = re.split("(\n\n)", text)
+    paragraphs = re.split(r"(\n\n)", text)
     paragraphs = ["".join(paragraphs[i : i + 2]) for i in range(0, len(paragraphs), 2)]
     for p_idx in range(len(paragraphs)):
         ids = tokenizer.encode(paragraphs[p_idx], add_special_tokens=True)
         if len(ids) > max_seq_len:
-            lines = re.split(("(\n)"), paragraphs[p_idx])
+            lines = re.split((r"(\n)"), paragraphs[p_idx])
             lines = ["".join(lines[i : i + 2]) for i in range(0, len(lines), 2)]
             for l_idx in range(len(lines)):
                 ids = tokenizer.encode(lines[l_idx], add_special_tokens=True)
                 if len(ids) > max_seq_len:
-                    sentences = re.split("([\.!\?]\s+)", lines[l_idx])
+                    sentences = re.split(r"([.!?]\s+)", lines[l_idx])
                     sentences = ["".join(sentences[i : i + 2]) for i in range(0, len(sentences), 2)]
                     for s_idx in range(len(sentences)):
                         ids = tokenizer.encode(sentences[s_idx], add_special_tokens=True)
                         if len(ids) > max_seq_len:
-                            words = re.split("(\s+)", sentences[s_idx])
+                            words = re.split(r"(\s+)", sentences[s_idx])
                             words = ["".join(words[i : i + 2]) for i in range(0, len(words), 2)]
                             sentences[s_idx] = words
                     lines[l_idx] = sentences
@@ -501,6 +501,8 @@ if __name__ == "__main__":
 
         file_encoding = locale.getpreferredencoding(False)  # None
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
+    else:
+        file_encoding = args.file_encoding
 
     batch_size = args.batch_size
     accumulation_steps = args.accumulation_steps
