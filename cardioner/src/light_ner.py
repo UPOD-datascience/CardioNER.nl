@@ -47,7 +47,11 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
         tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
         start_token_idx = text_encoding.char_to_token(start_idx)
         end_token_idx = text_encoding.char_to_token(end_idx - 1)
-        text_labels[start_token_idx : end_token_idx + 1, tag2label[tag]] = 1
+        try:
+            text_labels[start_token_idx : end_token_idx + 1, tag2label[tag]] = 1
+        except TypeError as e:
+            print(f"Error: {e} for tag {tag}, start {start_idx}, end {end_idx}")
+            raise TypeError("Check the labels/alignment/tokenizer")
     text_labels[~text_labels[:, 1:].any(dim=1), 0] = 1  # Adding null class if no other label is present
     return text_labels
 
@@ -91,7 +95,7 @@ def merge_splits_into_chunks(
     labels: list[dict],
     tag2label: dict,
 ):
-    encoding = tokenizer(text, add_special_tokens=False, return_tensors="pt")
+    encoding = tokenizer(text, add_special_tokens=False, return_tensors="pt", return_offsets_mapping=True)
     char_to_token_list = [encoding.char_to_token(i) for i in range(len(text))]
     text_ids = encoding.input_ids[0]
     text_label_ids = align_labels_to_text(encoding, labels, tag2label)
@@ -148,7 +152,7 @@ def split_iob(label: dict, nlp: spacy.Language, orig_text: str):
             "text": text[second_token.idx :],
         }
         new_labels.append(i_label)
-        assert orig_text[i_start_span:end_span] == i_label["text"]
+        assert orig_text[i_start_span:end_span] == i_label["text"], f"{orig_text[i_start_span:end_span]} != {i_label['text']}"
     assert orig_text[start_span:b_end_span] == b_label["text"]
     return new_labels
 
@@ -544,6 +548,7 @@ if __name__ == "__main__":
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
+    print(f"Model arch: {model.config.architectures}")
     if "Roberta" in model.config.architectures[0] or "Camembert" in model.config.architectures[0]:
         max_len = max_len - 2
 
