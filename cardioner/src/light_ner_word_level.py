@@ -322,7 +322,7 @@ def collate_fn_chunked_bert_test(chunks: list[dict], padding_value: int):
     input_ids = [chunks["input_ids"][i] for i in range(num_chunks)]
     attention_mask = [torch.ones_like(ids) for ids in input_ids]
     input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=padding_value)
-    attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=padding_value)
+    attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -355,7 +355,7 @@ class NEREval(Metric):
             for tag in self.tag2label.keys():
                 tag_idx = self.tag2label[tag]
                 tag_preds = preds[i][:, tag_idx * offset : (tag_idx + 1) * offset]
-                tag_preds = tag_preds.softmax(dim=-1).argmax(dim=-1)
+                tag_preds = tag_preds.argmax(dim=-1)
 
                 prediction, reference = [], []
                 for j in range(preds[i].shape[0]):
@@ -371,13 +371,14 @@ class NEREval(Metric):
                 references[tag].append(reference)
         predictions = [p for tag_preds in predictions.values() for p in tag_preds]
         references = [r for tag_refs in references.values() for r in tag_refs]
-        # seqeval_results = self.seqeval.compute(predictions=predictions, references=references)
         results = classification_report(references, predictions, output_dict=True)
         return results
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool):
+    def __init__(
+        self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool, word_prediction_strategy: str = "first_token"
+    ):
         super().__init__()
         self.lm = lm
         self.lm.train()
@@ -389,6 +390,7 @@ class NERModule(L.LightningModule):
         self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
+        self.word_prediction_strategy = word_prediction_strategy
         self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
@@ -419,7 +421,7 @@ class NERModule(L.LightningModule):
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
 
         loss = self.compute_loss(logits, labels)
-        self.log("train_loss", loss, on_epoch=True, sync_dist=True)
+        self.log("train_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids))
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -430,7 +432,17 @@ class NERModule(L.LightningModule):
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
         loss = self.compute_loss(logits, labels)
-        self.log("val_loss", loss, on_epoch=True, sync_dist=True)
+        self.log("val_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids))
+
+    def predict_word_level_entity(self, logits: torch.Tensor, token_ids: list[int]):
+        if self.word_prediction_strategy == "first_token":
+            return logits[token_ids[0]]
+        elif self.word_prediction_strategy == "last_token":
+            return logits[token_ids[-1]]
+        elif self.word_prediction_strategy == "average":
+            return torch.mean(logits[token_ids], dim=0)
+        else:
+            raise ValueError(f"Invalid word prediction strategy: {self.word_prediction_strategy}")
 
     def test_step(self, batch, batch_idx):
         input_ids = batch["input_ids"]
@@ -444,19 +456,17 @@ class NERModule(L.LightningModule):
         for i in range(input_ids.shape[0]):
             for j in range(len(word_to_token[i])):
                 if word_to_token[i][j] is not None:
-                    pred = logits[i, word_to_token[i][j][0]]  # use only the first token to predict the word-level entity
+                    pred = self.predict_word_level_entity(logits[i], word_to_token[i][j])
                     all_preds.append(pred)
-            if i != input_ids.shape[0] - 1:  # add sep token between chunks
-                sep_pred = torch.zeros(self.num_labels, device=pred.device)
-                for k in range(self.num_tags):
-                    sep_pred[k * self.offset] = 1
-                all_preds.append(sep_pred)
+                else:
+                    sep_pred = torch.zeros(self.num_labels, device=logits.device)
+                    for k in range(self.num_tags):
+                        sep_pred[k * self.offset] = 1
+                    all_preds.append(sep_pred)
             for tag in labels_words[i].keys():
                 if tag not in all_labels_words:
                     all_labels_words[tag] = []
                 lw = labels_words[i][tag]
-                if i != input_ids.shape[0] - 1:  # add O tag between chunks
-                    lw.append("O")
                 all_labels_words[tag].extend(lw)
         all_preds = torch.stack(all_preds)
         self.metric.update(all_preds, all_labels_words)
@@ -601,6 +611,10 @@ if __name__ == "__main__":
     argparser.add_argument("--with_suggestion", action="store_true", help="Use corpus with suggested annotations")
     argparser.add_argument("--use_iob_tags", action="store_true", help="Use IOB tags for labels")
     argparser.add_argument("--output_dir", type=str, default=".")
+    argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
+    argparser.add_argument(
+        "--word_prediction_strategy", type=str, default="first_token", help="Strategy to predict word-level entities"
+    )
 
     args = argparser.parse_args()
 
@@ -677,7 +691,23 @@ if __name__ == "__main__":
     val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers)
 
-    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag, iob_tags=use_iob_tags)
+    if args.ckpt_path is None:
+        module = NERModule(
+            lm=model,
+            lm_output_size=model.config.hidden_size,
+            label2tag=label2tag,
+            iob_tags=use_iob_tags,
+            word_prediction_strategy=args.word_prediction_strategy,
+        )
+    else:
+        module = NERModule.load_from_checkpoint(
+            args.ckpt_path,
+            lm=model,
+            lm_output_size=model.config.hidden_size,
+            label2tag=label2tag,
+            iob_tags=use_iob_tags,
+            word_prediction_strategy=args.word_prediction_strategy,
+        )
 
     if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
