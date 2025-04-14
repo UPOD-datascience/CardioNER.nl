@@ -1,3 +1,4 @@
+print("Importing libraries...")
 import lightning as L
 
 import itertools
@@ -27,6 +28,7 @@ import os
 from functools import partial
 import gc
 
+print("Imported libraries..continuing to main")
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -286,9 +288,20 @@ class NEREval(Metric):
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, learning_rate: float = 2e-5):
+    def __init__(self, 
+                 lm: nn.Module, 
+                 lm_output_size: int, 
+                 label2tag: int, 
+                 freeze_backbone: bool = False,
+                 learning_rate: float = 2e-5):
         super().__init__()
         self.lm = lm
+        if freeze_backbone:
+            print("Freezing transformer backbone")
+            for param in self.lm.parameters():
+                param.requires_grad = False
+            self.lm.eval()
+        self.lm.train(not freeze_backbone)    
         self.label2tag = label2tag
         self.num_labels = len(label2tag.keys())
         self.classifier = nn.Linear(lm_output_size, self.num_labels)
@@ -480,6 +493,7 @@ if __name__ == "__main__":
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
     argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
@@ -567,7 +581,11 @@ if __name__ == "__main__":
     val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
 
-    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag)
+    module = NERModule(lm=model,
+                       lm_output_size=model.config.hidden_size,
+                       learning_rate=args.learning_rate,
+                       freeze_backbone=args.freeze_backbone,
+                       label2tag=label2tag)
 
 
     if torch.cuda.is_available() & use_cpu == False:

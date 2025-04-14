@@ -1,12 +1,5 @@
+print("Importing libraries...")
 import lightning as L
-
-import itertools
-import re
-from torch.utils.data import Dataset
-from pathlib import Path
-import pandas as pd
-import json
-import spacy
 
 from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
 from transformers import RobertaModel, BertModel, PreTrainedTokenizer
@@ -34,6 +27,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from seqeval.metrics import classification_report
 
+import itertools
+import re
+from torch.utils.data import Dataset
+from pathlib import Path
+import pandas as pd
+import json
+import spacy
+
+print("Imported libraries..continuing to main")
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -377,10 +379,22 @@ class NEREval(Metric):
 
 class NERModule(L.LightningModule):
     def __init__(
-        self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool, word_prediction_strategy: str = "first_token"
+        self, 
+        lm: nn.Module, 
+        lm_output_size: int, 
+        label2tag: int, 
+        iob_tags: bool, 
+        freeze_backbone: bool = False,
+        word_prediction_strategy: str = "first_token", 
+        learning_rate=2e-5
     ):
         super().__init__()
         self.lm = lm
+        if freeze_backbone:
+            print("Freezing transformer backbone")
+            for param in self.lm.parameters():
+                param.requires_grad = False
+            self.lm.eval()
         self.lm.train()
         self.label2tag = label2tag
         self.iob_tags = iob_tags
@@ -391,6 +405,7 @@ class NERModule(L.LightningModule):
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
         self.word_prediction_strategy = word_prediction_strategy
+        self.learning_rate = learning_rate
         self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
@@ -479,7 +494,7 @@ class NERModule(L.LightningModule):
         self.metric.reset()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 
@@ -594,6 +609,9 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
+    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
@@ -625,6 +643,8 @@ if __name__ == "__main__":
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
 
     batch_size = args.batch_size
+    learning_rate = args.learning_rate
+    accumulation_steps = args.accumulation_steps
     patience = args.patience
     num_workers = args.num_workers
     max_epochs = args.max_epochs
@@ -695,8 +715,10 @@ if __name__ == "__main__":
         module = NERModule(
             lm=model,
             lm_output_size=model.config.hidden_size,
+            learning_rate=args.learning_rate,
             label2tag=label2tag,
             iob_tags=use_iob_tags,
+            freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
         )
     else:
@@ -704,8 +726,10 @@ if __name__ == "__main__":
             args.ckpt_path,
             lm=model,
             lm_output_size=model.config.hidden_size,
+            learning_rate=args.learning_rate,
             label2tag=label2tag,
             iob_tags=use_iob_tags,
+            freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
         )
 
@@ -721,6 +745,7 @@ if __name__ == "__main__":
     strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
+        accumulate_grad_batches=accumulation_steps,
         default_root_dir=output_dir,
         callbacks=callbacks,
         accelerator="cpu" if use_cpu else "auto",
