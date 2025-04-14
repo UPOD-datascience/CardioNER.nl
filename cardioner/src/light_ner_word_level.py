@@ -33,6 +33,8 @@ from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from seqeval.metrics import classification_report
+from lightning.pytorch.loggers import TensorBoardLogger
+import yaml
 
 torch.cuda.empty_cache()
 gc.collect()
@@ -617,7 +619,11 @@ if __name__ == "__main__":
     argparser.add_argument("--output_dir", type=str, default=".")
     argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
     argparser.add_argument(
-        "--word_prediction_strategy", type=str, default="first_token", help="Strategy to predict word-level entities"
+        "--word_prediction_strategy",
+        type=str,
+        default="average",
+        help="Strategy to predict word-level entities",
+        choices=["average", "first_token", "last_token"],
     )
 
     args = argparser.parse_args()
@@ -725,6 +731,8 @@ if __name__ == "__main__":
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
     strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
+    log_root = f"lightning_logs/NER_word_level/{model_name.replace('/', '_')}"
+    logger = TensorBoardLogger(save_dir=".", name=log_root)
     trainer = L.Trainer(
         default_root_dir=output_dir,
         callbacks=callbacks,
@@ -733,9 +741,13 @@ if __name__ == "__main__":
         max_epochs=max_epochs,
         strategy=strategy,
         precision="16-mixed" if isinstance(devices, list) or devices == "cuda" else "bf16",
+        logger=logger,
     )
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.test(model=module, dataloaders=test_loader)
+
+    with open(Path(logger.log_dir) / "params.yaml", "w") as f:
+        yaml.dump(vars(args), f)
 
     # save as huggingface compatible model
     ########################################
