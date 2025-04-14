@@ -73,7 +73,7 @@ class CardioCCC(Dataset):
         self.iob_tags = iob_tags
         batches = ["b1", "b2"] if lang != "ro" else ["b1"]
         self.annotations = []
-        self.nlp = spacy.blank(lang)
+        self.nlp = spacy.blank(lang if lang != "cz" else "cs")
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
@@ -105,8 +105,10 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
     tokens = [t.text for t in doc]
     token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
     token_tags = {tag: ["O"] * len(doc) for tag in tag2label.keys()}
+    D_REMAP = {"ENFERMEDAD": "DISEASE", "SINTOMA": "SYMPTOM", "PROCEDIMIENTO": "PROCEDURE", "FARMACO": "MEDICATION"}
     for label in labels:
-        start, end, tag_type = int(label["start_span"]), int(label["end_span"]), label["tag"]
+        tag = D_REMAP.get(label["tag"], label["tag"])
+        start, end, tag_type = int(label["start_span"]), int(label["end_span"]), tag
         is_first_token = True
         for i, (token_start, token_end) in enumerate(token_offsets):
             if token_end <= start:
@@ -372,16 +374,18 @@ class NEREval(Metric):
         predictions = [p for tag_preds in predictions.values() for p in tag_preds]
         references = [r for tag_refs in references.values() for r in tag_refs]
         # seqeval_results = self.seqeval.compute(predictions=predictions, references=references)
+        # results = classification_report(references, predictions, output_dict=True)
         results = classification_report(references, predictions, output_dict=True)
         return results
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool):
+    def __init__(self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool, learning_rate: float = 2e-5):
         super().__init__()
         self.lm = lm
         self.lm.train()
         self.label2tag = label2tag
+        self.learning_rate = learning_rate
         self.iob_tags = iob_tags
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
@@ -469,7 +473,7 @@ class NERModule(L.LightningModule):
         self.metric.reset()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 
@@ -584,6 +588,7 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
+    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
@@ -613,6 +618,7 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     patience = args.patience
     num_workers = args.num_workers
+    learning_rate = args.learning_rate
     max_epochs = args.max_epochs
     root_path = args.root_path
     lang = args.lang
@@ -677,7 +683,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers)
 
-    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag, iob_tags=use_iob_tags)
+    module = NERModule(lm=model, lm_output_size=model.config.hidden_size, label2tag=label2tag, iob_tags=use_iob_tags, learning_rate=learning_rate)
 
     if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
