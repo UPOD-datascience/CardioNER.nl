@@ -558,7 +558,7 @@ if __name__ == "__main__":
         }
     label2tag = {v: k for k, v in tag2label.items()}
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=False, use_fast=True)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
@@ -638,3 +638,4 @@ if __name__ == "__main__":
 
     hf_model.save_pretrained(save_dir)
     tokenizer.save_pretrained(save_dir)
+use_cpu

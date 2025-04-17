@@ -631,7 +631,7 @@ if __name__ == "__main__":
     argparser.add_argument("--output_dir", type=str, default=".")
     argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
     argparser.add_argument(
-        "--word_prediction_strategy", type=str, default="first_token", help="Strategy to predict word-level entities"
+        "--word_prediction_strategy", type=str, default="average", help="Strategy to predict word-level entities"
     )
 
     args = argparser.parse_args()
@@ -665,7 +665,7 @@ if __name__ == "__main__":
     }
     label2tag = {v: k for k, v in tag2label.items()}
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings

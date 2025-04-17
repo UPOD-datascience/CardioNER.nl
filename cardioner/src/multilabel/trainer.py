@@ -74,6 +74,13 @@ class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.roberta = AutoModel.from_pretrained(config)  # Use the RobertaModel backbone
+
+        if config.freeze_backbone:
+            for param in self.roberta.parameters():
+                param.requires_grad = False
+            self.roberta.eval()
+        self.roberta.train(not config.freeze_backbone)    
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
 
@@ -145,7 +152,8 @@ class ModelTrainer():
                  gradient_accumulation_steps: int=1,
                  num_train_epochs: int=20,
                  output_dir: str="../../output",
-                 hf_token: str=None
+                 hf_token: str=None,
+                 freeze_backbone: bool=False
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -190,7 +198,7 @@ class ModelTrainer():
         )
         config = AutoConfig.from_pretrained(model, num_labels=len(self.label2id),
             id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1,
-            token=hf_token)
+            token=hf_token, freeze_backbone=freeze_backbone)
         self.model = MultiLabelTokenClassificationModel.from_pretrained(model, config=config)
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)

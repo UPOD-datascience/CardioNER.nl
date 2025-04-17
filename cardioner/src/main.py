@@ -209,7 +209,8 @@ def train(tokenized_data_train: List[Dict],
           weight_decay: float=0.001,
           learning_rate: float=1e-4,
           accumulation_steps: int=1,
-          hf_token: str=None):
+          hf_token: str=None,
+          freeze_backbone: bool=False):
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -281,7 +282,8 @@ def train(tokenized_data_train: List[Dict],
                                     weight_decay=weight_decay,
                                     learning_rate=learning_rate,
                                     gradient_accumulation_steps=accumulation_steps,
-                                    hf_token=hf_token)
+                                    hf_token=hf_token,
+                                    freeze_backbone=freeze_backbone)
 
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
@@ -312,7 +314,8 @@ def train(tokenized_data_train: List[Dict],
                                 weight_decay=weight_decay,
                                 learning_rate=learning_rate,
                                 gradient_accumulation_steps=accumulation_steps,
-                                hf_token=hf_token)
+                                hf_token=hf_token,
+                                freeze_backbone=freeze_backbone)
 
         print("Training on full dataset")
         TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)
@@ -337,6 +340,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--output_dir', type=str, default="../../output")
     argparsers.add_argument('--parse_annotations', action="store_true", default=False)
     argparsers.add_argument('--train_model', action="store_true", default=False)
+    argparsers.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparsers.add_argument('--chunk_size', type=int, default=None)
     argparsers.add_argument('--chunk_type', type=str, default='standard', choices=['standard', 'centered', 'paragraph'])
     argparsers.add_argument('--max_token_length', type=int, default=514)
@@ -370,6 +374,7 @@ if __name__ == "__main__":
     parse_annotations = args.parse_annotations
     train_model = args.train_model
     hf_token = args.hf_token
+    freeze_backbone = args.freeze_backbone
 
     if args.without_iob_tagging:
         use_iob = False
@@ -484,4 +489,5 @@ if __name__ == "__main__":
               weight_decay=weight_decay,
               learning_rate=learning_rate,
               accumulation_steps=accumulation_steps,
-              hf_token=hf_token)
+              hf_token=hf_token, 
+              freeze_backbone=freeze_backbone)
