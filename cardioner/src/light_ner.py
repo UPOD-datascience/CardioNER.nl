@@ -34,8 +34,60 @@ gc.collect()
 
 import argparse
 
+def convert_to_iob(labels, text, tokenizer):
+    """Convert entity annotations to IOB format aligned with transformer tokenization"""
+    iob_labels = []
 
-#
+    # Sort labels by start position
+    sorted_labels = sorted(labels, key=lambda x: int(x['start_span']))
+
+    # Get transformer tokenization info
+    encoding = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+    offset_mapping = encoding.offset_mapping
+
+    # Track which positions have been assigned tags
+    token_labels = ["O"] * len(offset_mapping)
+
+    # Assign B/I tags directly based on character spans
+    for label in sorted_labels:
+        tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
+
+        # Find all tokens that overlap with this entity
+        entity_tokens = []
+        for i, (token_start, token_end) in enumerate(offset_mapping):
+            # Skip if token has no text (special tokens)
+            if token_start == token_end:
+                continue
+
+            # Check if token overlaps with entity
+            if token_end > start_idx and token_start < end_idx:
+                entity_tokens.append(i)
+
+        if not entity_tokens:
+            continue
+
+        # Assign B tag to first token
+        token_labels[entity_tokens[0]] = f"B-{tag}"
+
+        # Assign I tags to remaining tokens
+        for idx in entity_tokens[1:]:
+            token_labels[idx] = f"I-{tag}"
+
+    # Convert token labels to dictionaries with positions
+    for i, tag in enumerate(token_labels):
+        token_start, token_end = offset_mapping[i]
+        if token_start == token_end:  # Skip special tokens
+            continue
+
+        iob_labels.append({
+            "tag": tag,
+            "start_span": token_start,
+            "end_span": token_end,
+            "text": text[token_start:token_end]
+        })
+
+    return iob_labels
+
 def flatten_list(l):
     if not isinstance(l, list):
         return [l]
@@ -170,16 +222,19 @@ class CardioCCC(Dataset):
         encoding: str = "UTF-8",
         with_suggestion: bool = False,
         iob_tags: bool = False,
+        tokenizer = None  # Add tokenizer parameter
     ):
-
         val_str = "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
         self.root_path = Path(root_path)
         self.split_file_names = json.load((self.root_path / "splits.json").open())[lang][split]["symp"]
         self.lang = lang
         batches = ["b1", "b2"] if lang != "ro" else ["b1"]
         self.annotations = []
-        if iob_tags:
-            nlp = spacy.blank(lang)
+
+        # For IOB tagging, we now need the tokenizer
+        if iob_tags and tokenizer is None:
+            raise ValueError("Tokenizer must be provided when using IOB tags")
+
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
@@ -194,8 +249,11 @@ class CardioCCC(Dataset):
                 file_name = group[0] + ".txt"
                 text = (lang_path / "dis/txt" / file_name).read_text(encoding=encoding)
                 labels = group[1].loc[:, ["tag", "start_span", "end_span", "text"]].to_dict(orient="records")
+
+                # Use the improved IOB conversion if requested
                 if iob_tags:
-                    labels = [x for label in labels for x in split_iob(label, nlp, text)]
+                    labels = convert_to_iob(labels, text, tokenizer)
+
                 self.annotations.append({"text": text, "labels": labels})
 
     def __len__(self):
@@ -288,12 +346,15 @@ class NEREval(Metric):
 
 
 class NERModule(L.LightningModule):
-    def __init__(self, 
-                 lm: nn.Module, 
-                 lm_output_size: int, 
-                 label2tag: int, 
+    def __init__(self,
+                 lm: nn.Module,
+                 lm_output_size: int,
+                 label2tag: int,
                  freeze_backbone: bool = False,
-                 learning_rate: float = 2e-5):
+                 learning_rate: float = 2e-5,
+                 classifier_hidden_layers: tuple|None = None,
+                 classifier_dropout: float = 0.1
+    ):
         super().__init__()
         self.lm = lm
         if freeze_backbone:
@@ -301,13 +362,47 @@ class NERModule(L.LightningModule):
             for param in self.lm.parameters():
                 param.requires_grad = False
             self.lm.eval()
-        self.lm.train(not freeze_backbone)    
+        self.lm.train(not freeze_backbone)
         self.label2tag = label2tag
         self.num_labels = len(label2tag.keys())
-        self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        #self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
         self.learning_rate = learning_rate
+
+        self._build_classifier_head(classifier_hidden_layers,
+            classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Linear(input_size, self.num_labels)
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
+        print(f"Created classifier head with architecture: {self.classifier}")
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
         logits = logits.view(-1, self.num_labels)
@@ -511,6 +606,12 @@ if __name__ == "__main__":
     argparser.add_argument("--with_suggestion", action="store_true", help="Use corpus with suggested annotations")
     argparser.add_argument("--use_iob_tags", action="store_true", help="Use IOB tags for labels")
     argparser.add_argument("--output_dir", type=str, default=".")
+    argparser.add_argument(
+        "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
+    )
+    argparser.add_argument(
+        "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
+    )
 
     args = argparser.parse_args()
 
@@ -535,6 +636,8 @@ if __name__ == "__main__":
     with_suggestion = args.with_suggestion
     output_dir = args.output_dir
     use_iob_tags = args.use_iob_tags
+    classifier_hidden_layers = args.classifier_hidden_layers
+    classifier_dropout = args.classifier_dropout
 
     if use_iob_tags:
         tag2label = {
@@ -558,7 +661,7 @@ if __name__ == "__main__":
         }
     label2tag = {v: k for k, v in tag2label.items()}
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=False, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True, use_fast=True)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
@@ -568,9 +671,27 @@ if __name__ == "__main__":
 
     print(f"The maximum length: {max_len}")
 
-    train = CardioCCC(root_path, "train", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
-    val = CardioCCC(root_path, "validation", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
-    test = CardioCCC(root_path, "test", lang, encoding=file_encoding, with_suggestion=with_suggestion, iob_tags=use_iob_tags)
+    train = CardioCCC(
+        root_path, "train", lang,
+        encoding=file_encoding,
+        with_suggestion=with_suggestion,
+        iob_tags=use_iob_tags,
+        tokenizer=tokenizer if use_iob_tags else None  # Pass tokenizer when IOB tags are used
+    )
+    val = CardioCCC(
+        root_path, "validation", lang,
+        encoding=file_encoding,
+        with_suggestion=with_suggestion,
+        iob_tags=use_iob_tags,
+        tokenizer=tokenizer if use_iob_tags else None
+    )
+    test = CardioCCC(
+        root_path, "test", lang,
+        encoding=file_encoding,
+        with_suggestion=with_suggestion,
+        iob_tags=use_iob_tags,
+        tokenizer=tokenizer if use_iob_tags else None
+    )
 
     train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
     val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
@@ -585,7 +706,9 @@ if __name__ == "__main__":
                        lm_output_size=model.config.hidden_size,
                        learning_rate=args.learning_rate,
                        freeze_backbone=args.freeze_backbone,
-                       label2tag=label2tag)
+                       label2tag=label2tag,
+                       classifier_hidden_layers=classifier_hidden_layers,
+                       classifier_dropout=classifier_dropout)
 
 
     if torch.cuda.is_available() & use_cpu == False:

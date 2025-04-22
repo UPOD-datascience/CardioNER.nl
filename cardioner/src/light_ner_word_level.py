@@ -379,14 +379,16 @@ class NEREval(Metric):
 
 class NERModule(L.LightningModule):
     def __init__(
-        self, 
-        lm: nn.Module, 
-        lm_output_size: int, 
-        label2tag: int, 
-        iob_tags: bool, 
+        self,
+        lm: nn.Module,
+        lm_output_size: int,
+        label2tag: int,
+        iob_tags: bool,
         freeze_backbone: bool = False,
-        word_prediction_strategy: str = "first_token", 
-        learning_rate=2e-5
+        word_prediction_strategy: str = "first_token",
+        learning_rate=2e-5,
+        classifier_hidden_layers: tuple|None = None,
+        classifier_dropout: float = 0.1
     ):
         super().__init__()
         self.lm = lm
@@ -401,12 +403,46 @@ class NERModule(L.LightningModule):
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
         self.num_labels = self.num_tags * self.offset
-        self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        #self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
         self.word_prediction_strategy = word_prediction_strategy
         self.learning_rate = learning_rate
         self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
+
+        self._build_classifier_head(classifier_hidden_layers,
+            classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Linear(input_size, self.num_labels)
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
+        print(f"Created classifier head with architecture: {self.classifier}")
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
         logits = logits.view(-1, self.num_labels)
@@ -633,6 +669,12 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--word_prediction_strategy", type=str, default="average", help="Strategy to predict word-level entities"
     )
+    argparser.add_argument(
+        "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
+    )
+    argparser.add_argument(
+        "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
+    )
 
     args = argparser.parse_args()
 
@@ -656,6 +698,9 @@ if __name__ == "__main__":
     with_suggestion = args.with_suggestion
     output_dir = args.output_dir
     use_iob_tags = args.use_iob_tags
+    classifier_hidden_layers = args.classifier_hidden_layers
+    classifier_dropout = args.classifier_dropout
+
 
     tag2label = {
         "DISEASE": 0,
@@ -720,6 +765,8 @@ if __name__ == "__main__":
             iob_tags=use_iob_tags,
             freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
+            classifier_hidden_layers=classifier_hidden_layers,
+            classifier_dropout=classifier_dropout
         )
     else:
         module = NERModule.load_from_checkpoint(

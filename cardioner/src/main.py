@@ -210,7 +210,9 @@ def train(tokenized_data_train: List[Dict],
           learning_rate: float=1e-4,
           accumulation_steps: int=1,
           hf_token: str=None,
-          freeze_backbone: bool=False):
+          freeze_backbone: bool=False,
+          classifier_hidden_layers: tuple|None=None,
+          classifier_dropout: float=0.1,
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -358,6 +360,8 @@ if __name__ == "__main__":
     argparsers.add_argument('--force_splitter', action="store_true", default=False)
     argparsers.add_argument('--write_annotations', action="store_true", default=False)
     argparsers.add_argument('--without_iob_tagging', action="store_true", default=False)
+    argparsers.add_argument('--classifier_hidden_layers', type=int, nargs='+', default=None)
+    argparsers.add_argument('--classifier_dropout', type=float, default=0.1)
 
 
     args = argparsers.parse_args()
@@ -375,6 +379,8 @@ if __name__ == "__main__":
     train_model = args.train_model
     hf_token = args.hf_token
     freeze_backbone = args.freeze_backbone
+    classifier_hidden_layers = args.classifier_hidden_layers
+    classifier_dropout = args.classifier_dropout
 
     if args.without_iob_tagging:
         use_iob = False
@@ -489,5 +495,7 @@ if __name__ == "__main__":
               weight_decay=weight_decay,
               learning_rate=learning_rate,
               accumulation_steps=accumulation_steps,
-              hf_token=hf_token, 
-              freeze_backbone=freeze_backbone)
+              hf_token=hf_token,
+              freeze_backbone=freeze_backbone,
+              classifier_hidden_layers=classifier_hidden_layers,
+              classifier_dropout=classifier_dropout)

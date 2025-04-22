@@ -34,9 +34,45 @@ class TokenClassificationModelCRF(nn.Module):
         self.pad_label = self.num_labels + 1
         self.roberta = base_model
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
         # Initialize CRF layer
         self.crf = CRF(self.num_labels, batch_first=True)
+
+        classifier_hidden_layers = config.classifier_hidden_layers
+        classifier_dropout = config.classifier_dropout
+        self._build_classifier_head(classifier_hidden_layers,
+            classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Linear(input_size, self.num_labels)
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
+        print(f"Created classifier head with architecture: {self.classifier}")
 
     def forward(
         self,
@@ -75,14 +111,49 @@ class TokenClassificationModel(nn.Module):
         self.config = config
         self.num_labels = config.num_labels
         self.roberta = base_model
+        classifier_hidden_layers = config.classifier_hidden_layers
+        classifier_dropout = config.classifier_dropout
         if config.freeze_backbone:
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
-        self.roberta.train(not config.freeze_backbone) 
-                
+        self.roberta.train(not config.freeze_backbone)
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        self._build_classifier_head(classifier_hidden_layers,
+            classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Linear(input_size, self.num_labels)
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
+        print(f"Created classifier head with architecture: {self.classifier}")
 
     def forward(
         self,
@@ -172,6 +243,8 @@ class ModelTrainer():
                  output_dir: str="../../output",
                  hf_token: str=None,
                  freeze_backbone: bool=False,
+                 classifier_hidden_layers: tuple|None=None,
+                 classifier_dropout: float=0.1
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -216,8 +289,9 @@ class ModelTrainer():
                                                                 padding="max_length", label_pad_token_id=self.pad_token_id )
 
         config = AutoConfig.from_pretrained(model, num_labels=num_labels,
-            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1, token=hf_token, 
-            freeze_backbone=freeze_backbone)
+            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1, token=hf_token,
+            freeze_backbone=freeze_backbone, classifier_dropout=classifier_dropout,
+            classifier_hidden_layers=classifier_hidden_layers)
 
         if use_crf:
             print("USING CRF:", self.crf)
