@@ -212,7 +212,7 @@ def train(tokenized_data_train: List[Dict],
           hf_token: str=None,
           freeze_backbone: bool=False,
           classifier_hidden_layers: tuple|None=None,
-          classifier_dropout: float=0.1,
+          classifier_dropout: float=0.1):
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -274,6 +274,8 @@ def train(tokenized_data_train: List[Dict],
                                     weight_decay=weight_decay,
                                     learning_rate=learning_rate,
                                     gradient_accumulation_steps=accumulation_steps,
+                                    classifier_hidden_layers=classifier_hidden_layers,
+                                    classifier_dropout=classifier_dropout,
                                     hf_token=hf_token)
             else:
                 TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
@@ -285,7 +287,9 @@ def train(tokenized_data_train: List[Dict],
                                     learning_rate=learning_rate,
                                     gradient_accumulation_steps=accumulation_steps,
                                     hf_token=hf_token,
-                                    freeze_backbone=freeze_backbone)
+                                    freeze_backbone=freeze_backbone,
+                                    classifier_hidden_layers=classifier_hidden_layers,
+                                    classifier_dropout=classifier_dropout)
 
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
@@ -306,6 +310,8 @@ def train(tokenized_data_train: List[Dict],
                                 weight_decay=weight_decay,
                                 learning_rate=learning_rate,
                                 gradient_accumulation_steps=accumulation_steps,
+                                classifier_hidden_layers=classifier_hidden_layers,
+                                classifier_dropout=classifier_dropout,
                                 hf_token=hf_token)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
@@ -317,7 +323,9 @@ def train(tokenized_data_train: List[Dict],
                                 learning_rate=learning_rate,
                                 gradient_accumulation_steps=accumulation_steps,
                                 hf_token=hf_token,
-                                freeze_backbone=freeze_backbone)
+                                freeze_backbone=freeze_backbone,
+                                classifier_hidden_layers=classifier_hidden_layers,
+                                classifier_dropout=classifier_dropout)
 
         print("Training on full dataset")
         TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)

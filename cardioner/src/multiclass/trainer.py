@@ -18,6 +18,7 @@ import torch
 from sklearn.model_selection import train_test_split, KFold
 from transformers.utils import logging
 from torchcrf import CRF
+from utils import pretty_print_classifier
 
 logging.set_verbosity_debug()
 
@@ -27,19 +28,21 @@ import evaluate
 metric = evaluate.load("seqeval")
 
 class TokenClassificationModelCRF(nn.Module):
-    def __init__(self, base_model, config):
+    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
+        classifier_dropout=0.1):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels + 1 # Extra label to acocunt for the -100 padding label
         self.pad_label = self.num_labels + 1
         self.roberta = base_model
+        if config.freeze_backbone:
+            for param in self.roberta.parameters():
+                param.requires_grad = False
+            self.roberta.eval()
+        self.roberta.train(not config.freeze_backbone)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-        # Initialize CRF layer
         self.crf = CRF(self.num_labels, batch_first=True)
 
-        classifier_hidden_layers = config.classifier_hidden_layers
-        classifier_dropout = config.classifier_dropout
         self._build_classifier_head(classifier_hidden_layers,
             classifier_dropout)
 
@@ -57,12 +60,16 @@ class TokenClassificationModelCRF(nn.Module):
 
         # If hidden_layers is None or empty, just create a simple linear layer
         if not hidden_layers:
-            self.classifier = nn.Linear(input_size, self.num_labels)
+            self.classifier = nn.Sequential(
+                        nn.Dropout(dropout_rate),
+                        nn.Linear(input_size, self.num_labels)
+                    )
             return
 
         # Build MLP with specified hidden layers
         for hidden_size in hidden_layers:
             layers.append(nn.Linear(input_size, hidden_size))
+            #layers.append(nn.BatchNorm1d(hidden_size))  # Add batch normalization
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout_rate))
             input_size = hidden_size
@@ -72,7 +79,6 @@ class TokenClassificationModelCRF(nn.Module):
 
         # Create sequential model
         self.classifier = nn.Sequential(*layers)
-        print(f"Created classifier head with architecture: {self.classifier}")
 
     def forward(
         self,
@@ -106,13 +112,13 @@ class TokenClassificationModelCRF(nn.Module):
 
 
 class TokenClassificationModel(nn.Module):
-    def __init__(self, base_model, config):
+    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
+        classifier_dropout=0.1):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
         self.roberta = base_model
-        classifier_hidden_layers = config.classifier_hidden_layers
-        classifier_dropout = config.classifier_dropout
+
         if config.freeze_backbone:
             for param in self.roberta.parameters():
                 param.requires_grad = False
@@ -120,7 +126,6 @@ class TokenClassificationModel(nn.Module):
         self.roberta.train(not config.freeze_backbone)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
         self._build_classifier_head(classifier_hidden_layers,
             classifier_dropout)
 
@@ -243,6 +248,7 @@ class ModelTrainer():
                  output_dir: str="../../output",
                  hf_token: str=None,
                  freeze_backbone: bool=False,
+                 gradient_accumulation_steps: int=1,
                  classifier_hidden_layers: tuple|None=None,
                  classifier_dropout: float=0.1
     ):
@@ -254,6 +260,7 @@ class ModelTrainer():
             'run_name': 'CardioNER',
             'per_device_train_batch_size': batch_size,
             'per_device_eval_batch_size': batch_size,
+            'gradient_accumulation_steps': gradient_accumulation_steps,
             'learning_rate': learning_rate,
             'num_train_epochs': num_train_epochs,
             'weight_decay': weight_decay,
@@ -288,18 +295,19 @@ class ModelTrainer():
         self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length,
                                                                 padding="max_length", label_pad_token_id=self.pad_token_id )
 
-        config = AutoConfig.from_pretrained(model, num_labels=num_labels,
-            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1, token=hf_token,
-            freeze_backbone=freeze_backbone, classifier_dropout=classifier_dropout,
-            classifier_hidden_layers=classifier_hidden_layers)
+        or_config = AutoConfig.from_pretrained(model, hf_token=hf_token, return_unused_kwargs=False)
+        or_config.num_labels=len(self.label2id)
+        or_config.id2label=self.id2label
+        or_config.label2id=self.label2id
+        or_config.hidden_dropout_prob=0.1
 
         if use_crf:
             print("USING CRF:", self.crf)
-            base_model = RobertaModel.from_pretrained(model, config=config)
-            self.model = TokenClassificationModelCRF(base_model, config)
+            base_model = RobertaModel.from_pretrained(model, config=or_config)
+            self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
         else:
-            base_model = RobertaModel.from_pretrained(model, config=config)
-            self.model = TokenClassificationModel(base_model, config)
+            base_model = RobertaModel.from_pretrained(model, config=or_config)
+            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -311,7 +319,7 @@ class ModelTrainer():
         print("Labels:", self.label2id)
         print("id2label:", self.id2label)
         print("Model config:", self.model.config)
-
+        print("Classifier architecture:", pretty_print_classifier(self.model.classifier))
 
         self.args = TrainingArguments(
             output_dir=output_dir,
