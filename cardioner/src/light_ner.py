@@ -1,4 +1,3 @@
-print("Importing libraries...")
 import lightning as L
 
 import itertools
@@ -28,7 +27,6 @@ import os
 from functools import partial
 import gc
 
-print("Imported libraries..continuing to main")
 torch.cuda.empty_cache()
 gc.collect()
 

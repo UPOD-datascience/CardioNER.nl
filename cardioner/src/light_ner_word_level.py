@@ -1,4 +1,3 @@
-print("Importing libraries...")
 import lightning as L
 
 from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
@@ -35,7 +34,6 @@ import pandas as pd
 import json
 import spacy
 
-print("Imported libraries..continuing to main")
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -667,7 +665,11 @@ if __name__ == "__main__":
     argparser.add_argument("--output_dir", type=str, default=".")
     argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
     argparser.add_argument(
-        "--word_prediction_strategy", type=str, default="average", help="Strategy to predict word-level entities"
+        "--word_prediction_strategy",
+          type=str, 
+          default="average", 
+          choices=['first_token', 'last_token', 'average'],
+          help="Strategy to predict word-level entities"
     )
     argparser.add_argument(
         "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
@@ -683,6 +685,8 @@ if __name__ == "__main__":
 
         file_encoding = locale.getpreferredencoding(False)  # None
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
+    else:
+        file_encoding = args.file_encoding
 
     batch_size = args.batch_size
     learning_rate = args.learning_rate
@@ -752,9 +756,9 @@ if __name__ == "__main__":
 
     collate_fn_train = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
     collate_fn_test = partial(collate_fn_chunked_bert_test, padding_value=tokenizer.pad_token_id)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=True, num_workers=num_workers, persistent_workers=True)
+    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers, persistent_workers=True)
+    test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers, persistent_workers=True)
 
     if args.ckpt_path is None:
         module = NERModule(
