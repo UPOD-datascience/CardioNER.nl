@@ -370,6 +370,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--without_iob_tagging', action="store_true", default=False)
     argparsers.add_argument('--classifier_hidden_layers', type=int, nargs='+', default=None)
     argparsers.add_argument('--classifier_dropout', type=float, default=0.1)
+    argparsers.add_argument('--tag_classes', type=str, nargs='+', default=None)
 
 
     args = argparsers.parse_args()
@@ -436,6 +437,7 @@ if __name__ == "__main__":
     weight_decay = args.weight_decay
     learning_rate = args.learning_rate
     accumulation_steps = args.accumulation_steps
+    tag_classes = args.tag_classes
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -454,6 +456,11 @@ if __name__ == "__main__":
                                     multi_class = multi_class,
                                     use_iob=use_iob,
                                     hf_token=hf_token)
+        
+    if tag_classes is not None:
+        print("Tag classes provided, use these as a filter for the tokeznized data/tags")
+        assert tags is not None, "Tag classes provided, but no tags found."
+        
 
     if train_model:
         print("Training the model..")
