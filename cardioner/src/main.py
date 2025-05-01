@@ -25,11 +25,8 @@ import evaluate
 metric = evaluate.load("seqeval")
 
 
-
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
-# TODO: add paragraph splitter from Lorenzo
-# TODO: add per label performance
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
          lang: str='en',
@@ -456,17 +453,55 @@ if __name__ == "__main__":
                                     multi_class = multi_class,
                                     use_iob=use_iob,
                                     hf_token=hf_token)
-        
-    if tag_classes is not None:
-        print("Tag classes provided, use these as a filter for the tokeznized data/tags")
-        assert tags is not None, "Tag classes provided, but no tags found."
-        
+
 
     if train_model:
         print("Training the model..")
         if tokenized_data is None:
             with open(_annotation_loc, 'r', encoding='utf-8') as fr:
                 tokenized_data = [json.loads(line) for line in fr]
+
+        if tag_classes is not None:
+            print("Tag classes provided, use these as a filter for the tokeznized data/tags")
+            assert tags is not None, "Tag classes provided, but no tags found."
+            # filter tags list
+            tag_classes = [tag_class.upper() for tag_class in tag_classes]
+            tags = [tag.upper() for tag in tags]
+            tags = [tag for tag in tags if any([tag_class in tag for tag_class in tag_classes])]
+
+            # filter tokenized_data
+            #
+            filtered_tokenized_data = []
+            for doc in tokenized_data:
+                temp_dict = {
+                    'id': doc['id'],
+                    'gid': doc['gid'],
+                    'batch_id': doc['batch_id']
+                }
+                temp_tokens = []
+                if multi_class:
+                    temp_tags = []
+                    for chindex, _tag in enumerate(doc['tags']):
+                        if any([tag_class in _tag for tag_class in tag_classes]):
+                            temp_tokens.append(doc['tokens'][chindex])
+                            temp_tags.append(_tag)
+                else:
+                    temp_tags = []
+                    for chindex, _tags in enumerate(doc['tags']):
+                        _temp_tags = []
+                        for _tag in tags:
+                            if any([tag_class in _tag for tag_class in tag_classes]):
+                                _temp_tags.append(_tag)
+                        if len(_temp_tags)>0:
+                            temp_tags.append(_temp_tags)
+                            temp_tokens.append(doc['tokens'][chindex])
+
+                temp_dict['tokens'] = temp_tokens
+                temp_dict['tags'] = temp_tags
+
+                filtered_tokenized_data.append(temp_dict)
+
+            tokenized_data = filtered_tokenized_data
 
         # check if input_ids and labels have the same length, are smaller than max_length and if the labels are within range
         for entry in tokenized_data:
