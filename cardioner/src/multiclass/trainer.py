@@ -27,7 +27,11 @@ from torch import nn
 import evaluate
 metric = evaluate.load("seqeval")
 
+# TODO: add multihead CRF: https://github.com/ieeta-pt/Multi-Head-CRF/tree/master/src/model
+
 class TokenClassificationModelCRF(nn.Module):
+    # TODO: add class weights to python-crf..
+    # https://pytorch.org/docs/stable/generated/torch.nn.NLLLoss.html
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
         classifier_dropout=0.1):
         super().__init__()
@@ -35,11 +39,14 @@ class TokenClassificationModelCRF(nn.Module):
         self.num_labels = config.num_labels + 1 # Extra label to acocunt for the -100 padding label
         self.pad_label = self.num_labels + 1
         self.roberta = base_model
-        if config.freeze_backbone:
+
+        self.lm_output_size = self.roberta.config.hidden_size
+
+        if freeze_backbone:
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
-        self.roberta.train(not config.freeze_backbone)
+        self.roberta.train(not freeze_backbone)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.crf = CRF(self.num_labels, batch_first=True)
 
@@ -113,17 +120,25 @@ class TokenClassificationModelCRF(nn.Module):
 
 class TokenClassificationModel(nn.Module):
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1):
+        classifier_dropout=0.1, class_weights=None):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
         self.roberta = base_model
 
-        if config.freeze_backbone:
+        self.lm_output_size = self.roberta.config.hidden_size
+
+        # Store class weights
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
+        else:
+            self.class_weights = None
+
+        if freeze_backbone:
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
-        self.roberta.train(not config.freeze_backbone)
+        self.roberta.train(not freeze_backbone)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self._build_classifier_head(classifier_hidden_layers,
@@ -185,7 +200,12 @@ class TokenClassificationModel(nn.Module):
 
         loss = None
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
+            if self.class_weights is not None:
+                # Move class_weights to the same device as the model
+                weights = self.class_weights.to(labels.device)
+            else:
+                weights = None
+            loss_fct = nn.CrossEntropyLoss(weight=weights)
             if attention_mask is not None:
                 # Only keep active parts of the sequence
                 active_loss = attention_mask.view(-1) == 1
@@ -250,7 +270,8 @@ class ModelTrainer():
                  freeze_backbone: bool=False,
                  gradient_accumulation_steps: int=1,
                  classifier_hidden_layers: tuple|None=None,
-                 classifier_dropout: float=0.1
+                 classifier_dropout: float=0.1,
+                 class_weights: List[float]|None = None
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -307,7 +328,8 @@ class ModelTrainer():
             self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
         else:
             base_model = RobertaModel.from_pretrained(model, config=or_config)
-            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
+            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone,
+                classifier_hidden_layers, classifier_dropout, class_weights)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

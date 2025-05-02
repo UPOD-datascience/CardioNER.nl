@@ -24,9 +24,52 @@ from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 import evaluate
 metric = evaluate.load("seqeval")
 
-
+from utils import calculate_class_weights
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
+def filter_tags(iob_data, tags, tags_to_keep, multi_class):
+    print(f"Tag classes provided: {tags_to_keep},\nuse these as a filter for the tokenized data/tags")
+    assert tags is not None, "Tag classes provided, but no tags found."
+    # filter tags list
+    tags_to_keep = [tag_class.upper() for tag_class in tags_to_keep]
+    tags = [tag.upper() for tag in tags]
+    print(f'Extracted tags are {tags}')
+    tags = ['O']+[tag for tag in tags if any([tag_class in tag for tag_class in tags_to_keep])]
+
+    assert len(tags)> 1, f"Tag classes provided, but no tags found after filtering for {tags_to_keep}, except 'O'."
+    # filter tokenized_data
+    #
+    filtered_tokenized_data = []
+    for doc in iob_data:
+        temp_dict = {
+            'id': doc['id'],
+            'gid': doc['gid'],
+            'batch': doc.get('batch', 'cardioccc')
+        }
+        temp_tokens = []
+        if multi_class:
+            temp_tags = []
+            for chindex, _tag in enumerate(doc['tags']):
+                if any([tag_class in _tag for tag_class in tags_to_keep]):
+                    temp_tokens.append(doc['tokens'][chindex])
+                    temp_tags.append(_tag)
+        else:
+            temp_tags = []
+            for chindex, _tags in enumerate(doc['tags']):
+                _temp_tags = []
+                for _tag in tags:
+                    if any([tag_class in _tag for tag_class in tags_to_keep]):
+                        _temp_tags.append(_tag)
+                if len(_temp_tags)>0:
+                    temp_tags.append(_temp_tags)
+                    temp_tokens.append(doc['tokens'][chindex])
+
+        if len(temp_tags)>0:
+            temp_dict['tokens'] = temp_tokens
+            temp_dict['tags'] = temp_tags
+            filtered_tokenized_data.append(temp_dict)
+
+    return filtered_tokenized_data, tags
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
          lang: str='en',
@@ -41,10 +84,12 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          chunk_type: Literal['standard', 'centered', 'paragraph']='standard',
          multi_class: bool=False,
          use_iob: bool=True,
-         hf_token: str=None
+         hf_token: str=None,
+         tags_to_keep: List[str]=None
          ):
 
     if multi_class:
+        from multiclass.loader import annotate_corpus_paragraph
         from multiclass.loader import annotate_corpus_standard
         from multiclass.loader import annotate_corpus_centered
         from multiclass.loader import tokenize_and_align_labels
@@ -137,6 +182,9 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     for batch_id, corpus in datasets.items():
         iob_data, _unique_tags = annotate_func(corpus, batch_id=batch_id, **kwargs)
 
+        # THIS IS WHERE YOU SHOULD FILTER THE TAGS
+        iob_data, _unique_tags = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
+
         if batch_id == 'train':
             iob_data_train = iob_data
             unique_tags = _unique_tags
@@ -159,7 +207,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     if multi_class==False:
         count_tokens_with_multiple_labels(iob_data)
 
-
     partial_tokenize_and_align_labels = partial(tokenize_and_align_labels,
                                                 tokenizer=tokenizer,
                                                 label2id=label2id,
@@ -170,7 +217,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         partial_tokenize_and_align_labels,
         batched=True,
     )
-
     # given a max_length tokens we want to center the context around all spans in the documents and extract them as a seperate documents. Each separate extraction needs to get a separate sub_id.
 
     max_seq_length = max(len(entry['input_ids']) for entry in iob_data_dataset_tokenized)
@@ -209,7 +255,8 @@ def train(tokenized_data_train: List[Dict],
           hf_token: str=None,
           freeze_backbone: bool=False,
           classifier_hidden_layers: tuple|None=None,
-          classifier_dropout: float=0.1):
+          classifier_dropout: float=0.1,
+          use_class_weights: bool=False):
 
     label2id = tokenized_data_train[0]['label2id']
     id2label = tokenized_data_train[0]['id2label']
@@ -225,6 +272,12 @@ def train(tokenized_data_train: List[Dict],
 
     label2id = {str(k):int(v) for k,v in label2id.items()}
     id2label = {int(k):str(v) for k,v in id2label.items()}
+
+    # extract class weights
+    if use_class_weights:
+        class_weights = calculate_class_weights(tokenized_data_train, label2id, multi_class)
+    else:
+        class_weights = None
 
     # Ensure labels are correct
     num_labels = len(label2id)
@@ -273,7 +326,8 @@ def train(tokenized_data_train: List[Dict],
                                     gradient_accumulation_steps=accumulation_steps,
                                     classifier_hidden_layers=classifier_hidden_layers,
                                     classifier_dropout=classifier_dropout,
-                                    hf_token=hf_token)
+                                    hf_token=hf_token,
+                                    class_weights=class_weights)
             else:
                 TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                     model=Model, output_dir=f"{output_dir}/fold_{k}",
@@ -286,7 +340,9 @@ def train(tokenized_data_train: List[Dict],
                                     hf_token=hf_token,
                                     freeze_backbone=freeze_backbone,
                                     classifier_hidden_layers=classifier_hidden_layers,
-                                    classifier_dropout=classifier_dropout)
+                                    classifier_dropout=classifier_dropout,
+                                    class_weights=class_weights
+                )
 
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
@@ -309,7 +365,8 @@ def train(tokenized_data_train: List[Dict],
                                 gradient_accumulation_steps=accumulation_steps,
                                 classifier_hidden_layers=classifier_hidden_layers,
                                 classifier_dropout=classifier_dropout,
-                                hf_token=hf_token)
+                                hf_token=hf_token,
+                                class_weights=class_weights)
         else:
             TrainClass = MultiLabelModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
                                 model=Model, output_dir=output_dir,
@@ -322,7 +379,8 @@ def train(tokenized_data_train: List[Dict],
                                 hf_token=hf_token,
                                 freeze_backbone=freeze_backbone,
                                 classifier_hidden_layers=classifier_hidden_layers,
-                                classifier_dropout=classifier_dropout)
+                                classifier_dropout=classifier_dropout,
+                                class_weights=class_weights)
 
         print("Training on full dataset")
         TrainClass.train(train_data=tokenized_data_train, test_data=tokenized_data_test, eval_data=tokenized_data_validation, profile=profile)
@@ -368,7 +426,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--classifier_hidden_layers', type=int, nargs='+', default=None)
     argparsers.add_argument('--classifier_dropout', type=float, default=0.1)
     argparsers.add_argument('--tag_classes', type=str, nargs='+', default=None)
-
+    argparsers.add_argument('--use_class_weights', action="store_true", default=False)
 
     args = argparsers.parse_args()
 
@@ -452,56 +510,14 @@ if __name__ == "__main__":
                                     max_length=max_length,
                                     multi_class = multi_class,
                                     use_iob=use_iob,
-                                    hf_token=hf_token)
-
+                                    hf_token=hf_token,
+                                    tags_to_keep=tag_classes)
 
     if train_model:
         print("Training the model..")
         if tokenized_data is None:
             with open(_annotation_loc, 'r', encoding='utf-8') as fr:
                 tokenized_data = [json.loads(line) for line in fr]
-
-        if tag_classes is not None:
-            print("Tag classes provided, use these as a filter for the tokeznized data/tags")
-            assert tags is not None, "Tag classes provided, but no tags found."
-            # filter tags list
-            tag_classes = [tag_class.upper() for tag_class in tag_classes]
-            tags = [tag.upper() for tag in tags]
-            tags = [tag for tag in tags if any([tag_class in tag for tag_class in tag_classes])]
-
-            # filter tokenized_data
-            #
-            filtered_tokenized_data = []
-            for doc in tokenized_data:
-                temp_dict = {
-                    'id': doc['id'],
-                    'gid': doc['gid'],
-                    'batch_id': doc['batch_id']
-                }
-                temp_tokens = []
-                if multi_class:
-                    temp_tags = []
-                    for chindex, _tag in enumerate(doc['tags']):
-                        if any([tag_class in _tag for tag_class in tag_classes]):
-                            temp_tokens.append(doc['tokens'][chindex])
-                            temp_tags.append(_tag)
-                else:
-                    temp_tags = []
-                    for chindex, _tags in enumerate(doc['tags']):
-                        _temp_tags = []
-                        for _tag in tags:
-                            if any([tag_class in _tag for tag_class in tag_classes]):
-                                _temp_tags.append(_tag)
-                        if len(_temp_tags)>0:
-                            temp_tags.append(_temp_tags)
-                            temp_tokens.append(doc['tokens'][chindex])
-
-                temp_dict['tokens'] = temp_tokens
-                temp_dict['tags'] = temp_tags
-
-                filtered_tokenized_data.append(temp_dict)
-
-            tokenized_data = filtered_tokenized_data
 
         # check if input_ids and labels have the same length, are smaller than max_length and if the labels are within range
         for entry in tokenized_data:
@@ -548,4 +564,5 @@ if __name__ == "__main__":
               hf_token=hf_token,
               freeze_backbone=freeze_backbone,
               classifier_hidden_layers=classifier_hidden_layers,
-              classifier_dropout=classifier_dropout)
+              classifier_dropout=classifier_dropout,
+              use_class_weights=args.use_class_weights)

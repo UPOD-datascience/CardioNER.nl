@@ -72,7 +72,7 @@ class MultiLabelDataCollatorForTokenClassification:
 
 class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassification):
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1):
+        classifier_dropout=0.1, class_weights=None):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
@@ -84,6 +84,12 @@ class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassific
 
         # Access custom attributes correctly
         self.lm_output_size = self.roberta.config.hidden_size
+
+        # Store class weights
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
+        else:
+            self.class_weights = None
 
         if freeze_backbone:
             print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
@@ -152,7 +158,12 @@ class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassific
         loss = None
         if labels is not None:
             # Compute loss here if necessary
-            loss_fct = nn.BCEWithLogitsLoss(reduction="mean")
+            if self.class_weights is not None:
+                # Move class_weights to the same device as the model
+                weights = self.class_weights.to(labels.device)
+            else:
+                weights = None
+            loss_fct = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights) # potentially weight=.. is better
             mask = (labels != -100).float()
             labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
             loss_tensor = loss_fct(logits, labels.float())
@@ -204,7 +215,8 @@ class ModelTrainer():
                  hf_token: str=None,
                  freeze_backbone: bool=False,
                  classifier_hidden_layers: tuple|None=None,
-                 classifier_dropout: float=0.1
+                 classifier_dropout: float=0.1,
+                 class_weights: List[float]|None = None
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -259,7 +271,8 @@ class ModelTrainer():
                                                         base_model=base_model,
                                                         freeze_backbone=freeze_backbone,
                                                         classifier_hidden_layers=classifier_hidden_layers,
-                                                        classifier_dropout=classifier_dropout)
+                                                        classifier_dropout=classifier_dropout,
+                                                        class_weights=class_weights)
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
@@ -384,7 +397,7 @@ class ModelTrainer():
         else:
             _eval_data = eval_data
 
-        trainer = MultiLabelTrainer(
+        trainer = Trainer(
             model=self.model,
             args=self.args,
             train_dataset=train_data,
