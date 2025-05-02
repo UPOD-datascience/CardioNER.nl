@@ -84,8 +84,8 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
          chunk_type: Literal['standard', 'centered', 'paragraph']='standard',
          multi_class: bool=False,
          use_iob: bool=True,
-         hf_token: str=None,
-         tags_to_keep: List[str]=None
+         hf_token: str|None=None,
+         tags_to_keep: List[str]|None=None
          ):
 
     if multi_class:
@@ -182,8 +182,9 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     for batch_id, corpus in datasets.items():
         iob_data, _unique_tags = annotate_func(corpus, batch_id=batch_id, **kwargs)
 
-        # THIS IS WHERE YOU SHOULD FILTER THE TAGS
-        iob_data, _unique_tags = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
+        if isinstance(tags_to_keep, list):
+            assert(all([isinstance(s, str) for s in tags_to_keep])), f"Not all tags are strings {tags_to_keep}"
+            iob_data, _unique_tags = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
 
         if batch_id == 'train':
             iob_data_train = iob_data

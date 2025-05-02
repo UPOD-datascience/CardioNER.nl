@@ -135,9 +135,12 @@ class TokenClassificationModel(nn.Module):
             self.class_weights = None
 
         if freeze_backbone:
+            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
+        else:
+            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
         self.roberta.train(not freeze_backbone)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -328,8 +331,7 @@ class ModelTrainer():
             self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
         else:
             base_model = RobertaModel.from_pretrained(model, config=or_config)
-            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone,
-                classifier_hidden_layers, classifier_dropout, class_weights)
+            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout, class_weights)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
