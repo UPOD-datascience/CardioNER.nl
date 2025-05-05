@@ -1,13 +1,5 @@
 import lightning as L
 
-import itertools
-import re
-from torch.utils.data import Dataset
-from pathlib import Path
-import pandas as pd
-import json
-import spacy
-
 from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
 from transformers import RobertaModel, BertModel, PreTrainedTokenizer
 from transformers import RobertaForTokenClassification, BertForTokenClassification
@@ -35,6 +27,14 @@ import torch.nn.functional as F
 from seqeval.metrics import classification_report
 from lightning.pytorch.loggers import TensorBoardLogger
 import yaml
+
+import itertools
+import re
+from torch.utils.data import Dataset
+from pathlib import Path
+import pandas as pd
+import json
+import spacy
 
 torch.cuda.empty_cache()
 gc.collect()
@@ -111,25 +111,25 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
     for label in labels:
         tag = D_REMAP.get(label["tag"], label["tag"])
         start, end, tag_type = int(label["start_span"]), int(label["end_span"]), tag
-        is_first_token = True
-        for i, (token_start, token_end) in enumerate(token_offsets):
-            if token_end <= start:
-                continue  # Token is before the entity
-            if token_start >= end:
-                break  # Token is after the entity
-            if (
-                (token_start >= start and token_end <= end)
-                or (token_start < start and token_end > start)
-                or (token_start < end and token_end > end)
-            ):
-                # Token overlaps with entity boundary
-                if is_first_token and iob_tags:
-                    tag_label = f"B-{tag_type}"
-                    is_first_token = False
-                else:
-                    tag_label = f"I-{tag_type}"
-                token_tags[tag_type][i] = tag_label
-
+        if any([tag_type.upper() in _tag for _tag in tag2label.keys()]):
+            is_first_token = True
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end <= start:
+                    continue  # Token is before the entity
+                if token_start >= end:
+                    break  # Token is after the entity
+                if (
+                    (token_start >= start and token_end <= end)
+                    or (token_start < start and token_end > start)
+                    or (token_start < end and token_end > end)
+                ):
+                    # Token overlaps with entity boundary
+                    if is_first_token and iob_tags:
+                        tag_label = f"B-{tag_type}"
+                        is_first_token = False
+                    else:
+                        tag_label = f"I-{tag_type}"
+                    token_tags[tag_type][i] = tag_label
     return tokens, token_tags
 
 
@@ -381,10 +381,24 @@ class NEREval(Metric):
 
 class NERModule(L.LightningModule):
     def __init__(
-        self, lm: nn.Module, lm_output_size: int, label2tag: int, iob_tags: bool, word_prediction_strategy: str = "first_token", learning_rate: float = 2e-5
+        self,
+        lm: nn.Module,
+        lm_output_size: int,
+        label2tag: int,
+        iob_tags: bool,
+        freeze_backbone: bool = False,
+        word_prediction_strategy: str = "first_token",
+        learning_rate=2e-5,
+        classifier_hidden_layers: tuple|None = None,
+        classifier_dropout: float = 0.1
     ):
         super().__init__()
         self.lm = lm
+        if freeze_backbone:
+            print("Freezing transformer backbone")
+            for param in self.lm.parameters():
+                param.requires_grad = False
+            self.lm.eval()
         self.lm.train()
         self.label2tag = label2tag
         self.learning_rate = learning_rate
@@ -392,11 +406,46 @@ class NERModule(L.LightningModule):
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
         self.num_labels = self.num_tags * self.offset
-        self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        #self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
         self.word_prediction_strategy = word_prediction_strategy
+        self.learning_rate = learning_rate
         self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
+
+        self._build_classifier_head(classifier_hidden_layers,
+            classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Linear(input_size, self.num_labels)
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
+        print(f"Created classifier head with architecture: {self.classifier}")
 
     def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
         logits = logits.view(-1, self.num_labels)
@@ -599,7 +648,9 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
+    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
@@ -620,11 +671,18 @@ if __name__ == "__main__":
     argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
     argparser.add_argument(
         "--word_prediction_strategy",
-        type=str,
-        default="average",
-        help="Strategy to predict word-level entities",
-        choices=["average", "first_token", "last_token"],
+          type=str,
+          default="average",
+          choices=["average", "first_token", "last_token"],
+          help="Strategy to predict word-level entities"
     )
+    argparser.add_argument(
+        "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
+    )
+    argparser.add_argument(
+        "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
+    )
+    argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
 
     args = argparser.parse_args()
 
@@ -633,8 +691,12 @@ if __name__ == "__main__":
 
         file_encoding = locale.getpreferredencoding(False)  # None
         print(f"WARNING: no file_encoding set, using system default: {file_encoding}")
+    else:
+        file_encoding = args.file_encoding
 
     batch_size = args.batch_size
+    learning_rate = args.learning_rate
+    accumulation_steps = args.accumulation_steps
     patience = args.patience
     num_workers = args.num_workers
     learning_rate = args.learning_rate
@@ -647,16 +709,32 @@ if __name__ == "__main__":
     with_suggestion = args.with_suggestion
     output_dir = args.output_dir
     use_iob_tags = args.use_iob_tags
+    classifier_hidden_layers = args.classifier_hidden_layers
+    classifier_dropout = args.classifier_dropout
 
-    tag2label = {
-        "DISEASE": 0,
-        "MEDICATION": 1,
-        "PROCEDURE": 2,
-        "SYMPTOM": 3,
-    }
+    CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
+
+    if args.tag_classes is None:
+        tag2label = {
+            "O": 0,
+            "DISEASE": 1,
+            "MEDICATION": 2,
+            "PROCEDURE": 3,
+            "SYMPTOM": 4,
+        }
+    else:
+        fstr = "Invalid tag classes in argument, should be one of multiple of 'DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM'"
+        assert all([_tag.upper() in CLASS_LIST for _tag in args.tag_classes]), fstr
+        tag2label = {"O": 0}
+        k = 1
+        for tag in args.tag_classes:
+            tag2label[tag.upper()] = k
+            k = k + 1
+    print(f"The labels are : {tag2label}")
+
     label2tag = {v: k for k, v in tag2label.items()}
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True)
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
@@ -698,25 +776,31 @@ if __name__ == "__main__":
 
     collate_fn_train = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
     collate_fn_test = partial(collate_fn_chunked_bert_test, padding_value=tokenizer.pad_token_id)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=True, num_workers=num_workers, persistent_workers=True)
+    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers, persistent_workers=True)
+    test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers, persistent_workers=True)
 
     if args.ckpt_path is None:
         module = NERModule(
             lm=model,
             lm_output_size=model.config.hidden_size,
+            learning_rate=args.learning_rate,
             label2tag=label2tag,
             iob_tags=use_iob_tags,
+            freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
+            classifier_hidden_layers=classifier_hidden_layers,
+            classifier_dropout=classifier_dropout
         )
     else:
         module = NERModule.load_from_checkpoint(
             args.ckpt_path,
             lm=model,
             lm_output_size=model.config.hidden_size,
+            learning_rate=args.learning_rate,
             label2tag=label2tag,
             iob_tags=use_iob_tags,
+            freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
         )
 
@@ -734,6 +818,7 @@ if __name__ == "__main__":
     log_root = f"lightning_logs/NER_word_level/{model_name.replace('/', '_')}"
     logger = TensorBoardLogger(save_dir=".", name=log_root)
     trainer = L.Trainer(
+        accumulate_grad_batches=accumulation_steps,
         default_root_dir=output_dir,
         callbacks=callbacks,
         accelerator="cpu" if use_cpu else "auto",

@@ -28,6 +28,99 @@ import argparse
 import numpy as np
 from functools import partial
 
+from tqdm import tqdm
+
+
+def annotate_corpus_paragraph(corpus,
+                    batch_id: str="b1",
+                    lang: str="nl",
+                    chunk_size: int = 256,
+                    max_allowed_chunk_size: int = 300,
+                    paragraph_boundary: str = "\n\n",
+                    min_token_len: int = 8,
+                    IOB: bool=True):
+    annotated_data = []
+    unique_tags = set()
+
+    nlp = spacy.blank(lang)
+
+    for entry in tqdm(corpus):
+        text = entry["text"]
+        tags = entry["tags"]
+
+        # Tokenize the text using spaCy
+        doc = nlp(text)
+        tokens = [token.text for token in doc]
+        token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
+
+        # Initialize tags for each token with "O" (outside)
+        token_tags = ["O"] * len(doc)
+
+        # Annotate each token with labels
+        for tag in tags:
+            start, end, tag_type = tag["start"], tag["end"], tag["tag"]
+            unique_tags.add(tag_type)
+
+            # Find tokens that fall within the span
+            is_first_token = True
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end <= start:
+                    continue  # Token is before the entity
+                if token_start >= end:
+                    break  # Token is after the entity
+                if (token_start >= start and token_end <= end) or \
+                   (token_start < start and token_end > start) or \
+                   (token_start < end and token_end > end):
+                    # Token overlaps with entity boundary
+                    if is_first_token and IOB:
+                        token_tags[i] = f"B-{tag_type}"
+                        is_first_token = False
+                    elif IOB:
+                        token_tags[i] = f"I-{tag_type}"
+                    else:
+                        token_tags[i] = tag_type
+
+        # Split tokens and tags into chunks of max_tokens without splitting entities
+        i = 0
+        end_index = 0
+        while i < len(tokens):
+            ## TODO: make chunker respect paragraph boundaries: paragraph_boundary
+            # go to nearest paragraph_boundary < max_allowed_chunk_size
+
+            # Adjust end_index to avoid splitting entities
+            while end_index < len(tokens) \
+                        and (end_index-i) < max_allowed_chunk_size :
+
+                end_index += 1
+
+                if end_index >= 2 and tokens[end_index-2] == paragraph_boundary:
+                    break
+
+            # Ensure end_index is valid
+            end_index = min(end_index, len(tokens))
+
+            if end_index > i:
+                chunk_tokens = tokens[i:end_index-2 if end_index >= 2 else end_index]
+                chunk_tags = token_tags[i:end_index-2 if end_index >= 2 else end_index]
+
+                annotated_data.append({
+                    "gid": entry["id"],
+                    "id": entry["id"] + f"_{i//chunk_size}",  # Modify ID to reflect chunk
+                    "batch": batch_id,
+                    "tokens": chunk_tokens,
+                    "tags": chunk_tags,
+                })
+
+            i = end_index
+
+    if IOB:
+        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+    else:
+        tag_list = ['O'] + [tag for tag in unique_tags]
+
+    return annotated_data, tag_list
+
 
 def annotate_corpus_standard(corpus,
                     batch_id: str="b1",
@@ -105,14 +198,14 @@ def annotate_corpus_standard(corpus,
             })
 
             i = end_index
-    if IOB: 
+    if IOB:
         tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
         tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
     else:
         tag_list = ['O'] + [tag for tag in unique_tags]
     return annotated_data, tag_list
 
-def annotate_corpus_centered(corpus, 
+def annotate_corpus_centered(corpus,
                          lang: str='nl',
                          batch_id: str="b1",
                          chunk_size: int=512,
@@ -209,7 +302,7 @@ def annotate_corpus_centered(corpus,
                 "tags": chunk_tags,
             })
 
-    if IOB: 
+    if IOB:
         tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
         tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
     else:

@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split, KFold
 from transformers.utils import logging
 logging.set_verbosity_debug()
 
+from utils import pretty_print_classifier
 import evaluate
 metric = evaluate.load("seqeval")
 
@@ -69,13 +70,74 @@ class MultiLabelDataCollatorForTokenClassification:
 
         return batch
 
-class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
-    def __init__(self, config):
-        super().__init__(config)
+class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassification):
+    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
+        classifier_dropout=0.1, class_weights=None):
+        super().__init__()
+        self.config = config
         self.num_labels = config.num_labels
-        self.roberta = AutoModel.from_pretrained(config)  # Use the RobertaModel backbone
+        self.roberta = base_model
+
+        print(f"Creating model with freeze_backbone={freeze_backbone},\
+                classifier_hidden_layers={classifier_hidden_layers},\
+                classifier_dropout={classifier_dropout}")
+
+        # Access custom attributes correctly
+        self.lm_output_size = self.roberta.config.hidden_size
+
+        # Store class weights
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
+        else:
+            self.class_weights = None
+
+        if freeze_backbone:
+            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
+            for param in self.roberta.parameters():
+                param.requires_grad = False
+            self.roberta.eval()
+        else:
+            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
+        self.roberta.train(not freeze_backbone)
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+        self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
+
+    def _build_classifier_head(self, hidden_layers, dropout_rate):
+        """
+        Build a flexible classifier head with configurable hidden layers and dropout.
+
+        Args:
+            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
+                            None or empty tuple means a simple linear layer.
+            dropout_rate: Dropout probability between layers
+        """
+        layers = []
+        input_size = self.lm_output_size
+
+        # If hidden_layers is None or empty, just create a simple linear layer
+        if not hidden_layers:
+            self.classifier = nn.Sequential(
+                        nn.Dropout(dropout_rate),
+                        nn.Linear(input_size, self.num_labels)
+                    )
+            return
+
+        # Build MLP with specified hidden layers
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            #layers.append(nn.BatchNorm1d(hidden_size))  # Add batch normalization
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_size = hidden_size
+
+        # Final classification layer
+        layers.append(nn.Linear(input_size, self.num_labels))
+
+        # Create sequential model
+        self.classifier = nn.Sequential(*layers)
 
     def forward(
         self,
@@ -96,7 +158,12 @@ class MultiLabelTokenClassificationModel(AutoModelForTokenClassification):
         loss = None
         if labels is not None:
             # Compute loss here if necessary
-            loss_fct = nn.BCEWithLogitsLoss(reduction="mean")
+            if self.class_weights is not None:
+                # Move class_weights to the same device as the model
+                weights = self.class_weights.to(labels.device)
+            else:
+                weights = None
+            loss_fct = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights) # potentially weight=.. is better
             mask = (labels != -100).float()
             labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
             loss_tensor = loss_fct(logits, labels.float())
@@ -145,7 +212,11 @@ class ModelTrainer():
                  gradient_accumulation_steps: int=1,
                  num_train_epochs: int=20,
                  output_dir: str="../../output",
-                 hf_token: str=None
+                 hf_token: str=None,
+                 freeze_backbone: bool=False,
+                 classifier_hidden_layers: tuple|None=None,
+                 classifier_dropout: float=0.1,
+                 class_weights: List[float]|None = None
     ):
         self.label2id = label2id
         self.id2label = id2label
@@ -188,10 +259,20 @@ class ModelTrainer():
             max_length=max_length,
             label_pad_token_id=-100
         )
-        config = AutoConfig.from_pretrained(model, num_labels=len(self.label2id),
-            id2label=self.id2label, label2id=self.label2id, hidden_dropout_prob=0.1,
-            token=hf_token)
-        self.model = MultiLabelTokenClassificationModel.from_pretrained(model, config=config)
+        or_config = AutoConfig.from_pretrained(model, hf_token=hf_token, return_unused_kwargs=False)
+        or_config.num_labels=len(self.label2id)
+        or_config.id2label=self.id2label
+        or_config.label2id=self.label2id
+        or_config.hidden_dropout_prob=0.1
+
+        base_model = AutoModel.from_pretrained(model, token=hf_token)
+
+        self.model = MultiLabelTokenClassificationModel(config=or_config,
+                                                        base_model=base_model,
+                                                        freeze_backbone=freeze_backbone,
+                                                        classifier_hidden_layers=classifier_hidden_layers,
+                                                        classifier_dropout=classifier_dropout,
+                                                        class_weights=class_weights)
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
@@ -199,7 +280,8 @@ class ModelTrainer():
         print("Labels:", self.label2id)
         print("id2label:", self.id2label)
         print("Model config:", self.model.config)
-
+        print("Head only fine-tuning:", freeze_backbone)
+        print("Classifier architecture:", pretty_print_classifier(self.model.classifier))
 
         self.args = TrainingArguments(
             output_dir=output_dir,
@@ -315,7 +397,7 @@ class ModelTrainer():
         else:
             _eval_data = eval_data
 
-        trainer = MultiLabelTrainer(
+        trainer = Trainer(
             model=self.model,
             args=self.args,
             train_dataset=train_data,
