@@ -317,8 +317,12 @@ def train(tokenized_data_train: List[Dict],
         print(f"Splitting data into {len(SplitList)} folds")
         for k, (train_idx, test_idx) in enumerate(SplitList):
             if multi_class:
-                TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                    model=Model, output_dir=f"{output_dir}/fold_{k}",
+                TrainClass = MultiClassModelTrainer(label2id=label2id,
+                                    id2label=id2label,
+                                    tokenizer=None,
+                                    model=Model,
+                                    use_crf=use_crf,
+                                    output_dir=f"{output_dir}/fold_{k}",
                                     max_length=max_length,
                                     num_train_epochs=num_epochs,
                                     batch_size=batch_size,
@@ -357,8 +361,12 @@ def train(tokenized_data_train: List[Dict],
     elif (tokenized_data_validation is not None) and (tokenized_data_test is not None):
         print("Using preset train/test/validation split for model training and validation..")
         if multi_class:
-            TrainClass = MultiClassModelTrainer(label2id=label2id, id2label=id2label, tokenizer=None,
-                                model=Model, use_crf=use_crf, output_dir=output_dir,
+            TrainClass = MultiClassModelTrainer(label2id=label2id,
+                                id2label=id2label,
+                                tokenizer=None,
+                                model=Model,
+                                use_crf=use_crf,
+                                output_dir=output_dir,
                                 max_length=max_length,
                                 num_train_epochs=num_epochs,
                                 batch_size=batch_size,

@@ -43,10 +43,14 @@ class TokenClassificationModelCRF(nn.Module):
         self.lm_output_size = self.roberta.config.hidden_size
 
         if freeze_backbone:
+            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
+        else:
+            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
         self.roberta.train(not freeze_backbone)
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.crf = CRF(self.num_labels, batch_first=True)
 

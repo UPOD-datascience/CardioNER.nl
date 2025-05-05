@@ -107,24 +107,25 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
     token_tags = {tag: ["O"] * len(doc) for tag in tag2label.keys()}
     for label in labels:
         start, end, tag_type = int(label["start_span"]), int(label["end_span"]), label["tag"]
-        is_first_token = True
-        for i, (token_start, token_end) in enumerate(token_offsets):
-            if token_end <= start:
-                continue  # Token is before the entity
-            if token_start >= end:
-                break  # Token is after the entity
-            if (
-                (token_start >= start and token_end <= end)
-                or (token_start < start and token_end > start)
-                or (token_start < end and token_end > end)
-            ):
-                # Token overlaps with entity boundary
-                if is_first_token and iob_tags:
-                    tag_label = f"B-{tag_type}"
-                    is_first_token = False
-                else:
-                    tag_label = f"I-{tag_type}"
-                token_tags[tag_type][i] = tag_label
+        if any([tag_type.upper() in _tag for _tag in tag2label.keys()]):
+            is_first_token = True
+            for i, (token_start, token_end) in enumerate(token_offsets):
+                if token_end <= start:
+                    continue  # Token is before the entity
+                if token_start >= end:
+                    break  # Token is after the entity
+                if (
+                    (token_start >= start and token_end <= end)
+                    or (token_start < start and token_end > start)
+                    or (token_start < end and token_end > end)
+                ):
+                    # Token overlaps with entity boundary
+                    if is_first_token and iob_tags:
+                        tag_label = f"B-{tag_type}"
+                        is_first_token = False
+                    else:
+                        tag_label = f"I-{tag_type}"
+                    token_tags[tag_type][i] = tag_label
 
     return tokens, token_tags
 
@@ -666,8 +667,8 @@ if __name__ == "__main__":
     argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
     argparser.add_argument(
         "--word_prediction_strategy",
-          type=str, 
-          default="average", 
+          type=str,
+          default="average",
           choices=['first_token', 'last_token', 'average'],
           help="Strategy to predict word-level entities"
     )
@@ -677,6 +678,7 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
     )
+    argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
 
     args = argparser.parse_args()
 
@@ -705,13 +707,26 @@ if __name__ == "__main__":
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
 
+    CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
 
-    tag2label = {
-        "DISEASE": 0,
-        "MEDICATION": 1,
-        "PROCEDURE": 2,
-        "SYMPTOM": 3,
-    }
+    if args.tag_classes is None:
+        tag2label = {
+            "O": 0,
+            "DISEASE": 1,
+            "MEDICATION": 2,
+            "PROCEDURE": 3,
+            "SYMPTOM": 4,
+        }
+    else:
+        fstr = "Invalid tag classes in argument, should be one of multiple of 'DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM'"
+        assert all([_tag.upper() in CLASS_LIST for _tag in args.tag_classes]), fstr
+        tag2label = {"O": 0}
+        k = 1
+        for tag in args.tag_classes:
+            tag2label[tag.upper()] = k
+            k = k + 1
+    print(f"The labels are : {tag2label}")
+
     label2tag = {v: k for k, v in tag2label.items()}
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True)

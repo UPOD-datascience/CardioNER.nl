@@ -97,13 +97,14 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
     text_labels = torch.zeros((text_encoding.input_ids.shape[1], num_labels))
     for label in labels:
         tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
-        start_token_idx = text_encoding.char_to_token(start_idx)
-        end_token_idx = text_encoding.char_to_token(end_idx - 1)
-        try:
-            text_labels[start_token_idx : end_token_idx + 1, tag2label[tag]] = 1
-        except TypeError as e:
-            print(f"Error: {e} for tag {tag}, start {start_idx}, end {end_idx}")
-            raise TypeError("Check the labels/alignment/tokenizer")
+        if any([tag.upper() in _tag for _tag in tag2label.keys()]):
+            start_token_idx = text_encoding.char_to_token(start_idx)
+            end_token_idx = text_encoding.char_to_token(end_idx - 1)
+            try:
+                text_labels[start_token_idx : end_token_idx + 1, tag2label[tag]] = 1
+            except TypeError as e:
+                print(f"Error: {e} for tag {tag}, start {start_idx}, end {end_idx}")
+                raise TypeError("Check the labels/alignment/tokenizer")
     text_labels[~text_labels[:, 1:].any(dim=1), 0] = 1  # Adding null class if no other label is present
     return text_labels
 
@@ -610,6 +611,7 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
     )
+    argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
 
     args = argparser.parse_args()
 
@@ -637,26 +639,49 @@ if __name__ == "__main__":
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
 
+    CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
+
+    if args.tag_classes is not None:
+        fstr = "Invalid tag classes in argument, should be one of multiple of 'DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM'"
+        assert all([_tag.upper() in CLASS_LIST for _tag in args.tag_classes]), fstr
+
     if use_iob_tags:
-        tag2label = {
-            "O": 0,
-            "B-DISEASE": 1,
-            "I-DISEASE": 2,
-            "B-MEDICATION": 3,
-            "I-MEDICATION": 4,
-            "B-PROCEDURE": 5,
-            "I-PROCEDURE": 6,
-            "B-SYMPTOM": 7,
-            "I-SYMPTOM": 8,
-        }
+        if args.tag_classes is None:
+            tag2label = {
+                "O": 0,
+                "B-DISEASE": 1,
+                "I-DISEASE": 2,
+                "B-MEDICATION": 3,
+                "I-MEDICATION": 4,
+                "B-PROCEDURE": 5,
+                "I-PROCEDURE": 6,
+                "B-SYMPTOM": 7,
+                "I-SYMPTOM": 8,
+            }
+        else:
+            tag2label = {"O": 0}
+            k = 1
+            for tag in args.tag_classes:
+                tag2label[f"B-{tag.upper()}"] = k
+                tag2label[f"I-{tag.upper()}"] = k + 1
+                k = k + 2
     else:
-        tag2label = {
-            "O": 0,
-            "DISEASE": 1,
-            "MEDICATION": 2,
-            "PROCEDURE": 3,
-            "SYMPTOM": 4,
-        }
+        if args.tag_classes is None:
+            tag2label = {
+                "O": 0,
+                "DISEASE": 1,
+                "MEDICATION": 2,
+                "PROCEDURE": 3,
+                "SYMPTOM": 4,
+            }
+        else:
+            tag2label = {"O": 0}
+            k = 1
+            for tag in args.tag_classes:
+                tag2label[tag.upper()] = k
+                k = k + 1
+    print(f"The labels are : {tag2label}")
+
     label2tag = {v: k for k, v in tag2label.items()}
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True, use_fast=True)
@@ -759,4 +784,3 @@ if __name__ == "__main__":
 
     hf_model.save_pretrained(save_dir)
     tokenizer.save_pretrained(save_dir)
-use_cpu
