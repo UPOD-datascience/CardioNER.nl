@@ -95,8 +95,10 @@ def flatten_list(l):
 def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label: dict):
     num_labels = len(tag2label.keys())
     text_labels = torch.zeros((text_encoding.input_ids.shape[1], num_labels))
+    D_REMAP={"ENFERMEDAD": "DISEASE", "SINTOMA": "SYMPTOM", "PROCEDIMIENTO": "PROCEDURE", "FARMACO": "MEDICATION"}
     for label in labels:
-        tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
+        tag_0 = D_REMAP.get(label["tag"], label["tag"])
+        tag, start_idx, end_idx = tag_0, int(label["start_span"]), int(label["end_span"])
         if any([tag.upper() in _tag for _tag in tag2label.keys()]):
             start_token_idx = text_encoding.char_to_token(start_idx)
             end_token_idx = text_encoding.char_to_token(end_idx - 1)
@@ -227,13 +229,14 @@ class CardioCCC(Dataset):
         self.root_path = Path(root_path)
         self.split_file_names = json.load((self.root_path / "splits.json").open())[lang][split]["symp"]
         self.lang = lang
-        batches = ["b1", "b2"] if lang != "ro" else ["b1"]
+        batches = ["b1", "b2"] # if lang != "ro" else ["b1"]
         self.annotations = []
+        if iob_tags:
+            nlp = spacy.blank(lang if lang != "cz" else "cs")
 
         # For IOB tagging, we now need the tokenizer
         if iob_tags and tokenizer is None:
             raise ValueError("Tokenizer must be provided when using IOB tags")
-
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
@@ -587,6 +590,7 @@ if __name__ == "__main__":
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
     argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--early_stop_metric", type=str, default="loss", choices=["loss", "f1"], help="Metric to monitor in Early Stopping")
     argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
@@ -636,6 +640,8 @@ if __name__ == "__main__":
     with_suggestion = args.with_suggestion
     output_dir = args.output_dir
     use_iob_tags = args.use_iob_tags
+    early_stop_metric = args.early_stop_metric
+    early_stop_mode = "min" if early_stop_metric == "loss" else "max"
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
 
@@ -739,8 +745,8 @@ if __name__ == "__main__":
         torch.set_float32_matmul_precision("medium")
 
     callbacks = [
-        EarlyStopping(monitor="val_loss", mode="min", patience=patience),
-        ModelCheckpoint(monitor="val_loss", mode="min"),
+        EarlyStopping(monitor=f"val_{early_stop_metric}", mode=early_stop_mode, patience=patience),
+        ModelCheckpoint(monitor=f"val_{early_stop_metric}", mode=early_stop_mode),
     ]
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
     strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook

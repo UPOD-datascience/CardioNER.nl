@@ -25,6 +25,8 @@ from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from seqeval.metrics import classification_report
+from lightning.pytorch.loggers import TensorBoardLogger
+import yaml
 
 import itertools
 import re
@@ -71,9 +73,9 @@ class CardioCCC(Dataset):
         self.split_file_names = json.load((self.root_path / "splits.json").open())[lang][split]["symp"]
         self.lang = lang
         self.iob_tags = iob_tags
-        batches = ["b1", "b2"] if lang != "ro" else ["b1"]
+        batches = ["b1", "b2"] # if lang != "ro" else ["b1"]
         self.annotations = []
-        self.nlp = spacy.blank(lang)
+        self.nlp = spacy.blank(lang if lang != "cz" else "cs")
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
@@ -105,8 +107,10 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
     tokens = [t.text for t in doc]
     token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
     token_tags = {tag: ["O"] * len(doc) for tag in tag2label.keys()}
+    D_REMAP = {"ENFERMEDAD": "DISEASE", "SINTOMA": "SYMPTOM", "PROCEDIMIENTO": "PROCEDURE", "FARMACO": "MEDICATION"}
     for label in labels:
-        start, end, tag_type = int(label["start_span"]), int(label["end_span"]), label["tag"]
+        tag = D_REMAP.get(label["tag"], label["tag"])
+        start, end, tag_type = int(label["start_span"]), int(label["end_span"]), tag
         if any([tag_type.upper() in _tag for _tag in tag2label.keys()]):
             is_first_token = True
             for i, (token_start, token_end) in enumerate(token_offsets):
@@ -126,7 +130,6 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
                     else:
                         tag_label = f"I-{tag_type}"
                     token_tags[tag_type][i] = tag_label
-
     return tokens, token_tags
 
 
@@ -398,6 +401,7 @@ class NERModule(L.LightningModule):
             self.lm.eval()
         self.lm.train()
         self.label2tag = label2tag
+        self.learning_rate = learning_rate
         self.iob_tags = iob_tags
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
@@ -669,7 +673,7 @@ if __name__ == "__main__":
         "--word_prediction_strategy",
           type=str,
           default="average",
-          choices=['first_token', 'last_token', 'average'],
+          choices=["average", "first_token", "last_token"],
           help="Strategy to predict word-level entities"
     )
     argparser.add_argument(
@@ -695,6 +699,7 @@ if __name__ == "__main__":
     accumulation_steps = args.accumulation_steps
     patience = args.patience
     num_workers = args.num_workers
+    learning_rate = args.learning_rate
     max_epochs = args.max_epochs
     root_path = args.root_path
     lang = args.lang
@@ -810,6 +815,8 @@ if __name__ == "__main__":
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
     strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
 
+    log_root = f"lightning_logs/NER_word_level/{model_name.replace('/', '_')}"
+    logger = TensorBoardLogger(save_dir=".", name=log_root)
     trainer = L.Trainer(
         accumulate_grad_batches=accumulation_steps,
         default_root_dir=output_dir,
@@ -819,9 +826,13 @@ if __name__ == "__main__":
         max_epochs=max_epochs,
         strategy=strategy,
         precision="16-mixed" if isinstance(devices, list) or devices == "cuda" else "bf16",
+        logger=logger,
     )
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.test(model=module, dataloaders=test_loader)
+
+    with open(Path(logger.log_dir) / "params.yaml", "w") as f:
+        yaml.dump(vars(args), f)
 
     # save as huggingface compatible model
     ########################################
