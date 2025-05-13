@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Union, Tuple, Literal
 from collections import defaultdict
 from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModel
 from transformers import AutoModelForTokenClassification, TrainingArguments, Trainer
-from transformers import AutoConfig
+from transformers import AutoConfig, PreTrainedModel
 from transformers import RobertaModel
 from transformers.modeling_outputs import TokenClassifierOutput
 import numpy as np
@@ -29,12 +29,14 @@ metric = evaluate.load("seqeval")
 
 # TODO: add multihead CRF: https://github.com/ieeta-pt/Multi-Head-CRF/tree/master/src/model
 
-class TokenClassificationModelCRF(nn.Module):
+class TokenClassificationModelCRF(PreTrainedModel):
     # TODO: add class weights to python-crf..
     # https://pytorch.org/docs/stable/generated/torch.nn.NLLLoss.html
+    config_class = AutoConfig
+    
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
         classifier_dropout=0.1):
-        super().__init__()
+        super().__init__(config)
         self.config = config
         self.num_labels = config.num_labels + 1 # Extra label to acocunt for the -100 padding label
         self.pad_label = self.num_labels + 1
@@ -120,12 +122,19 @@ class TokenClassificationModelCRF(nn.Module):
     @property
     def device_info(self):
         return next(self.parameters()).device
+        
+    def get_input_embeddings(self):
+        return self.roberta.get_input_embeddings()
+        
+    def set_input_embeddings(self, value):
+        self.roberta.set_input_embeddings(value)
 
 
-class TokenClassificationModel(nn.Module):
+class TokenClassificationModel(PreTrainedModel):
+    config_class = AutoConfig
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
         classifier_dropout=0.1, class_weights=None):
-        super().__init__()
+        super().__init__(config)
         self.config = config
         self.num_labels = config.num_labels
         self.roberta = base_model
@@ -228,6 +237,12 @@ class TokenClassificationModel(nn.Module):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+        
+    def get_input_embeddings(self):
+        return self.roberta.get_input_embeddings()
+        
+    def set_input_embeddings(self, value):
+        self.roberta.set_input_embeddings(value)
 
 
 class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassification):
@@ -391,6 +406,23 @@ class ModelTrainer():
         return all_metrics
 
 
+    def save_model(self, output_dir=None):
+        """Custom method to save both the model architecture and state dict properly"""
+        save_dir = output_dir or self.output_dir
+        
+        # Save the model config
+        self.model.config.save_pretrained(save_dir)
+        
+        # Save the tokenizer
+        if self.tokenizer:
+            self.tokenizer.save_pretrained(save_dir)
+        
+        # Save the model weights
+        torch.save(self.model.state_dict(), f"{save_dir}/pytorch_model.bin")
+        
+        print(f"Model saved to {save_dir}")
+
+
     def train(self,
         train_data: List[Dict],
         test_data: List[Dict],
@@ -402,7 +434,17 @@ class ModelTrainer():
         else:
             _eval_data = eval_data
 
-        trainer = Trainer(
+        # Custom save function to properly handle non-PreTrainedModel models
+        class CustomTrainer(Trainer):
+            def __init__(self, parent_trainer, **kwargs):
+                super().__init__(**kwargs)
+                self.parent_trainer = parent_trainer
+                
+            def save_model(self, output_dir=None, _internal_call=False):
+                self.parent_trainer.save_model(output_dir)
+        
+        trainer = CustomTrainer(
+            parent_trainer=self,
             model=self.model,
             args=self.args,
             train_dataset=train_data,

@@ -3,6 +3,10 @@ import torch
 import torch.nn as nn
 from collections import defaultdict
 from tqdm import tqdm
+from typing import Dict, List
+import hashlib
+import os
+import json
 
 def pretty_print_classifier(classifier):
     """Pretty print a PyTorch module with indentation and structure details."""
@@ -114,3 +118,52 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
     id2label = {i: label for i, label in enumerate(label2id)}
     print(f'Extracted class weights: {[f"{id2label[i]}_{str(w)}" for i,w in enumerate(weights)]}')
     return weights
+
+def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text')->List[Dict]:
+    # go through .jsonl's in directory
+    #
+    annotations = []
+    file_processed = False
+    for _file in tqdm(os.listdir(annotation_directory)):
+        if _file.endswith('.jsonl'):
+            file = os.path.join(annotation_directory, _file)
+            with open(file, 'r', encoding='utf-8') as fr:
+                for line in fr:
+                    annotations.append(json.loads(line))
+            file_processed = True
+    if not file_processed:
+        raise ValueError("No JSONL file found in the directory, maybe change the extension?")
+
+    NEW_DICT = defaultdict(lambda : defaultdict(list))
+    for d in tqdm(annotations):
+        # list of tags
+        tags = d[tag_key]
+        text = d[text_key]
+        id = d[merge_key]
+
+        assert(tags is not None), f"Tags should not be none: {id}"
+
+        NEW_DICT[id][tag_key].extend(tags)
+        NEW_DICT[id][text_key].extend([text])
+
+    NEW_DICT_LIST = []
+    for k,v in tqdm(NEW_DICT.items()):
+        # check if text is consistent
+        #
+        list_of_texts = v[text_key]
+        set_of_hashes = set()
+        for t in list_of_texts:
+            _hash = hashlib.md5(t.encode('utf-8')).hexdigest()
+            set_of_hashes.add(_hash)
+
+        if len(set_of_hashes)>1:
+            print(f"Skipping {k} because there are {len(set_of_hashes)} different texts")
+            continue
+
+        _d = {
+            'id': k,
+            'tags': v[tag_key],
+            'text': list_of_texts[0]
+        }
+        NEW_DICT_LIST.append(_d)
+    return NEW_DICT_LIST

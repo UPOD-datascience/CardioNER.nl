@@ -156,7 +156,7 @@ class NERFormer():
             # write the output to the out_path
             with open(self.out_path, "w") as f:
                 for line in out_jsonl:
-                    f.write(json.dumps(line.dict()) + "\n")
+                    f.write(json.dumps(line.model_dump()) + "\n")
 
         if not self.write_to_file:
             return out_jsonl

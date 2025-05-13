@@ -8,7 +8,7 @@ environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-from typing import List, Dict, Optional, Literal
+from typing import List, Dict, Optional, Literal, Tuple
 import json
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoConfig
@@ -24,19 +24,21 @@ from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 import evaluate
 metric = evaluate.load("seqeval")
 
-from utils import calculate_class_weights
+from utils import calculate_class_weights, merge_annotations
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
-def filter_tags(iob_data, tags, tags_to_keep, multi_class):
+def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
     print(f"Tag classes provided: {tags_to_keep},\nuse these as a filter for the tokenized data/tags")
     assert tags is not None, "Tag classes provided, but no tags found."
     # filter tags list
     tags_to_keep = [tag_class.upper() for tag_class in tags_to_keep]
     tags = [tag.upper() for tag in tags]
-    print(f'Extracted tags are {tags}')
+    print(f'Extracted tags are {tags}, checking against {tags_to_keep}')
     tags = ['O']+[tag for tag in tags if any([tag_class in tag for tag_class in tags_to_keep])]
 
-    assert len(tags)> 1, f"Tag classes provided, but no tags found after filtering for {tags_to_keep}, except 'O'."
+    if len(tags)==1:
+        return False
+
     # filter tokenized_data
     #
     filtered_tokenized_data = []
@@ -73,8 +75,8 @@ def filter_tags(iob_data, tags, tags_to_keep, multi_class):
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
          lang: str='en',
-         corpus_train: Optional[str]=None,
-         corpus_validation: Optional[str]=None,
+         corpus_train_list: List[Dict]|None=None,
+         corpus_validation_list: List[Dict]|None=None,
          split_file: Optional[str]=None,
          annotation_loc: Optional[str] = None,
          label2id: Optional[Dict[str, int]]=None,
@@ -99,19 +101,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         from multilabel.loader import annotate_corpus_centered
         from multilabel.loader import tokenize_and_align_labels
         from multilabel.loader import count_tokens_with_multiple_labels
-
-    corpus_train_list = []
-    # read jsonl
-    with open(corpus_train, 'r', encoding='utf-8') as fr:
-        for line in fr:
-            corpus_train_list.append(json.loads(line))
-
-    corpus_validation_list = []
-    if corpus_validation is not None:
-        # read jsonl
-        with open(corpus_validation, 'r', encoding='utf-8') as fr:
-            for line in fr:
-                corpus_validation_list.append(json.loads(line))
 
     tokenizer = AutoTokenizer.from_pretrained(Model, add_prefix_space=True, token=hf_token)
     tokenizer.model_max_length = max_length
@@ -179,12 +168,18 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     annotate_func = annotate_functions[chunk_type]
     kwargs = annotate_kwargs[chunk_type]
 
-    for batch_id, corpus in datasets.items():
+    skipped_count = 0
+    for k, (batch_id, corpus) in enumerate(datasets.items()):
         iob_data, _unique_tags = annotate_func(corpus, batch_id=batch_id, **kwargs)
 
         if isinstance(tags_to_keep, list):
             assert(all([isinstance(s, str) for s in tags_to_keep])), f"Not all tags are strings {tags_to_keep}"
-            iob_data, _unique_tags = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
+            res = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
+            if not res:
+                skipped_count += 1
+                continue
+            else:
+                iob_data, _unique_tags = res
 
         if batch_id == 'train':
             iob_data_train = iob_data
@@ -197,6 +192,7 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
         if (batch_id != 'train') & (len(corpus)>0):
             assert(unique_tags == _unique_tags), "Tags are not the same in train/val"
     # paragraph?
+    print(f"{skipped_count}/{k} batches skipped ")
 
     label2id = {l:int(c) for c,l in enumerate(unique_tags)}
     id2label = {int(c):l for c,l in enumerate(unique_tags)}
@@ -468,9 +464,26 @@ if __name__ == "__main__":
     assert((train_model is True) | (parse_annotations is True)), "Either parse annotations or train the model, or both..do something!"
 
     if corpus_train is not None:
-        assert os.path.isfile(corpus_train), f"Corpus_train file {corpus_train} does not exist."
+        if os.path.isdir(corpus_train):
+            # go through jsons and merge into one
+            corpus_train_list = merge_annotations(corpus_train)
+        else:
+            assert os.path.isfile(corpus_train), f"Corpus_train file {corpus_train} does not exist."
+            # read jsonl
+            corpus_train_list = []
+            with open(corpus_train, 'r', encoding='utf-8') as fr:
+                for line in fr:
+                    corpus_train_list.append(json.loads(line))
+    corpus_validation_list = None
     if corpus_validation is not None:
-        assert os.path.isfile(corpus_validation), f"Corpus_validation file {corpus_validation} does not exist."
+        if os.path.isdir(corpus_validation):
+            corpus_validation_list = merge_annotations(corpus_validation)
+        else:
+            assert os.path.isfile(corpus_validation), f"Corpus_validation file {corpus_validation} does not exist."
+            corpus_validation_list = []
+            with open(corpus_train, 'r', encoding='utf-8') as fr:
+                for line in fr:
+                    corpus_validation_list.append(json.loads(line))
     if split_file is not None:
         assert os.path.isfile(split_file), f"Split_file {split_file} does not exist."
 
@@ -479,6 +492,7 @@ if __name__ == "__main__":
 
     if (split_file is not None) and (corpus_validation is not None):
         print("Split file and validation corpus provided, ignoring validation corpus file in favor of split file.")
+        corpus_validation_list = None
         corpus_validation = None
 
     if force_splitter:
@@ -512,8 +526,8 @@ if __name__ == "__main__":
         print("Loading and prepping data..")
         tokenized_data, tags = prepare(Model=_model,
                                     lang = language,
-                                    corpus_train=corpus_train,
-                                    corpus_validation = corpus_validation,
+                                    corpus_train_list = corpus_train_list,
+                                    corpus_validation_list = corpus_validation_list,
                                     split_file=split_file,
                                     annotation_loc=_annotation_loc,
                                     chunk_size=ChunkSize,
@@ -577,3 +591,11 @@ if __name__ == "__main__":
               classifier_hidden_layers=classifier_hidden_layers,
               classifier_dropout=classifier_dropout,
               use_class_weights=args.use_class_weights)
+
+        # Create output tsv for test
+        #
+        # name	tag	start_span	end_span	text	note
+        # casos_clinicos_cardiologia286	MEDICATION	429	438	warfarine
+        # casos_clinicos_cardiologia286	MEDICATION	905	914	warfarine
+        # ...
+        #if args.output_test_tsv:
