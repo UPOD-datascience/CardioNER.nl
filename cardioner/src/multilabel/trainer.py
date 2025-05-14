@@ -70,9 +70,55 @@ class MultiLabelDataCollatorForTokenClassification:
 
         return batch
 
-class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassification):
+class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.roberta = AutoModel.from_pretrained(config)  # Use the RobertaModel backbone
+
+        if config.freeze_backbone:
+            for param in self.roberta.parameters():
+                param.requires_grad = False
+            self.roberta.eval()
+        self.roberta.train(not config.freeze_backbone)
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
+        **kwargs
+    ):
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        sequence_output = outputs.last_hidden_state
+        sequence_output = self.dropout(sequence_output)
+        logits = self.classifier(sequence_output)
+
+        loss = None
+        if labels is not None:
+            # Compute loss here if necessary
+            loss_fct = nn.BCEWithLogitsLoss(reduction="mean")
+            mask = (labels != -100).float()
+            labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
+            loss_tensor = loss_fct(logits, labels.float())
+            loss = (loss_tensor * mask).sum() / mask.sum()
+
+        return TokenClassifierOutput(
+            loss=loss,
+            logits=logits,
+        )
+
+
+class MultiLabelTokenClassificationModelCustom(nn.Module): #AutoModelForTokenClassification):
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1, class_weights=None):
+        classifier_dropout=0.1):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
@@ -84,12 +130,6 @@ class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassific
 
         # Access custom attributes correctly
         self.lm_output_size = self.roberta.config.hidden_size
-
-        # Store class weights
-        if class_weights is not None:
-            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
-        else:
-            self.class_weights = None
 
         if freeze_backbone:
             print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
@@ -158,12 +198,7 @@ class MultiLabelTokenClassificationModel(nn.Module): #AutoModelForTokenClassific
         loss = None
         if labels is not None:
             # Compute loss here if necessary
-            if self.class_weights is not None:
-                # Move class_weights to the same device as the model
-                weights = self.class_weights.to(labels.device)
-            else:
-                weights = None
-            loss_fct = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights) # potentially weight=.. is better
+            loss_fct = nn.BCEWithLogitsLoss(reduction="mean") # potentially weight=.. is better
             mask = (labels != -100).float()
             labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
             loss_tensor = loss_fct(logits, labels.float())
@@ -179,7 +214,7 @@ class MultiLabelTrainer(Trainer):
         super().__init__(*args, **kwargs)
         if class_weights is not None:
             class_weights = class_weights.to(self.args.device)
-            logging.info(f"Using multi-label classification with class weights", class_weights)
+            print(f"Using multi-label classification with class weights: {class_weights}")
         self.loss_fct = nn.BCEWithLogitsLoss(weight=class_weights, reduction='none')
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -218,6 +253,11 @@ class ModelTrainer():
                  classifier_dropout: float=0.1,
                  class_weights: List[float]|None = None
     ):
+        self.class_weights = torch.tensor(class_weights, dtype=torch.float) if class_weights is not None else None
+        if self.class_weights is not None:
+            # Ensure all weights are positive
+            self.class_weights = torch.abs(self.class_weights)
+
         self.label2id = label2id
         self.id2label = id2label
         self.output_dir = output_dir
@@ -264,15 +304,18 @@ class ModelTrainer():
         or_config.id2label=self.id2label
         or_config.label2id=self.label2id
         or_config.hidden_dropout_prob=0.1
+        or_config.freeze_backbone = freeze_backbone
 
-        base_model = AutoModel.from_pretrained(model, token=hf_token)
-
-        self.model = MultiLabelTokenClassificationModel(config=or_config,
-                                                        base_model=base_model,
-                                                        freeze_backbone=freeze_backbone,
-                                                        classifier_hidden_layers=classifier_hidden_layers,
-                                                        classifier_dropout=classifier_dropout,
-                                                        class_weights=class_weights)
+        if isinstance(classifier_hidden_layers, tuple):
+            raise Warning("You are now creating a custom model class which cannot be loaded in directly from the HF repository!")
+            base_model = AutoModel.from_pretrained(model, token=hf_token)
+            self.model = MultiLabelTokenClassificationModelCustom(config=or_config,
+                                                            base_model=base_model,
+                                                            freeze_backbone=freeze_backbone,
+                                                            classifier_hidden_layers=classifier_hidden_layers,
+                                                            classifier_dropout=classifier_dropout)
+        else:
+            self.model = MultiLabelTokenClassificationModelHF.from_pretrained(model, config=or_config)
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
@@ -397,9 +440,10 @@ class ModelTrainer():
         else:
             _eval_data = eval_data
 
-        trainer = Trainer(
+        trainer = MultiLabelTrainer(
             model=self.model,
             args=self.args,
+            class_weights=self.class_weights,
             train_dataset=train_data,
             eval_dataset=_eval_data,
             data_collator=self.data_collator,

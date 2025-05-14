@@ -21,10 +21,12 @@ from sklearn.utils import shuffle
 from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 
+from tqdm import tqdm
+
 import evaluate
 metric = evaluate.load("seqeval")
 
-from utils import calculate_class_weights, merge_annotations
+from utils import calculate_class_weights, merge_annotations, process_pipe
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
 def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
@@ -74,10 +76,9 @@ def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
     return filtered_tokenized_data, tags
 
 def prepare(Model: str='CLTL/MedRoBERTa.nl',
-         lang: str='en',
-         corpus_train_list: List[Dict]|None=None,
-         corpus_validation_list: List[Dict]|None=None,
-         split_file: Optional[str]=None,
+         corpus_train: List[Dict]|None=None,
+         corpus_validation: List[Dict]|None=None,
+         corpus_test: List[Dict]|None=None,
          annotation_loc: Optional[str] = None,
          label2id: Optional[Dict[str, int]]=None,
          id2label: Optional[Dict[int, str]]=None,
@@ -109,24 +110,6 @@ def prepare(Model: str='CLTL/MedRoBERTa.nl',
     max_model_length = model_config.max_position_embeddings  # 514
     num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)  # 2
     max_allowed_chunk_size = max_model_length - num_special_tokens  # 512
-
-    if split_file is not None:
-        with open(split_file, 'r', encoding='utf-8') as fr:
-            split_data = json.load(fr)
-            # TODO: check if the split file is correct, seems redundant to have separate entries for class/language.
-            corpus_train_ids = split_data[lang]['train']['symp']
-            corpus_test_ids = split_data[lang]['test']['symp']
-            corpus_validation_ids = split_data[lang]['validation']['symp']
-
-            print(f"{len(corpus_train_ids)} training samples, {len(corpus_test_ids)} test samples, {len(corpus_validation_ids)} validation samples")
-
-        corpus_train = [entry for entry in corpus_train_list if entry['id'] in corpus_train_ids]
-        corpus_test = [entry for entry in corpus_train_list if entry['id'] in corpus_test_ids]
-        corpus_validation = [entry for entry in corpus_train_list if entry['id'] in corpus_validation_ids]
-    else:
-        corpus_train = corpus_train_list
-        corpus_validation = corpus_validation_list
-        corpus_test = []
 
     # Run the transformation
     annotate_functions = {
@@ -434,6 +417,7 @@ if __name__ == "__main__":
     argparsers.add_argument('--classifier_dropout', type=float, default=0.1)
     argparsers.add_argument('--tag_classes', type=str, nargs='+', default=None)
     argparsers.add_argument('--use_class_weights', action="store_true", default=False)
+    argparsers.add_argument('--output_test_tsv', action="store_true", default=False)
 
     args = argparsers.parse_args()
 
@@ -452,12 +436,16 @@ if __name__ == "__main__":
     freeze_backbone = args.freeze_backbone
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
+    lang = args.lang
 
     if args.without_iob_tagging:
         use_iob = False
-        print("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
+        raise Warning("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
     else:
         use_iob = True
+
+    if not args.split_file:
+        raise Warning("WARNING: you are training without a split file. Ensure this is correct.")
 
     assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None)) | ((corpus_train is not None) and (force_splitter))), "Either provide a split file or a train and validation corpus"
     assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"
@@ -502,6 +490,23 @@ if __name__ == "__main__":
         elif split_file is not None:
             print("Force splitter is on, and split file is provided, therefore, ignoring the test in the split file (if present).")
 
+    if (split_file is not None):
+        with open(split_file, 'r', encoding='utf-8') as fr:
+            split_data = json.load(fr)
+            # TODO: check if the split file is correct, seems redundant to have separate entries for class/language.
+            corpus_train_ids = split_data[lang]['train']['symp']
+            corpus_test_ids = split_data[lang]['test']['symp']
+            corpus_validation_ids = split_data[lang]['validation']['symp']
+
+        _corpus_train_list = [entry for entry in corpus_train_list if entry['id'] in corpus_train_ids]
+        corpus_test_list = [entry for entry in corpus_train_list if entry['id'] in corpus_test_ids]
+        corpus_validation_list = [entry for entry in corpus_train_list if entry['id'] in corpus_validation_ids]
+
+        corpus_train_list = _corpus_train_list
+        print(f"\n\n{len(corpus_train_list)} training samples ({len(corpus_train_ids)}), {len(corpus_test_list)} test samples ({len(corpus_test_ids)}), {len(corpus_validation_list)} validation samples({len(corpus_validation_ids)})\n\n")
+    else:
+        corpus_test_list = []
+
     OutputDir = args.output_dir
     ChunkSize = args.max_token_length if args.chunk_size is None else args.chunk_size
     max_length = args.max_token_length
@@ -513,7 +518,6 @@ if __name__ == "__main__":
     profile = args.profile
     multi_class = args.multiclass
     use_crf = args.use_crf
-    language = args.lang
     weight_decay = args.weight_decay
     learning_rate = args.learning_rate
     accumulation_steps = args.accumulation_steps
@@ -525,10 +529,9 @@ if __name__ == "__main__":
     if parse_annotations:
         print("Loading and prepping data..")
         tokenized_data, tags = prepare(Model=_model,
-                                    lang = language,
-                                    corpus_train_list = corpus_train_list,
-                                    corpus_validation_list = corpus_validation_list,
-                                    split_file=split_file,
+                                    corpus_train = corpus_train_list,
+                                    corpus_validation = corpus_validation_list,
+                                    corpus_test = corpus_test_list,
                                     annotation_loc=_annotation_loc,
                                     chunk_size=ChunkSize,
                                     chunk_type=ChunkType,
@@ -560,6 +563,8 @@ if __name__ == "__main__":
         tokenized_data_train = [entry for entry in tokenized_data if entry['batch'] == 'train']
         tokenized_data_test = [entry for entry in tokenized_data if entry['batch'] == 'test']
         tokenized_data_validation = [entry for entry in tokenized_data if entry['batch'] == 'validation']
+
+        print(f"We have {len(tokenized_data_train)} docs in the train set, {len(tokenized_data_test)} in the test set, and {len(tokenized_data_validation)} in the validation set")
 
         if len(tokenized_data_train)==0:
             tokenized_data_train = tokenized_data
@@ -594,8 +599,62 @@ if __name__ == "__main__":
 
         # Create output tsv for test
         #
-        # name	tag	start_span	end_span	text	note
+        # name	tag	start_span	end_span	text
         # casos_clinicos_cardiologia286	MEDICATION	429	438	warfarine
         # casos_clinicos_cardiologia286	MEDICATION	905	914	warfarine
         # ...
-        #if args.output_test_tsv:
+        if args.output_test_tsv:
+            from transformers import pipeline
+            import pandas as pd
+            # load model from output_dir, load in transformer pipeline for NER classification
+            # Create output tsv path
+            output_tsv_path = os.path.join(OutputDir, "test_predictions.tsv")
+
+            print(f"Processing {len(corpus_validation_list)}validation samples with NER pipeline...storing to {output_tsv_path}")
+
+            # Load the model for NER
+            ner_pipeline = pipeline(
+                "ner",
+                model=OutputDir,
+                tokenizer=_model,
+                aggregation_strategy="simple"
+            )
+
+            results = []
+
+            # Apply to validation corpus
+            corpus_to_process = corpus_validation_list
+            if corpus_to_process is not None:
+                for doc in tqdm(corpus_to_process):
+                    doc_id = doc.get('id', 'unknown')
+                    text = doc.get('text', '')
+
+                    if not text:
+                        continue
+
+                    # Get predictions
+                    entities = process_pipe(text, ner_pipeline, max_word_per_chunk=256, lang=lang)
+
+                    for entity in entities:
+                        # Extract needed information
+                        tag = entity.get('entity_group', '').replace('B-', '').replace('I-', '')
+                        start_span = entity.get('start', 0)
+                        end_span = entity.get('end', 0)
+                        entity_text = entity.get('word', text[start_span:end_span])
+
+                        # Add to results
+                        results.append({
+                            'filename': doc_id,
+                            'label': tag,
+                            'start_span': start_span,
+                            'end_span': end_span,
+                            'text': entity_text
+                        })
+
+                # Create DataFrame and save to TSV
+                if results:
+                    df = pd.DataFrame(results)
+                    df.to_csv(output_tsv_path, sep='\t', index=False)
+                    print(f"Test predictions saved to {output_tsv_path}")
+                else:
+                    print("No entities found in the test corpus")

@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Union, Tuple, Literal
 from collections import defaultdict
 from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModel
 from transformers import AutoModelForTokenClassification, TrainingArguments, Trainer
+from transformers import RobertaModel, RobertaForTokenClassification
 from transformers import AutoConfig, PreTrainedModel
 from transformers import RobertaModel
 from transformers.modeling_outputs import TokenClassifierOutput
@@ -29,11 +30,11 @@ metric = evaluate.load("seqeval")
 
 # TODO: add multihead CRF: https://github.com/ieeta-pt/Multi-Head-CRF/tree/master/src/model
 
-class TokenClassificationModelCRF(PreTrainedModel):
+class TokenClassificationModelCRF(RobertaForTokenClassification):
     # TODO: add class weights to python-crf..
     # https://pytorch.org/docs/stable/generated/torch.nn.NLLLoss.html
-    config_class = AutoConfig
-    
+    #config_class = AutoConfig
+
     def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
         classifier_dropout=0.1):
         super().__init__(config)
@@ -122,74 +123,41 @@ class TokenClassificationModelCRF(PreTrainedModel):
     @property
     def device_info(self):
         return next(self.parameters()).device
-        
+
     def get_input_embeddings(self):
         return self.roberta.get_input_embeddings()
-        
+
     def set_input_embeddings(self, value):
         self.roberta.set_input_embeddings(value)
 
 
-class TokenClassificationModel(PreTrainedModel):
-    config_class = AutoConfig
-    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1, class_weights=None):
+class TokenClassificationModel(RobertaForTokenClassification):
+    #config_class = AutoConfig
+    def __init__(self, config):
         super().__init__(config)
         self.config = config
         self.num_labels = config.num_labels
-        self.roberta = base_model
 
-        self.lm_output_size = self.roberta.config.hidden_size
+        classifier_hidden_layers = getattr(config, "classifier_hidden_layers", None)
+        classifier_dropout  = getattr(config, "classifier_dropout", 0.1)
 
-        # Store class weights
-        if class_weights is not None:
-            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
-        else:
-            self.class_weights = None
+        if classifier_hidden_layers is not None:
+            # rebuild the MLP head
+            in_size = config.hidden_size
+            layers = []
+            if classifier_hidden_layers:
+                for h in classifier_hidden_layers:
+                    layers += [
+                        nn.Linear(in_size, h),
+                        nn.ReLU(),
+                        nn.Dropout(classifier_dropout)
+                    ]
+                    in_size = h
+            layers.append(nn.Linear(in_size, config.num_labels))
+            self.classifier = nn.Sequential(*layers)
 
-        if freeze_backbone:
-            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
-            for param in self.roberta.parameters():
-                param.requires_grad = False
-            self.roberta.eval()
-        else:
-            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
-        self.roberta.train(not freeze_backbone)
-
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self._build_classifier_head(classifier_hidden_layers,
-            classifier_dropout)
-
-    def _build_classifier_head(self, hidden_layers, dropout_rate):
-        """
-        Build a flexible classifier head with configurable hidden layers and dropout.
-
-        Args:
-            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
-                            None or empty tuple means a simple linear layer.
-            dropout_rate: Dropout probability between layers
-        """
-        layers = []
-        input_size = self.lm_output_size
-
-        # If hidden_layers is None or empty, just create a simple linear layer
-        if not hidden_layers:
-            self.classifier = nn.Linear(input_size, self.num_labels)
-            return
-
-        # Build MLP with specified hidden layers
-        for hidden_size in hidden_layers:
-            layers.append(nn.Linear(input_size, hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
-            input_size = hidden_size
-
-        # Final classification layer
-        layers.append(nn.Linear(input_size, self.num_labels))
-
-        # Create sequential model
-        self.classifier = nn.Sequential(*layers)
-        print(f"Created classifier head with architecture: {self.classifier}")
+            # initialize the new head weights
+            self.init_weights()
 
     def forward(
         self,
@@ -216,12 +184,7 @@ class TokenClassificationModel(PreTrainedModel):
 
         loss = None
         if labels is not None:
-            if self.class_weights is not None:
-                # Move class_weights to the same device as the model
-                weights = self.class_weights.to(labels.device)
-            else:
-                weights = None
-            loss_fct = nn.CrossEntropyLoss(weight=weights)
+            loss_fct = nn.CrossEntropyLoss()
             if attention_mask is not None:
                 # Only keep active parts of the sequence
                 active_loss = attention_mask.view(-1) == 1
@@ -237,10 +200,10 @@ class TokenClassificationModel(PreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-        
+
     def get_input_embeddings(self):
         return self.roberta.get_input_embeddings()
-        
+
     def set_input_embeddings(self, value):
         self.roberta.set_input_embeddings(value)
 
@@ -343,14 +306,27 @@ class ModelTrainer():
         or_config.id2label=self.id2label
         or_config.label2id=self.label2id
         or_config.hidden_dropout_prob=0.1
+        or_config.classifier_hidden_layers = classifier_hidden_layers
+        or_config.classifier_dropout = classifier_dropout
+        or_config.class_weights = class_weights
+
+        self.classifier_hidden_layers= classifier_hidden_layers
+        self.classifier_dropout = classifier_dropout
+        self.class_weights = class_weights
 
         if use_crf:
             print("USING CRF:", self.crf)
-            base_model = RobertaModel.from_pretrained(model, config=or_config)
+            base_model = RobertaForTokenClassification.from_pretrained(model, config=or_config)
             self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
         else:
-            base_model = RobertaModel.from_pretrained(model, config=or_config)
-            self.model = TokenClassificationModel(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout, class_weights)
+            #base_model = RobertaForTokenClassification.from_pretrained(model, config=or_config)
+            self.model = TokenClassificationModel.from_pretrained(model, config=or_config)
+
+        # optionally freeze the backbone
+        if freeze_backbone:
+            for p in self.model.roberta.parameters():
+                p.requires_grad = False
+            self.model.roberta.eval()
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -409,17 +385,25 @@ class ModelTrainer():
     def save_model(self, output_dir=None):
         """Custom method to save both the model architecture and state dict properly"""
         save_dir = output_dir or self.output_dir
-        
-        # Save the model config
-        self.model.config.save_pretrained(save_dir)
-        
-        # Save the tokenizer
+
+        # # Save the model config
+        # self.model.config.save_pretrained(save_dir)
+
+        # # Save the tokenizer
+        # if self.tokenizer:
+        #     self.tokenizer.save_pretrained(save_dir)
+
+        # # Save the model weights
+        # torch.save(self.model.state_dict(), f"{save_dir}/pytorch_model.bin")
+
+        self.model.config.architectures = [self.model.__class__.__name__] # "RobertaForTokenClassification"
+        self.model.config.classifier_hidden_layers = self.classifier_hidden_layers
+        self.model.config.classifier_dropout       = self.classifier_dropout
+        self.model.config.class_weights = self.class_weights
+        self.model.save_pretrained(save_dir)
         if self.tokenizer:
             self.tokenizer.save_pretrained(save_dir)
-        
-        # Save the model weights
-        torch.save(self.model.state_dict(), f"{save_dir}/pytorch_model.bin")
-        
+
         print(f"Model saved to {save_dir}")
 
 
@@ -439,10 +423,10 @@ class ModelTrainer():
             def __init__(self, parent_trainer, **kwargs):
                 super().__init__(**kwargs)
                 self.parent_trainer = parent_trainer
-                
+
             def save_model(self, output_dir=None, _internal_call=False):
                 self.parent_trainer.save_model(output_dir)
-        
+
         trainer = CustomTrainer(
             parent_trainer=self,
             model=self.model,
