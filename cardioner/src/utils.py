@@ -3,10 +3,64 @@ import torch
 import torch.nn as nn
 from collections import defaultdict
 from tqdm import tqdm
-from typing import Dict, List
+from typing import Dict, List, Literal
 import hashlib
 import os
 import json
+from transformers import pipeline
+
+from spacy.lang.en import English
+from spacy.lang.es import Spanish
+from spacy.lang.nl import Dutch
+from spacy.lang.it import Italian
+from spacy.lang.ro import Romanian
+from spacy.lang.sv import Swedish
+from spacy.lang.cs import Czech
+
+lang_dict = {
+    'es': Spanish,
+    'nl': Dutch,
+    'en': English,
+    'it': Italian,
+    'ro': Romanian,
+    'sv': Swedish,
+    'cz': Czech
+}
+
+def process_pipe(text: str,
+                 pipe: pipeline,
+                 max_word_per_chunk: int=256,
+                 lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]:
+    '''
+      text: The text to process
+      pipe: The transformers pipeline to use
+      max_word_per_chunk: The maximum number of words per chunk,
+        we need this to avoid exceeding the maximum input size of the model
+      lang: The language of the text
+    '''
+    assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
+
+    nlp = lang_dict[lang]()
+    nlp.add_pipe('sentencizer')
+
+    doc = nlp(text)
+
+    sentence_bag = []
+    word_count = 0
+    named_ents = []
+    for sent in doc.sents:
+        word_count += len(sent)
+        if word_count > max_word_per_chunk:
+            _named_ents = pipe(".".join(sentence_bag))
+            named_ents.extend(_named_ents)
+            sentence_bag = []
+            word_count = len(sent)
+        sentence_bag.append(sent.text)
+    if len(sentence_bag) > 0:
+        _named_ents = pipe(".".join(sentence_bag))
+        named_ents.extend(_named_ents)
+
+    return named_ents
 
 def pretty_print_classifier(classifier):
     """Pretty print a PyTorch module with indentation and structure details."""

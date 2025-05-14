@@ -1,7 +1,7 @@
 """
 Push model to Huggingface
 
-inputs
+inputs.
 - model_card
 - model_directory
 - hf_data_organisation
@@ -10,12 +10,12 @@ inputs
 
 from datasets import DatasetDict, Dataset
 import argparse
-from huggingface_hub import HfApi, DatasetCard, errors, ModelCard
+from huggingface_hub import HfApi, DatasetCard, errors, ModelCard, create_branch
 from requests.exceptions import HTTPError
 from huggingface_hub import add_collection_item, get_collection
 import os
 import dotenv
-from typing import Optional
+from typing import Optional, List
 
 
 from dotenv import load_dotenv
@@ -27,7 +27,7 @@ TOKEN = os.environ['HF_TOKEN']
 
 # Example usage:
 # python hf_dataset.py --organization "DT4H" --name "Example dataset"\
-# --dataset_path data --name example_api --description 'This is an example dataset'\
+# --path_to_files data --name example_api --description 'This is an example dataset'\
 #  --language es --license mit --token YOUR_TOKEN
 
 def create_dataset_card(name, description, language, license, tags):
@@ -40,9 +40,9 @@ def create_dataset_card(name, description, language, license, tags):
 
     return card
 
-def create_model_card(name, data_organisation, description, 
-                      data_description, language, license, tags, mod_type, 
-                      mod_target, base_model):
+def create_model_card(name, data_organisation, description,
+                      data_description, language, license, tags, mod_type,
+                      mod_target, base_model, ner_classes: List[str]|None):
     """
     Gets main information and creates a dataset card using the template in config.py
     """
@@ -52,15 +52,15 @@ def create_model_card(name, data_organisation, description,
                                                          license, tags, mod_type, mod_target)
     elif mod_target == 'ner':
         text = hf_config.description_text_model_ner(name, data_organisation, description,
-                                                        data_description, language,
-                                                         license, tags, mod_type, base_model)
+                                                data_description, language,
+                                                license, tags, mod_type, base_model, ner_classes)
 
     # Using the Template
     card = ModelCard(content=text)
 
     return card
 
-def push_to_huggingface(repo_id, dataset_path, card, private):
+def push_to_huggingface(repo_id, path_to_files, card, private, branch=None):
     api = HfApi(token=TOKEN)
     print(f"Attempting to push to Repository {repo_id}. \nRepo type {hf_config.repo_type}\n Token {TOKEN}")
     try:
@@ -71,41 +71,61 @@ def push_to_huggingface(repo_id, dataset_path, card, private):
         if e.response.status_code == 404:
             # If repository does not exist, create it
             print(f"Repository '{repo_id}' does not exist. Creating...")
-            api.create_repo(token=TOKEN, repo_id=repo_id, private=private, repo_type=hf_config.repo_type)
+            api.create_repo(
+                token=TOKEN,
+                repo_id=repo_id,
+                private=private,
+                repo_type=hf_config.repo_type,
+                )
         else:
             if e.response.status_code == 409:
                 print(f"Repository '{repo_id}' already exists. Continuing")
             else:
                 raise e
 
+    if branch:
+        # does this revision (branch) already exist?
+        if not api.revision_exists(repo_id=repo_id,revision=branch,repo_type=hf_config.repo_type):
+            print(f"Branch '{branch}' not found, creating it…")
+            # create_branch is a top-level helper
+            create_branch(
+                repo_id=repo_id,
+                branch=branch,
+                token=TOKEN,
+                repo_type=hf_config.repo_type,
+            )
+
+
     # Upload dataset files
-    if dataset_path.endswith(".jsonl") | dataset_path.endswith(".json"):
-        file_path = dataset_path
-        dataset_path = os.path.dirname(dataset_path)
+    if path_to_files.endswith(".jsonl") | path_to_files.endswith(".json"):
+        file_path = path_to_files
+        path_to_files = os.path.dirname(path_to_files)
         api.upload_file(
             path_or_fileobj=file_path,
-            path_in_repo=os.path.relpath(file_path, dataset_path),
+            path_in_repo=os.path.relpath(file_path, path_to_files),
             repo_id=repo_id,
             repo_type=hf_config.repo_type,
             token=TOKEN,
+            revision=branch
         )
     else:
-        for root, _, files in os.walk(dataset_path):
+        for root, _, files in os.walk(path_to_files):
             for file in files:
                 file_path = os.path.join(root, file)
                 api.upload_file(
                     path_or_fileobj=file_path,
-                    path_in_repo=os.path.relpath(file_path, dataset_path),
+                    path_in_repo=os.path.relpath(file_path, path_to_files),
                     repo_id=repo_id,
                     repo_type=hf_config.repo_type,
                     token=TOKEN,
+                    revision=branch
                 )
 
     # Push dataset card
     card.push_to_hub(
                         repo_id,
                         token=TOKEN,
-                        repo_type=hf_config.repo_type,
+                        repo_type=hf_config.repo_type
         )
 
 # class HuggingFaceDatasetManager:
@@ -124,8 +144,8 @@ def main():
     parser.add_argument("--data_organization", default="DT4H", help="Organization to push the dataset to")
     parser.add_argument("--collection_organization", default="DT4H", help="Organization that owns the collection")
     parser.add_argument("--private", action="store_true", help="Make the repository private")
-    # parser.add_argument("--repo_id", required=True, help="Hugging Face repository ID")
-    parser.add_argument("--dataset_path", required=True, help="Path to the dataset files")
+    parser.add_argument("--repo_id", type=str, required=False, help="Hugging Face repository ID")
+    parser.add_argument("--path_to_files", required=True, help="Path to the dataset files")
     parser.add_argument("--name", required=True, help="Name of the dataset")
     parser.add_argument("--description", required=True, help="Description of the model")
     parser.add_argument("--data_description", required=True, help="Description of the dataset")
@@ -135,23 +155,26 @@ def main():
     parser.add_argument("--mod_target", choices=["sap", "ner", "mirrorbert"], required=True)
     parser.add_argument("--base_model", type=str, help="Base model used for the finetuning")
     parser.add_argument("--tags", nargs="+", default=[], help="Tags for the dataset")
-
+    parser.add_argument("--branch", type=str, default=None, help="Branch to push to, defaults to main if not specified")
+    parser.add_argument("--ner_classes", nargs="+", default=[], help="NER classes predicted")
     args = parser.parse_args()
 
     assert ((args.mod_target=='ner') & (args.mod_type in ["multilabel", "multiclass"]) |\
             (args.mod_target in ['sap', 'mirrorbert']) & (args.mod_type in ["mean", "cls"])), \
         "If target is NER then the mod_type MUST be multilabel/multiclass, if SAP then mean/cls"
 
-    repo_id = args.name.replace(" ", "_").lower()
-    repo_id = f"{args.data_organization}/{repo_id}" if args.data_organization else repo_id
+    repo_id = args.repo_id
+    if not repo_id:
+        repo_id = args.name.replace(" ", "_").lower()
+        repo_id = f"{args.data_organization}/{repo_id}" if args.data_organization else repo_id
 
     # Create dataset card
     card = create_model_card(args.name, args.data_organization, args.description, args.data_description,
-                              args.language, args.license, args.tags, 
-                              args.mod_type, args.mod_target, args.base_model)
+                              args.language, args.license, args.tags,
+                              args.mod_type, args.mod_target, args.base_model, args.ner_classes)
 
     # Push dataset and card to Hugging Face
-    push_to_huggingface(repo_id, args.dataset_path, card, private=args.private)
+    push_to_huggingface(repo_id, args.path_to_files, card, private=args.private, branch=args.branch)
 
     # Add dataset to collection
     collection_id = f"{args.collection_organization}/{hf_config.collections[args.language]}"

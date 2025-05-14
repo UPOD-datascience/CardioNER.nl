@@ -36,6 +36,8 @@ import pandas as pd
 import json
 import spacy
 
+from typing import Dict, Literal, List
+
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -384,7 +386,7 @@ class NERModule(L.LightningModule):
         self,
         lm: nn.Module,
         lm_output_size: int,
-        label2tag: int,
+        label2tag: Dict[int,str],
         iob_tags: bool,
         freeze_backbone: bool = False,
         word_prediction_strategy: str = "first_token",
@@ -712,6 +714,9 @@ if __name__ == "__main__":
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
 
+    if classifier_hidden_layers is not None:
+        raise Warning("You are using a custom head, this will break the compatibility with the HF library as-is")
+
     CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
 
     if args.tag_classes is None:
@@ -840,6 +845,8 @@ if __name__ == "__main__":
     base_config = AutoConfig.from_pretrained(model_name)
     base_config.num_labels = module.num_labels
     base_config.add_pooling_layer = False
+    base_config.id2label = label2tag
+    base_config.label2id = tag2label
 
     save_dir = os.path.join(output_dir, "hf")
     if os.path.exists(save_dir) == False:

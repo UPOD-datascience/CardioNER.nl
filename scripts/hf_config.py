@@ -23,7 +23,7 @@ For more details about training and eval, see SapBERT [github repo](https://gith
 }
 ```
 For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
-and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/)
 
 '''
 
@@ -49,14 +49,14 @@ For more details about training and eval, see MirrorBERT [github repo](https://g
 }
 ```
 For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
-and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/)
 
 '''
 
 
 mod_info_dict['cardioner'] ='''
 For more details about training/eval and other scripts, see CardioNER [github repo](https://github.com/DataTools4Heart/CardioNER).
-and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/) 
+and for more information on the background, see Datatools4Heart [Huggingface](https://huggingface.co/DT4H)/[Website](https://www.datatools4heart.eu/)
 '''
 
 
@@ -86,7 +86,7 @@ collections = {"es": "spanish-66f1460e7972f6224f479a17",
 
 repo_type = "model"
 
-def description_text_model_norm(name, data_organisation, description, data_description, 
+def description_text_model_norm(name, data_organisation, description, data_description,
                                 language, license, tags, mod_type, mod_target):
     """
     Template for dataset card
@@ -141,7 +141,7 @@ for i in tqdm(np.arange(0, len(all_names), bs)):
     toks_cuda = {"{}"}
     for k,v in toks.items():
         toks_cuda[k] = v.cuda()
-    {mod_string} 
+    {mod_string}
     all_embs.append(cls_rep.cpu().detach().numpy())
 
 all_embs = np.concatenate(all_embs, axis=0)
@@ -176,8 +176,8 @@ This is part of the [DT4H project](https://www.datatools4heart.eu/).
 ######################################
 ######################################
 
-def description_text_model_ner(name, data_organisation, description, data_description, 
-                                language, license, tags, mod_type, base_model):
+def description_text_model_ner(name, data_organisation, description, data_description,
+                                language, license, tags, mod_type, base_model, ner_classes):
     """
     Template for dataset card
     """
@@ -197,22 +197,22 @@ pipeline_tag: token-classification
 ---
 """
     if mod_type == 'multiclass':
-        mod_specific = f'{name} is a multilabel-multiclass span classification model.' 
+        mod_specific = f'{name} is a multilabel-multiclass span classification model.'
     else:
         mod_specific = f'{name} is a muticlass span classification model.'
 
+    #  This specific model is the average of the best checkpoints per fold over a ten-fold cross-validation over 547 labeled cardiology discharge letters
     mod_requirements = f'''
 
-This a {base_model} base model finetuned for span classification. This specific model is 
-the average of the best checkpoints per fold over a ten-fold cross-validation. For this model
-we used the IOB-tagged. Using the IOB-tagging schema facilitates the aggregation of predictions
-over sequences.
+This a {base_model} base model finetuned for span classification. For this model
+we used IOB-tagging. Using the IOB-tagging schema facilitates the aggregation of predictions
+over sequences. This specific model is trained on a batch of 240 span-labeled documents.
 
 ### Expected input and output
-The input should be a string with **Dutch** cardio clinical text. 
+The input should be a string with **Dutch** cardio clinical text.
 
-{mod_specific} 
-The classes that can be predicted are disease, medication, procedure and symptom. 
+{mod_specific}
+The classes that can be predicted are {ner_classes}.
 
 #### Extracting span classification from {name}
 
@@ -220,15 +220,15 @@ The following script converts a string of <512 tokens to a list of span predicti
 ```python
 from transformers import pipeline
 
-le_pipe = pipeline('ner', 
-                    model=model, 
-                    tokenizer=model, aggregation_strategy="simple", 
+le_pipe = pipeline('ner',
+                    model=model,
+                    tokenizer=model, aggregation_strategy="simple",
                     device=-1)
 
 named_ents = le_pipe(SOME_TEXT)
 ```
 
-To process a string of arbitrary length you can split the string into sentences or paragraphs 
+To process a string of arbitrary length you can split the string into sentences or paragraphs
 using e.g. pysbd or spacy(sentencizer) and iteratively parse the list of with the span-classification pipe.
 
 '''

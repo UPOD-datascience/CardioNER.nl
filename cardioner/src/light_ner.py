@@ -27,6 +27,8 @@ import os
 from functools import partial
 import gc
 
+from typing import Dict, Literal, List
+
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -351,7 +353,7 @@ class NERModule(L.LightningModule):
     def __init__(self,
                  lm: nn.Module,
                  lm_output_size: int,
-                 label2tag: int,
+                 label2tag: Dict[int,str],
                  freeze_backbone: bool = False,
                  learning_rate: float = 2e-5,
                  classifier_hidden_layers: tuple|None = None,
@@ -486,7 +488,7 @@ class RobertaNER(RobertaForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
         # 1) Instantiate the base model from config:
-        self.base_model = AutoModel.from_config(config)
+        #self.base_model = AutoModel.from_config(config)
 
         # 2) Add your classifier head
         #    (requires config.hidden_size and config.num_labels to be set properly)
@@ -497,7 +499,7 @@ class RobertaNER(RobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -645,6 +647,9 @@ if __name__ == "__main__":
     classifier_hidden_layers = args.classifier_hidden_layers
     classifier_dropout = args.classifier_dropout
 
+    if classifier_hidden_layers is not None:
+        raise Warning("You are using a custom head, this will break the compatibility with the HF library as-is")
+
     CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
 
     if args.tag_classes is not None:
@@ -770,6 +775,8 @@ if __name__ == "__main__":
     base_config = AutoConfig.from_pretrained(model_name)
     base_config.num_labels = module.num_labels
     base_config.add_pooling_layer = False
+    base_config.id2label = label2tag
+    base_config.label2id = tag2label
 
     save_dir = os.path.join(output_dir, "hf")
     if os.path.exists(save_dir) == False:
@@ -785,7 +792,7 @@ if __name__ == "__main__":
         hf_model = XLMRobertaNER(base_config)
         print(f"Storing as XLMRobertaNER model in {save_dir}")
 
-    hf_model.base_model.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
+    hf_model.roberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
     hf_model.classifier.load_state_dict(module.to("cpu").classifier.state_dict())
 
     hf_model.save_pretrained(save_dir)
