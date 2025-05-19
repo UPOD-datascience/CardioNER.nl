@@ -3,3 +3,4 @@ output/
 .idea/
 wandb/
 *.pyc
+.DS_Store

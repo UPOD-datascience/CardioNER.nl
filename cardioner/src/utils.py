@@ -27,9 +27,18 @@ lang_dict = {
     'cz': Czech
 }
 
+def _offset_tags(tags, offset):
+    replacement = []
+    for _tags in tags:
+        _tags['start'] += offset
+        _tags['end'] += offset
+        replacement.append(_tags)
+    return replacement
+
 def process_pipe(text: str,
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
+                 hf_stride: True,
                  lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]:
     '''
       text: The text to process
@@ -45,20 +54,32 @@ def process_pipe(text: str,
 
     doc = nlp(text)
 
-    sentence_bag = []
-    word_count = 0
-    named_ents = []
-    for sent in doc.sents:
-        word_count += len(sent)
-        if word_count > max_word_per_chunk:
+    if hf_stride:
+        named_ents = pipe(text, stride=max_word_per_chunk)
+    else:
+        # only necessary if no FastTokenizer is available or aggregation_strategy is None
+        sentence_bag = []
+        word_count = 0
+        named_ents = []
+        offset = 0
+        for sent in doc.sents:
+            word_count += len(sent)
+            if word_count > max_word_per_chunk:
+                txt = ".".join(sentence_bag)
+                _named_ents = pipe(txt)
+                # add offsets
+                if offset>0:
+                    _named_ents =_offset_tags(_named_ents, offset)
+                named_ents.extend(_named_ents)
+                sentence_bag = []
+                word_count = len(sent)
+                offset += len(txt)
+            sentence_bag.append(sent.text)
+        if len(sentence_bag) > 0:
             _named_ents = pipe(".".join(sentence_bag))
             named_ents.extend(_named_ents)
-            sentence_bag = []
-            word_count = len(sent)
-        sentence_bag.append(sent.text)
-    if len(sentence_bag) > 0:
-        _named_ents = pipe(".".join(sentence_bag))
-        named_ents.extend(_named_ents)
+            if offset>0:
+                _named_ents = _offset_tags(_named_ents, offset)
 
     return named_ents
 
