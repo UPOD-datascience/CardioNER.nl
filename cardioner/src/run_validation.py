@@ -28,19 +28,20 @@ lang_dict = {
     'cz': Czech
 }
 
-def main(model, lang, ignore_zero, input_dir):
+def main(model, revision, lang, ignore_zero, input_dir, stride, annotation_tsv):
     le_pipe = pipeline('ner',
                         model=model,
+                        revision=revision,
                         tokenizer=model,
                         aggregation_strategy="simple",
                         device=-1)
 
-    sample_list = merge_annotations(annotation_directory=input_dir)
+    sample_list = merge_annotations(annotation_directory=input_dir, annotation_tsv=annotation_tsv)
 
     print(f"There are {len(sample_list)} validation samples")
     res_df_raw = pd.DataFrame()
     for sample in tqdm(sample_list):
-        named_ents = process_pipe(text=sample['text'], pipe = le_pipe)
+        named_ents = process_pipe(text=sample['text'], lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=False)
         if len(named_ents)>0:
             _res_df = pd.DataFrame(named_ents)
             _res_df['id'] = sample['id']
@@ -50,7 +51,6 @@ def main(model, lang, ignore_zero, input_dir):
 
     res_df_raw = res_df_raw.rename(columns={'start': 'start_span', 'end': 'end_span', 'entity_group': 'label', 'word': 'text', 'id': 'filename'})
     res_df_raw['ann_id'] = "NAN"
-    res_df_raw = res_df_raw.sort_values(by=['filename', 'start_span'])
     res_df_raw['filename'] = res_df_raw['filename'].str.strip()
     res_df_raw[['filename', 'ann_id', 'label', 'start_span', 'end_span', 'text']].to_csv('results.tsv', sep="\t", index=False)
 
@@ -58,10 +58,13 @@ def main(model, lang, ignore_zero, input_dir):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the trained model, input a directory with jsonls, outputs a tsv with results')
     parser.add_argument('--model', type=str, help='The model to test, can be a path or a model name', default='StivenLancheros/mBERT-base-Biomedical-NER')
+    parser.add_argument('--revision', type=str, help='Model revision, optional', default=None)
     parser.add_argument('--lang', type=str, help='The language of the text', choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'], required=True)
     parser.add_argument('--ignore_zero', action='store_true', default=False)
     parser.add_argument('--input_dir', type=str, required=True)
+    parser.add_argument('--stride', type=int, default=256)
+    parser.add_argument('--annotation_tsv', type=str, help='Annotation file, only for folder with txts', default=None)
 
     args = parser.parse_args()
-
+    # 2025-05-19_08-26-01-dcbf0f3b
     main(**vars(args))

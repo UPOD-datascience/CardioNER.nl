@@ -3,10 +3,11 @@ import torch
 import torch.nn as nn
 from collections import defaultdict
 from tqdm import tqdm
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 import hashlib
 import os
 import json
+import pandas as pd
 from transformers import pipeline
 
 from spacy.lang.en import English
@@ -38,7 +39,7 @@ def _offset_tags(tags, offset):
 def process_pipe(text: str,
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
-                 hf_stride: True,
+                 hf_stride: bool=True,
                  lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]:
     '''
       text: The text to process
@@ -51,7 +52,6 @@ def process_pipe(text: str,
 
     nlp = lang_dict[lang]()
     nlp.add_pipe('sentencizer')
-
     doc = nlp(text)
 
     if hf_stride:
@@ -80,7 +80,6 @@ def process_pipe(text: str,
             named_ents.extend(_named_ents)
             if offset>0:
                 _named_ents = _offset_tags(_named_ents, offset)
-
     return named_ents
 
 def pretty_print_classifier(classifier):
@@ -194,20 +193,34 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
     print(f'Extracted class weights: {[f"{id2label[i]}_{str(w)}" for i,w in enumerate(weights)]}')
     return weights
 
-def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text')->List[Dict]:
-    # go through .jsonl's in directory
+def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
+    # go through .jsonl's/.txts in directory
     #
+
+    if isinstance(annotation_tsv, str):
+        annotation_df = pd.read_csv(annotation_tsv, sep='\t')
+    else:
+        annotation_df = None
     annotations = []
-    file_processed = False
     for _file in tqdm(os.listdir(annotation_directory)):
         if _file.endswith('.jsonl'):
             file = os.path.join(annotation_directory, _file)
             with open(file, 'r', encoding='utf-8') as fr:
                 for line in fr:
                     annotations.append(json.loads(line))
-            file_processed = True
-    if not file_processed:
-        raise ValueError("No JSONL file found in the directory, maybe change the extension?")
+        elif _file.endswith('.txt'):
+            if annotation_df is None:
+                raise ValueError("The annotation tsv needs to be provided if you parse a list of .txts")
+            file = os.path.join(annotation_directory, _file)
+            with open(file, 'r', encoding='utf-') as fr:
+                text = fr.read()
+            fn = _file.split('.')[0]
+            d = {merge_key: fn, text_key: text}
+            r = annotation_df.query(f'filename=="{fn.strip()}"')[['label', 'start_span', 'end_span']]
+            d[tag_key] = [{'tag': row[0], 'start': row[1], 'end': row[2] } for row in r]
+            annotations.append(d)
+    if len(annotations)==0:
+        raise ValueError("No JSONL or TXT file found in the directory, maybe check the directory?")
 
     NEW_DICT = defaultdict(lambda : defaultdict(list))
     for d in tqdm(annotations):
