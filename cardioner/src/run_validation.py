@@ -5,6 +5,7 @@ transformer pipeline. The --input_folder is a directory of jsonl's with {'id': .
 
 import argparse
 from transformers import pipeline
+from transformers import AutoTokenizer
 import pandas as pd
 from typing import List, Dict, Literal
 from spacy.lang.en import English
@@ -29,10 +30,11 @@ lang_dict = {
 }
 
 def main(model, revision, lang, ignore_zero, input_dir, stride, annotation_tsv):
+    tokenizer = AutoTokenizer.from_pretrained(model, truncation=True, padding='max_length', model_max_length=512, padding_side='right', truncation_side='right')
     le_pipe = pipeline('ner',
                         model=model,
                         revision=revision,
-                        tokenizer=model,
+                        tokenizer=tokenizer,
                         aggregation_strategy="simple",
                         device=-1)
 
@@ -41,7 +43,7 @@ def main(model, revision, lang, ignore_zero, input_dir, stride, annotation_tsv):
     print(f"There are {len(sample_list)} validation samples")
     res_df_raw = pd.DataFrame()
     for sample in tqdm(sample_list):
-        named_ents = process_pipe(text=sample['text'], lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=False)
+        named_ents = process_pipe(text=sample['text'], lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=True)
         if len(named_ents)>0:
             _res_df = pd.DataFrame(named_ents)
             _res_df['id'] = sample['id']
@@ -66,5 +68,4 @@ if __name__ == '__main__':
     parser.add_argument('--annotation_tsv', type=str, help='Annotation file, only for folder with txts', default=None)
 
     args = parser.parse_args()
-    # 2025-05-19_08-26-01-dcbf0f3b
     main(**vars(args))

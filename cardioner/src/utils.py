@@ -65,7 +65,7 @@ def process_pipe(text: str,
         for sent in doc.sents:
             word_count += len(sent)
             if word_count > max_word_per_chunk:
-                txt = ".".join(sentence_bag)
+                txt = " ".join(sentence_bag)
                 _named_ents = pipe(txt)
                 # add offsets
                 if offset>0:
