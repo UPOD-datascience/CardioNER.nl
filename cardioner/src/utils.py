@@ -5,10 +5,12 @@ from collections import defaultdict
 from tqdm import tqdm
 from typing import Dict, List, Literal, Optional
 import hashlib
+import warnings
 import os
 import json
 import pandas as pd
 from transformers import pipeline
+from datasets import Dataset
 
 from spacy.lang.en import English
 from spacy.lang.es import Spanish
@@ -17,6 +19,8 @@ from spacy.lang.it import Italian
 from spacy.lang.ro import Romanian
 from spacy.lang.sv import Swedish
 from spacy.lang.cs import Czech
+
+
 
 lang_dict = {
     'es': Spanish,
@@ -36,11 +40,11 @@ def _offset_tags(tags, offset):
         replacement.append(_tags)
     return replacement
 
-def process_pipe(text: str,
+def process_pipe(text: str|Dataset,
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
                  hf_stride: bool=True,
-                 lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]:
+                 lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]|List[List[Dict[str,str]]]:
     '''
       text: The text to process
       pipe: The transformers pipeline to use
@@ -49,14 +53,23 @@ def process_pipe(text: str,
       lang: The language of the text
     '''
     assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
+    assert isinstance(text, str) or isinstance(text, Dataset), f"Text must be of type str or Dataset, got {type(text)}"
 
-    nlp = lang_dict[lang]()
-    nlp.add_pipe('sentencizer')
-    doc = nlp(text)
+    if hf_stride and isinstance(text, Dataset):
+        hf_stride = True
+        warnings.warn("The dataset loader only works with hf_stride==True, continuing with HF stride")
 
     if hf_stride:
-        named_ents = pipe(text, stride=max_word_per_chunk)
+        if isinstance(text, Dataset):
+            # Extract texts from the Dataset
+            texts = text['text']
+            named_ents = pipe(texts, stride=max_word_per_chunk)
+        else:
+            named_ents = pipe(text, stride=max_word_per_chunk)
     else:
+        nlp = lang_dict[lang]()
+        nlp.add_pipe('sentencizer')
+        doc = nlp(text)
         # only necessary if no FastTokenizer is available or aggregation_strategy is None
         sentence_bag = []
         word_count = 0

@@ -29,27 +29,48 @@ lang_dict = {
     'cz': Czech
 }
 
-def main(model, revision, lang, ignore_zero, input_dir, stride, annotation_tsv):
+def main(model, revision, lang, ignore_zero, input_dir, stride, batchwise, annotation_tsv):
     tokenizer = AutoTokenizer.from_pretrained(model, truncation=True, padding='max_length', model_max_length=512, padding_side='right', truncation_side='right')
     le_pipe = pipeline('ner',
                         model=model,
                         revision=revision,
                         tokenizer=tokenizer,
                         aggregation_strategy="simple",
-                        device=-1)
+                        batch_size=16 if batchwise else None,
+                        device=0)
 
     sample_list = merge_annotations(annotation_directory=input_dir, annotation_tsv=annotation_tsv)
 
     print(f"There are {len(sample_list)} validation samples")
     res_df_raw = pd.DataFrame()
-    for sample in tqdm(sample_list):
-        named_ents = process_pipe(text=sample['text'], lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=True)
-        if len(named_ents)>0:
-            _res_df = pd.DataFrame(named_ents)
-            _res_df['id'] = sample['id']
-            if ignore_zero:
-                _res_df = _res_df[_res_df.entity_group!='LABEL_0']
-            res_df_raw = pd.concat([res_df_raw, _res_df], axis=0)
+    if batchwise==False:
+        for sample in tqdm(sample_list):
+            named_ents = process_pipe(text=sample['text'], lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=True)
+            if len(named_ents)>0:
+                _res_df = pd.DataFrame(named_ents)
+                _res_df['id'] = sample['id']
+                if ignore_zero:
+                    _res_df = _res_df[_res_df.entity_group!='LABEL_0']
+                res_df_raw = pd.concat([res_df_raw, _res_df], axis=0)
+    else:
+        print("Performing inference in batch mode")
+        from datasets import Dataset
+
+        # Create a dataset from the sample_list
+        ner_dataset = Dataset.from_dict({
+            'text': [sample['text'] for sample in sample_list],
+            'id': [sample['id'] for sample in sample_list]
+        })
+        results = process_pipe(text=ner_dataset, lang=lang, pipe = le_pipe, max_word_per_chunk=stride, hf_stride=True)
+        print("finished..")
+        # Each result in results corresponds to one sample in the dataset/sample_list
+        for i, doc_results in enumerate(results):
+            if len(doc_results) > 0:
+                _res_df = pd.DataFrame(doc_results)
+                _res_df['id'] = sample_list[i]['id']  # Get ID from the original sample_list
+                if ignore_zero:
+                    _res_df = _res_df[_res_df.entity_group != 'LABEL_0']
+                res_df_raw = pd.concat([res_df_raw, _res_df], axis=0)
 
     res_df_raw = res_df_raw.rename(columns={'start': 'start_span', 'end': 'end_span', 'entity_group': 'label', 'word': 'text', 'id': 'filename'})
     res_df_raw['ann_id'] = "NAN"
@@ -65,6 +86,7 @@ if __name__ == '__main__':
     parser.add_argument('--ignore_zero', action='store_true', default=False)
     parser.add_argument('--input_dir', type=str, required=True)
     parser.add_argument('--stride', type=int, default=256)
+    parser.add_argument('--batchwise', action='store_true', default=False)
     parser.add_argument('--annotation_tsv', type=str, help='Annotation file, only for folder with txts', default=None)
 
     args = parser.parse_args()
