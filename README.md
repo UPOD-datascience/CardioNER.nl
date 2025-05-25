@@ -14,6 +14,8 @@ CardioNER.[lang] will then have 3 version:
 * **v1**: finetuning of pre-trained biomedical model
 * **v2**: finetuning of pre-trained biomedical model, that is further pre-trained using self-aligned pre-training on UMLS
 * **v3**: we add a CRF head.
+* **v4**: we add multihead CRF compatible with the transformer library
+* **v5**: we add custom heads 
 
 
 # Data structure
