@@ -356,6 +356,7 @@ class NERModule(L.LightningModule):
                  label2tag: Dict[int,str],
                  freeze_backbone: bool = False,
                  learning_rate: float = 2e-5,
+                 weight_decay:float = 1e-3,
                  classifier_hidden_layers: tuple|None = None,
                  classifier_dropout: float = 0.1
     ):
@@ -373,6 +374,7 @@ class NERModule(L.LightningModule):
         self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
 
         self._build_classifier_head(classifier_hidden_layers,
             classifier_dropout)
@@ -475,7 +477,7 @@ class NERModule(L.LightningModule):
         return new_results
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         return optimizer
 
 
@@ -592,6 +594,7 @@ if __name__ == "__main__":
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
     argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--weight_decay", type=float, default=1e-3, help="Learning rate for the optimizer")
     argparser.add_argument("--early_stop_metric", type=str, default="loss", choices=["loss", "f1"], help="Metric to monitor in Early Stopping")
     argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
@@ -739,6 +742,7 @@ if __name__ == "__main__":
     module = NERModule(lm=model,
                        lm_output_size=model.config.hidden_size,
                        learning_rate=args.learning_rate,
+                       weight_decay=args.weight_decay,
                        freeze_backbone=args.freeze_backbone,
                        label2tag=label2tag,
                        classifier_hidden_layers=classifier_hidden_layers,

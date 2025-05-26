@@ -391,6 +391,7 @@ class NERModule(L.LightningModule):
         freeze_backbone: bool = False,
         word_prediction_strategy: str = "first_token",
         learning_rate=2e-5,
+        weight_decay=1e-3,
         classifier_hidden_layers: tuple|None = None,
         classifier_dropout: float = 0.1
     ):
@@ -404,6 +405,7 @@ class NERModule(L.LightningModule):
         self.lm.train()
         self.label2tag = label2tag
         self.learning_rate = learning_rate
+        self.weight_decay= weight_decay
         self.iob_tags = iob_tags
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
@@ -411,8 +413,8 @@ class NERModule(L.LightningModule):
         #self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
+        #self.loss_fn = nn.BCEWithLogitsLoss()
         self.word_prediction_strategy = word_prediction_strategy
-        self.learning_rate = learning_rate
         self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
 
         self._build_classifier_head(classifier_hidden_layers,
@@ -466,6 +468,8 @@ class NERModule(L.LightningModule):
                 )
             )
         loss = torch.stack(loss).mean()
+        #labels = labels.float()
+        #loss = self.loss_fn(logits, labels)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -535,7 +539,7 @@ class NERModule(L.LightningModule):
         self.metric.reset()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         return optimizer
 
 
@@ -652,6 +656,7 @@ if __name__ == "__main__":
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
     argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
+    argparser.add_argument("--weight_decay", type=float, default=1e-3, help="Learning rate for the optimizer")
     argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
     argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
     argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
@@ -803,6 +808,7 @@ if __name__ == "__main__":
             lm=model,
             lm_output_size=model.config.hidden_size,
             learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
             label2tag=label2tag,
             iob_tags=use_iob_tags,
             freeze_backbone=args.freeze_backbone,
@@ -842,9 +848,23 @@ if __name__ == "__main__":
     # save as huggingface compatible model
     ########################################
     # make transformer class
+    #TODO: this is ducktape fix
+    offset = 3 if use_iob_tags else 2
     base_config = AutoConfig.from_pretrained(model_name)
-    base_config.num_labels = module.num_labels
+    base_config.num_labels = module.num_labels * offset
     base_config.add_pooling_layer = False
+    # change tag2label
+    # TODO: is dirty ducktape, code should be refactored?
+    _tag2label = {}
+    for i, (k,v) in enumerate(tag2label.items(), start=0):
+        _tag2label[f'O-{k}'] = max(0, v-1+i*offset)
+        _tag2label[f'I-{k}'] = max(1, v+i*offset)
+        if use_iob_tags:
+            _tag2label[f'B-{k}'] = max(2, (v+1)+i*offset)
+
+    tag2label = _tag2label
+    label2tag = {v:k for k,v in tag2label.items()}
+
     base_config.id2label = label2tag
     base_config.label2id = tag2label
 

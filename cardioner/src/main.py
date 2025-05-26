@@ -615,6 +615,7 @@ if __name__ == "__main__":
             # Load the model for NER
             ner_pipeline = pipeline(
                 "ner",
+                stride=256,
                 model=OutputDir,
                 tokenizer=_model,
                 aggregation_strategy="simple"

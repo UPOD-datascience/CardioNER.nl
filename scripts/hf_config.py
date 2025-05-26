@@ -230,6 +230,11 @@ named_ents = le_pipe(SOME_TEXT)
 
 To process a string of arbitrary length you can split the string into sentences or paragraphs
 using e.g. pysbd or spacy(sentencizer) and iteratively parse the list of with the span-classification pipe.
+You can also use the strider built in the transformer pipeline, although this is limited to non-overlapping strides plus it requires a FastTokenizer and it does not work for aggregation_strategy=None;
+```python
+named_ents = le_pipe(SOME_TEXT, stride=256)
+```
+
 
 '''
 
