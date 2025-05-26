@@ -40,10 +40,19 @@ def _offset_tags(tags, offset):
         replacement.append(_tags)
     return replacement
 
+def pipe_with_progress(pipe, texts, batch_size=16, **kwargs):
+    results = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Running pipeline"):
+        batch = texts[i:i+batch_size]
+        batch_results = pipe(batch, **kwargs)
+        results.extend(batch_results)
+    return results
+
 def process_pipe(text: str|Dataset,
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
                  hf_stride: bool=True,
+                 batch_size: int=16,
                  lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]|List[List[Dict[str,str]]]:
     '''
       text: The text to process
@@ -51,11 +60,13 @@ def process_pipe(text: str|Dataset,
       max_word_per_chunk: The maximum number of words per chunk,
         we need this to avoid exceeding the maximum input size of the model
       lang: The language of the text
+      batch_size: batch_size in case the input is a Dataset
+      hf_stride: use stride that is part of the huggingface pipe
     '''
     assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
     assert isinstance(text, str) or isinstance(text, Dataset), f"Text must be of type str or Dataset, got {type(text)}"
 
-    if hf_stride and isinstance(text, Dataset):
+    if not hf_stride and isinstance(text, Dataset):
         hf_stride = True
         warnings.warn("The dataset loader only works with hf_stride==True, continuing with HF stride")
 
@@ -63,7 +74,7 @@ def process_pipe(text: str|Dataset,
         if isinstance(text, Dataset):
             # Extract texts from the Dataset
             texts = text['text']
-            named_ents = pipe(texts, stride=max_word_per_chunk)
+            named_ents = pipe_with_progress(pipe, texts, batch_size)
         else:
             named_ents = pipe(text, stride=max_word_per_chunk)
     else:
@@ -229,7 +240,7 @@ def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: s
                 text = fr.read()
             fn = _file.split('.')[0]
             d = {merge_key: fn, text_key: text}
-            r = annotation_df.query(f'filename=="{fn.strip()}"')[['label', 'start_span', 'end_span']]
+            r = annotation_df.query(f'name=="{fn.strip()}"')[['tag', 'start_span', 'end_span']]
             d[tag_key] = [{'tag': row[0], 'start': row[1], 'end': row[2] } for row in r]
             annotations.append(d)
     if len(annotations)==0:

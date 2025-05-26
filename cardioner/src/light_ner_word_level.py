@@ -854,15 +854,19 @@ if __name__ == "__main__":
 
     if base_config.architectures[0].startswith("Roberta"):
         hf_model = RobertaNER(base_config)
+        hf_model.roberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
+
         print(f"Storing as RobertaNER model in {save_dir}")
     elif base_config.architectures[0].startswith("Bert"):
         hf_model = BertNER(base_config)
+        hf_model.bert.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
+
         print(f"Storing as BertNER model in {save_dir}")
     elif base_config.architectures[0].startswith("XLMRoberta"):
         hf_model = XLMRobertaNER(base_config)
+        hf_model.xlmroberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
         print(f"Storing as XLMRobertaNER model in {save_dir}")
 
-    hf_model.base_model.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
     hf_model.classifier.load_state_dict(module.to("cpu").classifier.state_dict())
 
     hf_model.save_pretrained(save_dir)
