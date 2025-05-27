@@ -27,8 +27,12 @@ import os
 from functools import partial
 import gc
 
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
+
 from typing import Dict, Literal, List
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -358,7 +362,8 @@ class NERModule(L.LightningModule):
                  learning_rate: float = 2e-5,
                  weight_decay:float = 1e-3,
                  classifier_hidden_layers: tuple|None = None,
-                 classifier_dropout: float = 0.1
+                 classifier_dropout: float = 0.1,
+                 class_weights: List[float]|None=None
     ):
         super().__init__()
         self.lm = lm
@@ -375,6 +380,11 @@ class NERModule(L.LightningModule):
         self.metric = NEREval(num_labels=self.num_labels)
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        if class_weights is not None:
+            # Register as buffer so it automatically moves to correct device
+            self.register_buffer('class_weights', torch.tensor(class_weights, dtype=torch.float))
+        else:
+            self.class_weights = None
 
         self._build_classifier_head(classifier_hidden_layers,
             classifier_dropout)
@@ -425,7 +435,10 @@ class NERModule(L.LightningModule):
         sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)
+        # Use pos_weight for class balancing
+        loss = F.binary_cross_entropy_with_logits(
+            logits, labels, pos_weight=self.class_weights
+        )
 
         self.log("train_loss", loss, on_epoch=True, sync_dist=True)
         return loss
@@ -621,6 +634,7 @@ if __name__ == "__main__":
         "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
     )
     argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
+    argparser.add_argument('--use_class_weights', action='store_true')
 
     args = argparser.parse_args()
 
@@ -735,9 +749,24 @@ if __name__ == "__main__":
     test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
 
     collate_fn = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers=num_workers, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers, pin_memory=True)
+    test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    train_labels = []  # Your actual training labels
+    for batch in train_loader:
+        train_labels.extend(batch['labels'].flatten().tolist())
+
+    if args.use_class_weights:
+        class_weights = compute_class_weight(
+            'balanced',
+            classes=np.unique(train_labels),
+            y=train_labels
+        )
+    else:
+        class_weights = None
+
+    print(f"Class weights are set to:{class_weights}")
 
     module = NERModule(lm=model,
                        lm_output_size=model.config.hidden_size,
@@ -746,7 +775,8 @@ if __name__ == "__main__":
                        freeze_backbone=args.freeze_backbone,
                        label2tag=label2tag,
                        classifier_hidden_layers=classifier_hidden_layers,
-                       classifier_dropout=classifier_dropout)
+                       classifier_dropout=classifier_dropout,
+                       class_weights=class_weights)
 
 
     if torch.cuda.is_available() & use_cpu == False:
