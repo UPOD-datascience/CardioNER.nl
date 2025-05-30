@@ -440,12 +440,12 @@ if __name__ == "__main__":
 
     if args.without_iob_tagging:
         use_iob = False
-        raise Warning("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
+        print("WARNING: you are training without the IOB-tagging scheme. Ensure this is correct.")
     else:
         use_iob = True
 
     if not args.split_file:
-        raise Warning("WARNING: you are training without a split file. Ensure this is correct.")
+        print("WARNING: you are training without a split file. Ensure this is correct.")
 
     assert(((corpus_train is not None) and (corpus_validation is not None)) | ((split_file is not None) and (corpus_train is not None)) | ((corpus_train is not None) and (force_splitter))), "Either provide a split file or a train and validation corpus"
     assert((_annotation_loc is not None) | (parse_annotations is not None)), "Either provide an annotation location or set parse_annotations to True"

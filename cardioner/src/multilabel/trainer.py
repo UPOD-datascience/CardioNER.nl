@@ -461,6 +461,23 @@ class ModelTrainer():
 
         # TODO: if there is a test set and evaluation set, evaluate on the eval set
         metrics = trainer.evaluate(eval_dataset=eval_data)
+        # Add training arguments to model config before saving
+        training_config = {
+            'training_arguments': {
+                **self.train_kwargs,
+                'output_dir': self.output_dir
+            },
+            'model_arguments': {
+                'max_length': self.tokenizer.model_max_length,
+                'freeze_backbone': getattr(self.model.config, 'freeze_backbone', False),
+                'classifier_dropout': getattr(self.model.config, 'classifier_dropout', 0.1),
+            }
+        }
+
+        # Update model config with training arguments
+        for key, value in training_config.items():
+            setattr(self.model.config, key, value)
+
         try:
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)

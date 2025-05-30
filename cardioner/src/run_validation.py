@@ -29,7 +29,9 @@ lang_dict = {
     'cz': Czech
 }
 
-def main(model, revision, lang, ignore_zero, input_dir, stride, batchwise, batch_size, annotation_tsv, **kwargs):
+def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str,
+         stride: int, batchwise: bool, batch_size: int, annotation_tsv: str, file_prefix: str,
+         split_by_class: bool=False, **kwargs):
     tokenizer = AutoTokenizer.from_pretrained(model, truncation=True, padding='max_length', model_max_length=512, padding_side='right', truncation_side='right')
     le_pipe = pipeline('ner',
                         model=model,
@@ -75,7 +77,15 @@ def main(model, revision, lang, ignore_zero, input_dir, stride, batchwise, batch
     res_df_raw = res_df_raw.rename(columns={'start': 'start_span', 'end': 'end_span', 'entity_group': 'label', 'word': 'text', 'id': 'filename'})
     res_df_raw['ann_id'] = "NAN"
     res_df_raw['filename'] = res_df_raw['filename'].str.strip()
-    res_df_raw[['filename', 'ann_id', 'label', 'start_span', 'end_span', 'text']].to_csv('results.tsv', sep="\t", index=False)
+    if split_by_class:
+        labels = res_df_raw.label.unique().tolist()
+        for lab in labels:
+            res_df_raw.loc[res_df_raw.label==lab,
+                ['filename', 'ann_id', 'label', 'start_span', 'end_span', 'text']]\
+            .to_csv(f'{file_prefix}results_{lab}.tsv', sep="\t", index=False)
+
+    else:
+        res_df_raw[['filename', 'ann_id', 'label', 'start_span', 'end_span', 'text']].to_csv(f'{file_prefix}results.tsv', sep="\t", index=False)
 
 
 if __name__ == '__main__':
@@ -86,6 +96,8 @@ if __name__ == '__main__':
     parser.add_argument('--ignore_zero', action='store_true', default=False)
     parser.add_argument('--input_dir', type=str, required=True)
     parser.add_argument('--stride', type=int, default=256)
+    parser.add_argument('--split_by_class', action='store_true')
+    parser.add_argument('--file_prefix', type=str, default="")
     parser.add_argument('--batchwise', action='store_true', default=False)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--annotation_tsv', type=str, help='Annotation file, only for folder with txts', default=None)

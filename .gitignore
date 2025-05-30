@@ -4,3 +4,5 @@ output/
 wandb/
 *.pyc
 .DS_Store
+*.tsv
+*.env
