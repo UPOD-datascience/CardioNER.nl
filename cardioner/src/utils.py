@@ -20,8 +20,6 @@ from spacy.lang.ro import Romanian
 from spacy.lang.sv import Swedish
 from spacy.lang.cs import Czech
 
-
-
 lang_dict = {
     'es': Spanish,
     'nl': Dutch,
@@ -48,7 +46,7 @@ def pipe_with_progress(pipe, texts, batch_size=16, **kwargs):
         results.extend(batch_results)
     return results
 
-def process_pipe(text: str|Dataset,
+def process_pipe(text: str|Dataset|List[str],
                  pipe: pipeline,
                  max_word_per_chunk: int=256,
                  hf_stride: bool=True,
@@ -64,7 +62,7 @@ def process_pipe(text: str|Dataset,
       hf_stride: use stride that is part of the huggingface pipe
     '''
     assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
-    assert isinstance(text, str) or isinstance(text, Dataset), f"Text must be of type str or Dataset, got {type(text)}"
+    assert isinstance(text, str) or isinstance(text, Dataset) or isinstance(text, List), f"Text must be of type str or Dataset, got {type(text)}"
 
     if not hf_stride and isinstance(text, Dataset):
         hf_stride = True
@@ -74,10 +72,18 @@ def process_pipe(text: str|Dataset,
         if isinstance(text, Dataset):
             # Extract texts from the Dataset
             texts = text['text']
-            named_ents = pipe_with_progress(pipe, texts, batch_size)
+            named_ents = pipe_with_progress(pipe, texts, batch_size, stride=max_word_per_chunk)
         else:
-            named_ents = pipe(text, stride=max_word_per_chunk)
+            if isinstance(text, list):
+                named_ents = []
+                for _text in text:
+                    assert(isinstance(_text, str)), f"_text should be a string here but instead is {type(_text)}"
+                    _ents = pipe(_text)
+                    named_ents.extend(_ents)
+            else:
+                named_ents = pipe(text, stride=max_word_per_chunk)
     else:
+        raise NotImplementedError("..Use hf_stride=True for now..and probably forever :D")
         nlp = lang_dict[lang]()
         nlp.add_pipe('sentencizer')
         doc = nlp(text)

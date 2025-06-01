@@ -4,14 +4,24 @@ import torch
 import torch.nn.functional as F
 import copy
 import re
+import warnings
+import numpy as np
+import torch
+from transformers import (
+    TokenClassificationPipeline,
+    AutoTokenizer,
+    AutoModelForTokenClassification,
+)
+
+from transformers.pipelines.token_classification import AggregationStrategy
 
 from tqdm import tqdm
 import pandas as pd
-from transformers import AutoTokenizer, AutoModelForTokenClassification
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import unicodedata
 import argparse
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple, Literal
 # from dotenv import find_dotenv, load_dotenv
 
 # print(load_dotenv(find_dotenv(".env")))
@@ -196,9 +206,6 @@ class PredictionNER:
         return results
 
 
-
-
-
     def aggregate_entities(self, tagged_tokens, original_text, confidence_threshold=0.3):
         def is_special_char(text):
             return bool(re.fullmatch(r"\W+", text.strip()))
@@ -348,6 +355,129 @@ def evaluate(model_checkpoint, revision, root_path, lang, cat):
     output_tsv_path = os.path.join(root_path, f"pre_{model_checkpoint.split('/')[1]}_{revision}.tsv")
     write_annotations_to_file(prd_ann, output_tsv_path)
     print(f"output_tsv_path {output_tsv_path}")
+
+
+class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
+    """
+    A TokenClassificationPipeline that:
+      • Checks for tokenizer._tokenizer.model.continuing_subword_prefix, and if present
+        uses `is_subword = not word.startswith(prefix)` instead of `len(word) != len(word_ref)`.
+      • Falls back to the original “space-based” heuristic only if no prefix is set.
+    """
+
+    @staticmethod
+    def fix_misdecoded_string(s, incorrect_encoding: Literal['latin-1', 'cp1252']='cp1252',
+        correct_encoding='utf-8'):
+        """Attempts to fix a string that was likely misdecoded."""
+        try:
+            # Encode the string using the assumed incorrect encoding
+            byte_representation = s.encode(incorrect_encoding)
+            # Decode the bytes using the correct encoding
+            corrected_s = byte_representation.decode(correct_encoding)
+            return corrected_s
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # If encoding/decoding fails, return the original string
+            return s
+
+    def gather_pre_entities(
+        self,
+        sentence: str,
+        input_ids: np.ndarray,
+        scores: np.ndarray,
+        offset_mapping: Optional[List[Tuple[int, int]]],
+        special_tokens_mask: np.ndarray,
+        aggregation_strategy: AggregationStrategy,
+    ) -> List[Dict]:
+        """
+        Copy of the original gather_pre_entities, except for the one block:
+            is_subword = len(word) != len(word_ref)
+        is replaced by
+            is_subword = not word.startswith(prefix)
+        whenever prefix := tokenizer._tokenizer.model.continuing_subword_prefix is not None.
+        """
+        pre_entities = []
+
+        # Extract the prefix (if any) from the BPE model
+        prefix = None
+        if (
+            getattr(self.tokenizer, "_tokenizer", None) is not None
+            and getattr(self.tokenizer._tokenizer.model, "continuing_subword_prefix", None)
+        ):
+            prefix = self.tokenizer._tokenizer.model.continuing_subword_prefix
+
+        for idx, token_scores in enumerate(scores):
+            # 1) Skip special tokens right away
+            if special_tokens_mask[idx]:
+                continue
+
+            # 2) Get the text form of this subtoken
+            word = self.tokenizer.convert_ids_to_tokens(int(input_ids[idx]))
+
+            if word == prefix:
+                continue
+
+            if offset_mapping is not None:
+                start_ind, end_ind = offset_mapping[idx]
+                # Convert from torch tensors if needed
+                if not isinstance(start_ind, int):
+                    if self.framework == "pt":
+                        start_ind = start_ind.item()
+                        end_ind = end_ind.item()
+
+                # The raw slice of the original sentence that this subtoken covers:
+                word_ref = sentence[start_ind : end_ind]
+
+                # If the tokenizer has a continuing_subword_prefix, use prefix‐based logic:
+                if prefix is not None and prefix !="":
+                    # No warning here, because we trust prefix for subword detection
+                    is_subword = not word.startswith(prefix)
+                else:
+                    # TODO: ONLY FOR ROBERTA TOKENIZER, make more general
+                    # for BERT, replace "Ġ" by "##", make settable
+                    # TODO:  fix_misdecoded optional
+                    word_fixed = self.fix_misdecoded_string(word)
+                    if word.startswith("Ġ") and word_ref != "":
+                        is_subword = False
+                    elif len(word_fixed) != len(word_ref) and word_ref != "":
+                        # Fallback heuristic exactly as in the original pipeline:
+                        if aggregation_strategy in {
+                            AggregationStrategy.FIRST,
+                            AggregationStrategy.AVERAGE,
+                            AggregationStrategy.MAX,
+                        }:
+                            warnings.warn(
+                                f"\nTokenizer does not support real words or there is an encoding problem\n:\n\t word from tokenizer {word},\n\t word from text {word_ref}\n Using fallback heuristic",
+                                UserWarning,
+                            )
+                        is_subword = (start_ind > 0 and " " not in sentence[start_ind - 1 : start_ind + 1])
+                    else:
+                        is_subword = False
+                # If this token is actually an <unk> token, force it to be non‐subword
+                if int(input_ids[idx]) == self.tokenizer.unk_token_id:
+                    word = word_ref
+                    is_subword = False
+            else:
+                start_ind = None
+                end_ind = None
+                is_subword = False
+
+            # Debug print for each token
+            max_score_idx = np.argmax(token_scores)
+            max_score = token_scores[max_score_idx]
+            #print(f"DEBUG Token {idx}: word='{word}', word_ref='{word_ref}', is_subword={is_subword}, max_score={max_score:.4f}")
+
+            pre_entities.append(
+                {
+                    "word": word,
+                    "scores": token_scores,
+                    "start": start_ind,
+                    "end": end_ind,
+                    "index": idx,
+                    "is_subword": is_subword,
+                }
+            )
+        #print(f"DEBUG: Total pre_entities: {len(pre_entities)}")
+        return pre_entities
 
 
 if __name__=="__main__":
