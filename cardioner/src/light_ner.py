@@ -828,7 +828,7 @@ if __name__ == "__main__":
         print(f"Storing as BertNER model in {save_dir}")
     elif base_config.architectures[0].startswith("XLMRoberta"):
         hf_model = XLMRobertaNER(base_config)
-        hf_model.xlmroberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
+        hf_model.roberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
         print(f"Storing as XLMRobertaNER model in {save_dir}")
 
     hf_model.classifier.load_state_dict(module.to("cpu").classifier.state_dict())

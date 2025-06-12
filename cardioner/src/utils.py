@@ -223,6 +223,73 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
     print(f'Extracted class weights: {[f"{id2label[i]}_{str(w)}" for i,w in enumerate(weights)]}')
     return weights
 
+def fix_misdecoded_string(s, incorrect_encoding: Literal['latin-1', 'cp1252']='cp1252',
+    correct_encoding='utf-8'):
+    """Attempts to fix a string that was likely misdecoded."""
+    try:
+        # Encode the string using the assumed incorrect encoding
+        byte_representation = s.encode(incorrect_encoding)
+        # Decode the bytes using the correct encoding
+        corrected_s = byte_representation.decode(correct_encoding)
+        return corrected_s
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # If encoding/decoding fails, return the original string
+        return s
+
+def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252']='cp1252', prefix='Ġ'):
+    """
+    Given a vocab.json we go through the tokens and correct the encoding garbling with fix_misdecoded_string
+    We save the original vocab.json as vocab_bak.json and write the corrected one to vocab.json
+
+    We assume we want to convert to utf8
+    """
+    import shutil
+
+    # check if vocab_file is an existing json file
+    if not os.path.exists(vocab_file):
+        raise FileNotFoundError(f"Vocabulary file not found: {vocab_file}")
+
+    if not vocab_file.endswith('.json'):
+        raise ValueError(f"Expected a JSON file, got: {vocab_file}")
+
+    try:
+        with open(vocab_file, 'r', encoding='utf-8') as f:
+            vocab = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON file: {vocab_file}. Error: {e}")
+
+    # Create backup of original vocab file
+    backup_file = vocab_file.replace('.json', '_bak.json')
+    shutil.copy2(vocab_file, backup_file)
+    print(f"Created backup: {backup_file}")
+
+    # Fix encoding issues in the vocabulary
+    fixed_vocab = {}
+    fixed_count = 0
+
+    broken_tokens = []
+    for token, token_id in vocab.items():
+        # Try to fix the token encoding
+        fixed_token = fix_misdecoded_string(token.lstrip(prefix))
+
+        # Check if the token was actually changed
+        if fixed_token != token.lstrip(prefix):
+            fixed_count += 1
+            broken_tokens.append(token)
+            print(f"Fixed token: '{token}' -> '{fixed_token}'")
+
+        fixed_vocab[fixed_token] = token_id
+
+    # Write the corrected vocabulary back to the original file
+    with open(vocab_file, 'w', encoding='utf-8') as f:
+        json.dump(fixed_vocab, f, ensure_ascii=False, indent=2)
+
+    print(f"Fixed {fixed_count} tokens in vocabulary")
+    print(f"Corrected vocabulary saved to: {vocab_file}")
+    print(f"The corrected terms are: {"\n".join(broken_tokens)}")
+
+
+
 def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
     # go through .jsonl's/.txts in directory
     #
@@ -285,3 +352,17 @@ def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: s
         }
         NEW_DICT_LIST.append(_d)
     return NEW_DICT_LIST
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Fix tokenizer encoding issues')
+    parser.add_argument('--vocab-file', type=str, required=True,
+                        help='Path to the vocab.json file to fix')
+    parser.add_argument('--initial-encoding', type=str, default='cp1252',
+                        choices=['latin-1', 'cp1252'],
+                        help='Initial encoding to fix from (default: cp1252)')
+
+    args = parser.parse_args()
+
+    fix_tokenizer(args.vocab_file, args.initial_encoding)

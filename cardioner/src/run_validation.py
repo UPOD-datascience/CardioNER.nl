@@ -77,6 +77,7 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                 device=0)
 
         else:
+            # if dirty fix
             print(f"Performing inference with {aggregation_method} aggregation...")
             tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True)
 
@@ -118,7 +119,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                     tokenizer=tokenizer,
                                     aggregation_strategy=aggregation_method,
                                     batch_size=16 if batchwise else None,
-                                    device=0)
+                                    device=0,
+                                    prefix="Ġ")
             else:  # Default to BERT-style
                 #tokenizer._tokenizer.model.continuing_subword_prefix = '##'
                 _model = AutoModelForTokenClassification.from_pretrained(model, revision=revision)
@@ -127,7 +129,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                     tokenizer=tokenizer,
                                     aggregation_strategy=aggregation_method,
                                     batch_size=16 if batchwise else None,
-                                    device=0)
+                                    device=0,
+                                    prefix="##")
 
         if batchwise==False:
             for sample in tqdm(sample_list):
@@ -174,7 +177,9 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
         ner_pipe = PredictionNER(model_checkpoint=model, revision=revision)
         res_list = []
         for sample in tqdm(sample_list):
-            res = ner_pipe.do_prediction(sample['text'], confidence_threshold=confidence_threshold)
+            cleaned_text = sample['text'].replace("\n", " ").replace("\t", " ")
+            res = ner_pipe.do_prediction(cleaned_text,
+                                         confidence_threshold=confidence_threshold)
             if len(res)>0:
                 for _res in res:
                     res_list.append({
@@ -185,9 +190,14 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                         'end': _res['end'],
                         'word': _res['text']
                     })
+
         res_df_raw = pd.DataFrame(res_list)
 
-    res_df_raw = res_df_raw.rename(columns={'start': 'start_span', 'end': 'end_span', 'entity_group': 'label', 'word': 'text', 'id': 'filename'})
+    res_df_raw = res_df_raw.rename(columns={'start': 'start_span',
+                                            'end': 'end_span',
+                                            'entity_group': 'label',
+                                            'word': 'text',
+                                            'id': 'filename'})
     res_df_raw['ann_id'] = "NAN"
     res_df_raw['filename'] = res_df_raw['filename'].str.strip()
     if split_by_class:

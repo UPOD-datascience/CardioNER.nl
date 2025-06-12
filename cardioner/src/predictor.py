@@ -194,22 +194,51 @@ class PredictionNER:
                         tag = alt_tag
                         score = probs[0, i, tag_id].item()
                         break  # take the first non-"O" alternative
-
-            results.append({
+            _res = {
                 'word': word,
                 'tag': tag,
                 'start': start,
                 'end': end,
                 'score': score
-            })
-
+            }
+            results.append(_res)
         return results
 
 
-    def aggregate_entities(self, tagged_tokens, original_text, confidence_threshold=0.3):
+    def aggregate_entities(self, tagged_tokens, original_text, confidence_threshold=0.3, no_iob=False):
+        """
+                Aggregates token-level predictions into entity-level predictions.
+
+                This method processes a list of tagged tokens and combines them into coherent entities
+                based on IOB (Inside-Outside-Begin) tagging scheme. It applies correction rules to
+                fix common tagging inconsistencies and then aggregates consecutive tokens of the
+                same entity type.
+
+                Args:
+                    tagged_tokens (list): List of dictionaries containing token predictions.
+                        Each dict should have keys: 'word', 'tag', 'start', 'end', 'score'
+                    original_text (str): The original text from which tokens were extracted
+                    confidence_threshold (float, optional): Minimum confidence score required
+                        for an entity to be included in results. Defaults to 0.3.
+                    no_iob (bool, optional): If True, disables IOB-specific processing.
+                        Defaults to False.
+
+                Returns:
+                    list: List of dictionaries representing aggregated entities.
+                        Each dict contains: 'start', 'end', 'tag', 'text', 'score'
+
+                Note:
+                    The method applies two correction rules:
+                    1. Fixes "O" tags between "B-" and "I-" tags of the same type
+                    2. Converts isolated "I-" tags to "B-" tags
+
+                    Entities are only included if all constituent tokens meet the confidence threshold
+                    and the resulting text is not composed entirely of special characters.
+        """
+
         def is_special_char(text):
             return bool(re.fullmatch(r"\W+", text.strip()))
-
+        # TODO: add non-IOB version
         def finalize_entity(entity):
             if all(s >= confidence_threshold for s in entity["scores"]):
                 entity_text = original_text[entity["start"]:entity["end"]]
@@ -247,6 +276,8 @@ class PredictionNER:
                 last_tag_type = tag[2:]
             else:
                 last_tag_type = None
+
+        # Rule 3: ..
 
         # Step 2: Aggregate entities
         entities = []
@@ -307,8 +338,6 @@ class PredictionNER:
 
         return entities
 
-
-
     def do_prediction(self, text, confidence_threshold=0.6):
         final_prediction = []
         # final_prediction_2 = []
@@ -320,16 +349,11 @@ class PredictionNER:
                 pred["start"] += sub_text_start
                 pred["end"] += sub_text_start
                 final_prediction.append(pred)
-
-
-
         return final_prediction
 
 
 def evaluate(model_checkpoint, revision, root_path, lang, cat):
-
     ner = PredictionNER(model_checkpoint=model_checkpoint, revision=revision)
-
     # conver the predictions to ann format
     test_files_root =  os.path.join(root_path, "txt")
     tsv_file_path_test = os.path.join(root_path, f"test_cardioccc_{lang}_{cat}.tsv")
@@ -348,13 +372,17 @@ def evaluate(model_checkpoint, revision, root_path, lang, cat):
                     "ann_id": "NA",
                     "start_span": prd["start"],
                     "end_span": prd["end"],
-                    "text": prd["text"],
+                    "text": prd["text"].replace("\n", " ").replace("\t", " "),
                 })
         # break
 
     output_tsv_path = os.path.join(root_path, f"pre_{model_checkpoint.split('/')[1]}_{revision}.tsv")
     write_annotations_to_file(prd_ann, output_tsv_path)
     print(f"output_tsv_path {output_tsv_path}")
+
+# Add Manuela predictor
+#
+
 
 
 class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
@@ -364,6 +392,10 @@ class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
         uses `is_subword = not word.startswith(prefix)` instead of `len(word) != len(word_ref)`.
       • Falls back to the original “space-based” heuristic only if no prefix is set.
     """
+
+    def __init__(self, prefix: str = '##', *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.prefix = prefix
 
     @staticmethod
     def fix_misdecoded_string(s, incorrect_encoding: Literal['latin-1', 'cp1252']='cp1252',
@@ -405,14 +437,16 @@ class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
         ):
             prefix = self.tokenizer._tokenizer.model.continuing_subword_prefix
 
+
         for idx, token_scores in enumerate(scores):
-            # 1) Skip special tokens right away
+            # 1) Skip special- tokens right away
             if special_tokens_mask[idx]:
                 continue
 
             # 2) Get the text form of this subtoken
             word = self.tokenizer.convert_ids_to_tokens(int(input_ids[idx]))
 
+            # MAYBE REMOVE?
             if word == prefix:
                 continue
 
@@ -427,16 +461,15 @@ class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
                 # The raw slice of the original sentence that this subtoken covers:
                 word_ref = sentence[start_ind : end_ind]
 
+                #print(f'|{word}|,|{word_ref}|')
+
                 # If the tokenizer has a continuing_subword_prefix, use prefix‐based logic:
                 if prefix is not None and prefix !="":
                     # No warning here, because we trust prefix for subword detection
                     is_subword = not word.startswith(prefix)
                 else:
-                    # TODO: ONLY FOR ROBERTA TOKENIZER, make more general
-                    # for BERT, replace "Ġ" by "##", make settable
-                    # TODO:  fix_misdecoded optional
                     word_fixed = self.fix_misdecoded_string(word)
-                    if word.startswith("Ġ") and word_ref != "":
+                    if word.startswith(self.prefix) and word_ref != "":
                         is_subword = False
                     elif len(word_fixed) != len(word_ref) and word_ref != "":
                         # Fallback heuristic exactly as in the original pipeline:
@@ -449,9 +482,9 @@ class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
                                 f"\nTokenizer does not support real words or there is an encoding problem\n:\n\t word from tokenizer {word},\n\t word from text {word_ref}\n Using fallback heuristic",
                                 UserWarning,
                             )
-                        is_subword = (start_ind > 0 and " " not in sentence[start_ind - 1 : start_ind + 1])
+                        is_subword = True # (start_ind > 0 and " " not in sentence[start_ind - 1 : start_ind + 1])
                     else:
-                        is_subword = False
+                        is_subword = True
                 # If this token is actually an <unk> token, force it to be non‐subword
                 if int(input_ids[idx]) == self.tokenizer.unk_token_id:
                     word = word_ref
@@ -462,9 +495,14 @@ class PrefixAwareTokenClassificationPipeline(TokenClassificationPipeline):
                 is_subword = False
 
             # Debug print for each token
-            max_score_idx = np.argmax(token_scores)
-            max_score = token_scores[max_score_idx]
-            #print(f"DEBUG Token {idx}: word='{word}', word_ref='{word_ref}', is_subword={is_subword}, max_score={max_score:.4f}")
+            # max_score_idx = np.argmax(token_scores)
+            # max_score = token_scores[max_score_idx]
+            # predicted_label = self.model.config.id2label[max_score_idx]
+
+            # print(f"DEBUG Token {idx}: word='{word}',\
+            # word_fixed='{self.fix_misdecoded_string(word)}',\
+            # word_ref='{word_ref}', is_subword={is_subword},\
+            # predicted_label='{predicted_label}', max_score={max_score:.4f}")
 
             pre_entities.append(
                 {
