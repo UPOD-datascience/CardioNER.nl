@@ -265,30 +265,73 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
 
     # Fix encoding issues in the vocabulary
     fixed_vocab = {}
+    vocab_map = {}
     fixed_count = 0
 
     broken_tokens = []
     for token, token_id in vocab.items():
         # Try to fix the token encoding
-        fixed_token = fix_misdecoded_string(token.lstrip(prefix))
+        ignore = False
+        if token.startswith(prefix):
+            add_prefix = True
+            if sum([c == prefix for c in token]) > 1:
+                ignore = True
+        else:
+            add_prefix = False
+
+        if add_prefix:
+            _token = token[1:]
+        else:
+            _token = token
+
+        if ignore == True:
+            fixed_token = _token
+        else:
+            fixed_token = fix_misdecoded_string(_token)
 
         # Check if the token was actually changed
-        if fixed_token != token.lstrip(prefix):
+        if (fixed_token != _token) and (ignore==False):
             fixed_count += 1
             broken_tokens.append(token)
             print(f"Fixed token: '{token}' -> '{fixed_token}'")
 
+        if token == 'ĠĠ':
+            print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
+
+        if add_prefix:
+            fixed_token = prefix + fixed_token
+
+        if token == 'ĠĠ':
+            print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
+        vocab_map[token] = fixed_token
         fixed_vocab[fixed_token] = token_id
 
     # Write the corrected vocabulary back to the original file
-    with open(vocab_file, 'w', encoding='utf-8') as f:
+    with open(f"{vocab_file}.fix", 'w', encoding='utf-8') as f:
         json.dump(fixed_vocab, f, ensure_ascii=False, indent=2)
 
     print(f"Fixed {fixed_count} tokens in vocabulary")
     print(f"Corrected vocabulary saved to: {vocab_file}")
-    print(f"The corrected terms are: {"\n".join(broken_tokens)}")
 
+    # Given the fixed vocab, we now need to change the merges.txt
+    # We can do this by iterating over the vocab and checking if the token is a merge
+    # If it is, we can add the merge to the merges.txt file
+    vocab_folder = os.path.dirname(vocab_file)
+    merges_new = []
+    # go through lines, split by " ", check if [0] is in fixed_vocab and replace with that term
+    with open(f"{vocab_folder}/merges.txt", 'r', encoding='utf-8') as fr:
+        fr.readline()
+        for line in fr:
+            token, merge = line.strip().split(' ')
 
+            new_token = vocab_map.get(token, token)
+            new_merge = vocab_map.get(merge, merge)
+            merges_new.append((new_token, new_merge))
+
+    # write to new merges.txt file
+    with open(f"{vocab_folder}/merges.txt.fix", 'w', encoding='utf-8') as fw:
+        for token, merge in merges_new:
+            fw.write(f"{token} {merge}\n")
 
 def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
     # go through .jsonl's/.txts in directory
