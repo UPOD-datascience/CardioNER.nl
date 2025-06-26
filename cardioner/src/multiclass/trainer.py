@@ -452,6 +452,7 @@ class ModelTrainer():
 
         # TODO: if there is a test set and evaluation set, evaluate on the eval set
         metrics = trainer.evaluate(eval_dataset=eval_data)
+        self.model = self.model.to(torch.bfloat16)
         try:
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)

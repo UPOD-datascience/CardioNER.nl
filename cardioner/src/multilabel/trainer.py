@@ -478,6 +478,7 @@ class ModelTrainer():
         for key, value in training_config.items():
             setattr(self.model.config, key, value)
 
+        self.model = self.model.to(torch.bfloat16)
         try:
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)

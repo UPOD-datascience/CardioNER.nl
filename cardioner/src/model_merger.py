@@ -76,10 +76,10 @@ def model_averager(model_locations):
         head_averaged_weights[name] /= num_models
 
     # Update the head weights
-    model_averaged.classifier.load_state_dict(head_averaged_weights, 
+    model_averaged.classifier.load_state_dict(head_averaged_weights,
       strict=False)
-    
-    return model_averaged
+
+    return model_averaged.to(torch.bfloat16)
 
 def path_parser(models_dir):
     """
