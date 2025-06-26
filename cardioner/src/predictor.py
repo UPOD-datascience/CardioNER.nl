@@ -22,6 +22,7 @@ import unicodedata
 import argparse
 
 from typing import Optional, List, Dict, Tuple, Literal
+from .utils import clean_spans
 # from dotenv import find_dotenv, load_dotenv
 
 # print(load_dotenv(find_dotenv(".env")))
@@ -205,7 +206,7 @@ class PredictionNER:
         return results
 
 
-    def aggregate_entities(self, tagged_tokens, original_text, confidence_threshold=0.3, no_iob=False):
+    def aggregate_entities(self, tagged_tokens, original_text, confidence_threshold=0.3, no_iob=False, post_hoc_cleaning=False):
         """
                 Aggregates token-level predictions into entity-level predictions.
 
@@ -221,7 +222,10 @@ class PredictionNER:
                     confidence_threshold (float, optional): Minimum confidence score required
                         for an entity to be included in results. Defaults to 0.3.
                     no_iob (bool, optional): If True, disables IOB-specific processing.
-                        Defaults to False.
+                        Defaults to False. TODO: NOT IMPLEMENTED YET
+                    post_hoc_cleaning (bool, optional): If True, applies post-hoc cleaning to the aggregated entities.
+                        This includes span boundary management, text cleaning (removing unwanted prefixes/suffixes),
+                        and entity validation. Defaults to False.
 
                 Returns:
                     list: List of dictionaries representing aggregated entities.
@@ -234,6 +238,13 @@ class PredictionNER:
 
                     Entities are only included if all constituent tokens meet the confidence threshold
                     and the resulting text is not composed entirely of special characters.
+                    
+                    When post_hoc_cleaning is enabled, additional cleaning is applied:
+                    - Removes trailing space + punctuation (if no opening parenthesis)
+                    - Removes trailing closing parenthesis (if no opening parenthesis)
+                    - Removes leading whitespace
+                    - Removes Dutch definite article "de " prefix
+                    - Validates entities (non-empty, not just "de", not numeric, not special chars only)
         """
 
         def is_special_char(text):
@@ -336,14 +347,18 @@ class PredictionNER:
             if finalized:
                 entities.append(finalized)
 
+        # Apply post-hoc cleaning if requested
+        if post_hoc_cleaning:
+            entities = clean_spans(entities, original_text)
+
         return entities
 
-    def do_prediction(self, text, confidence_threshold=0.6):
+    def do_prediction(self, text, confidence_threshold=0.6, post_hoc_cleaning=True):
         final_prediction = []
         # final_prediction_2 = []
         for sub_text, sub_text_start, sub_text_end in self.split_text_with_indices(text):
             tokens = self.predict_text(text=sub_text)
-            predictions = self.aggregate_entities(tokens, sub_text, confidence_threshold=confidence_threshold)
+            predictions = self.aggregate_entities(tokens, sub_text, confidence_threshold=confidence_threshold, post_hoc_cleaning=post_hoc_cleaning)
 
             for pred in predictions:
                 pred["start"] += sub_text_start

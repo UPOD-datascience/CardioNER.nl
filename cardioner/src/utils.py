@@ -265,30 +265,73 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
 
     # Fix encoding issues in the vocabulary
     fixed_vocab = {}
+    vocab_map = {}
     fixed_count = 0
 
     broken_tokens = []
     for token, token_id in vocab.items():
         # Try to fix the token encoding
-        fixed_token = fix_misdecoded_string(token.lstrip(prefix))
+        ignore = False
+        if token.startswith(prefix):
+            add_prefix = True
+            if sum([c == prefix for c in token]) > 1:
+                ignore = True
+        else:
+            add_prefix = False
+
+        if add_prefix:
+            _token = token[1:]
+        else:
+            _token = token
+
+        if ignore == True:
+            fixed_token = _token
+        else:
+            fixed_token = fix_misdecoded_string(_token)
 
         # Check if the token was actually changed
-        if fixed_token != token.lstrip(prefix):
+        if (fixed_token != _token) and (ignore==False):
             fixed_count += 1
             broken_tokens.append(token)
             print(f"Fixed token: '{token}' -> '{fixed_token}'")
 
+        if token == 'ĠĠ':
+            print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
+
+        if add_prefix:
+            fixed_token = prefix + fixed_token
+
+        if token == 'ĠĠ':
+            print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
+        vocab_map[token] = fixed_token
         fixed_vocab[fixed_token] = token_id
 
     # Write the corrected vocabulary back to the original file
-    with open(vocab_file, 'w', encoding='utf-8') as f:
+    with open(f"{vocab_file}.fix", 'w', encoding='utf-8') as f:
         json.dump(fixed_vocab, f, ensure_ascii=False, indent=2)
 
     print(f"Fixed {fixed_count} tokens in vocabulary")
     print(f"Corrected vocabulary saved to: {vocab_file}")
-    print(f"The corrected terms are: {"\n".join(broken_tokens)}")
 
+    # Given the fixed vocab, we now need to change the merges.txt
+    # We can do this by iterating over the vocab and checking if the token is a merge
+    # If it is, we can add the merge to the merges.txt file
+    vocab_folder = os.path.dirname(vocab_file)
+    merges_new = []
+    # go through lines, split by " ", check if [0] is in fixed_vocab and replace with that term
+    with open(f"{vocab_folder}/merges.txt", 'r', encoding='utf-8') as fr:
+        fr.readline()
+        for line in fr:
+            token, merge = line.strip().split(' ')
 
+            new_token = vocab_map.get(token, token)
+            new_merge = vocab_map.get(merge, merge)
+            merges_new.append((new_token, new_merge))
+
+    # write to new merges.txt file
+    with open(f"{vocab_folder}/merges.txt.fix", 'w', encoding='utf-8') as fw:
+        for token, merge in merges_new:
+            fw.write(f"{token} {merge}\n")
 
 def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
     # go through .jsonl's/.txts in directory
@@ -352,6 +395,99 @@ def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: s
         }
         NEW_DICT_LIST.append(_d)
     return NEW_DICT_LIST
+
+def clean_spans(entities, original_text):
+    """
+    Apply post-hoc cleaning to entity spans based on predictor_manuela.py logic.
+    
+    This function performs text cleaning and entity validation on detected spans:
+    - Removes trailing space + punctuation if no opening parenthesis  
+    - Removes trailing closing parenthesis if no opening parenthesis
+    - Removes leading whitespace
+    - Removes Dutch definite article "de " prefix
+    - Validates entities (non-empty, not just "de", not numeric, not special chars)
+    
+    Args:
+        entities (list): List of entity dictionaries with 'start', 'end', 'text', 'tag', 'score' keys
+        original_text (str): The original text from which entities were extracted
+        
+    Returns:
+        list: Cleaned entities with updated spans
+    """
+    import re
+    
+    def is_special_char(text):
+        """Check if text consists only of special characters."""
+        return bool(re.fullmatch(r"\W+", text.strip()))
+    
+    cleaned_entities = []
+    
+    for entity in entities:
+        # Get the entity text and span boundaries
+        entity_text = original_text[entity["start"]:entity["end"]]
+        start_span = entity["start"]
+        end_span = entity["end"]
+        
+        # Text cleaning from predictor_manuela.py
+        # Remove trailing space + punctuation if no opening parenthesis
+        if len(entity_text) >= 2:
+            if entity_text[-2] == ' ' and entity_text[-1] in '.,;:!?' and '(' not in entity_text[:-2]:
+                entity_text = entity_text[:-2]
+                end_span = end_span - 2
+        
+        # Remove trailing closing parenthesis if no opening parenthesis
+        if len(entity_text) >= 1:
+            if entity_text[-1] == ')' and '(' not in entity_text:
+                entity_text = entity_text[:-1]
+                end_span = end_span - 1
+        
+        # Remove leading whitespace
+        while entity_text.startswith(" "):
+            entity_text = entity_text[1:]
+            start_span = start_span + 1
+        
+        # Remove trailing whitespace
+        while entity_text.endswith(" "):
+            entity_text = entity_text[:-1]
+            end_span = end_span - 1
+        
+        # Remove Dutch definite article "de " prefix
+        if entity_text.startswith("de "):
+            entity_text = entity_text[3:]
+            start_span = start_span + 3
+        
+        # Final cleanup - remove any remaining leading/trailing whitespace
+        while entity_text.startswith(" "):
+            entity_text = entity_text[1:]
+            start_span = start_span + 1
+        
+        while entity_text.endswith(" "):
+            entity_text = entity_text[:-1]
+            end_span = end_span - 1
+        
+        # Entity validation
+        # Check if text is purely numeric (including decimals)
+        def is_numeric_only(text):
+            try:
+                float(text.strip())
+                return True
+            except ValueError:
+                return text.strip().isnumeric()
+        
+        if (entity_text.strip() != '' and 
+            entity_text != 'de' and 
+            not is_numeric_only(entity_text) and 
+            not is_special_char(entity_text)):
+            
+            # Create cleaned entity
+            cleaned_entity = entity.copy()
+            cleaned_entity["text"] = entity_text
+            cleaned_entity["start"] = start_span
+            cleaned_entity["end"] = end_span
+            cleaned_entities.append(cleaned_entity)
+    
+    return cleaned_entities
+
 
 if __name__ == "__main__":
     import argparse
