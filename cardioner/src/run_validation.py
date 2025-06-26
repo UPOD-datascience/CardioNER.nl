@@ -21,7 +21,7 @@ from spacy.lang.cs import Czech
 from tqdm import tqdm
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import warnings
-from utils import process_pipe, merge_annotations
+from utils import process_pipe, merge_annotations, clean_spans
 from predictor import PredictionNER, PrefixAwareTokenClassificationPipeline
 
 lang_dict = {
@@ -58,7 +58,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
          stride: int, batchwise: bool, batch_size: int, annotation_tsv: str, file_prefix: str,
          split_by_class: bool=False, custom_predictor: bool=False,
          aggregation_method: Literal['simple', 'first', 'max', 'average', 'wesam']='simple',
-         confidence_threshold: float=0.35, use_pre_chunker: bool=False, **kwargs):
+         confidence_threshold: float=0.35, use_pre_chunker: bool=False, post_hoc_cleaning=True,
+         **kwargs):
 
     sample_list = merge_annotations(annotation_directory=input_dir, annotation_tsv=annotation_tsv)
 
@@ -132,6 +133,7 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                     device=0,
                                     prefix="##")
 
+    # TODO: HERE WE CAN ACTUALLY DO POST-HOC filtering/cleaning of the spans..
         if batchwise==False:
             for sample in tqdm(sample_list):
                 if use_pre_chunker == False:
@@ -142,6 +144,9 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
 
                 named_ents = process_pipe(text=_input, lang=lang,
                     pipe = le_pipe, max_word_per_chunk=stride, hf_stride=True)
+
+                if post_hoc_cleaning:
+                   named_ents = clean_spans(named_ents, sample['text'])
 
                 if len(named_ents)>0:
                     _res_df = pd.DataFrame(named_ents)
@@ -179,7 +184,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
         for sample in tqdm(sample_list):
             cleaned_text = sample['text'].replace("\n", " ").replace("\t", " ")
             res = ner_pipe.do_prediction(cleaned_text,
-                                         confidence_threshold=confidence_threshold)
+                                         confidence_threshold=confidence_threshold,
+                                         post_hoc_cleaning=post_hoc_cleaning)
             if len(res)>0:
                 for _res in res:
                     res_list.append({

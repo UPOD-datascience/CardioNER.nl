@@ -396,6 +396,99 @@ def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: s
         NEW_DICT_LIST.append(_d)
     return NEW_DICT_LIST
 
+def clean_spans(entities, original_text):
+    """
+    Apply post-hoc cleaning to entity spans based on predictor_manuela.py logic.
+    
+    This function performs text cleaning and entity validation on detected spans:
+    - Removes trailing space + punctuation if no opening parenthesis  
+    - Removes trailing closing parenthesis if no opening parenthesis
+    - Removes leading whitespace
+    - Removes Dutch definite article "de " prefix
+    - Validates entities (non-empty, not just "de", not numeric, not special chars)
+    
+    Args:
+        entities (list): List of entity dictionaries with 'start', 'end', 'text', 'tag', 'score' keys
+        original_text (str): The original text from which entities were extracted
+        
+    Returns:
+        list: Cleaned entities with updated spans
+    """
+    import re
+    
+    def is_special_char(text):
+        """Check if text consists only of special characters."""
+        return bool(re.fullmatch(r"\W+", text.strip()))
+    
+    cleaned_entities = []
+    
+    for entity in entities:
+        # Get the entity text and span boundaries
+        entity_text = original_text[entity["start"]:entity["end"]]
+        start_span = entity["start"]
+        end_span = entity["end"]
+        
+        # Text cleaning from predictor_manuela.py
+        # Remove trailing space + punctuation if no opening parenthesis
+        if len(entity_text) >= 2:
+            if entity_text[-2] == ' ' and entity_text[-1] in '.,;:!?' and '(' not in entity_text[:-2]:
+                entity_text = entity_text[:-2]
+                end_span = end_span - 2
+        
+        # Remove trailing closing parenthesis if no opening parenthesis
+        if len(entity_text) >= 1:
+            if entity_text[-1] == ')' and '(' not in entity_text:
+                entity_text = entity_text[:-1]
+                end_span = end_span - 1
+        
+        # Remove leading whitespace
+        while entity_text.startswith(" "):
+            entity_text = entity_text[1:]
+            start_span = start_span + 1
+        
+        # Remove trailing whitespace
+        while entity_text.endswith(" "):
+            entity_text = entity_text[:-1]
+            end_span = end_span - 1
+        
+        # Remove Dutch definite article "de " prefix
+        if entity_text.startswith("de "):
+            entity_text = entity_text[3:]
+            start_span = start_span + 3
+        
+        # Final cleanup - remove any remaining leading/trailing whitespace
+        while entity_text.startswith(" "):
+            entity_text = entity_text[1:]
+            start_span = start_span + 1
+        
+        while entity_text.endswith(" "):
+            entity_text = entity_text[:-1]
+            end_span = end_span - 1
+        
+        # Entity validation
+        # Check if text is purely numeric (including decimals)
+        def is_numeric_only(text):
+            try:
+                float(text.strip())
+                return True
+            except ValueError:
+                return text.strip().isnumeric()
+        
+        if (entity_text.strip() != '' and 
+            entity_text != 'de' and 
+            not is_numeric_only(entity_text) and 
+            not is_special_char(entity_text)):
+            
+            # Create cleaned entity
+            cleaned_entity = entity.copy()
+            cleaned_entity["text"] = entity_text
+            cleaned_entity["start"] = start_span
+            cleaned_entity["end"] = end_span
+            cleaned_entities.append(cleaned_entity)
+    
+    return cleaned_entities
+
+
 if __name__ == "__main__":
     import argparse
 
