@@ -22,7 +22,7 @@ import unicodedata
 import argparse
 
 from typing import Optional, List, Dict, Tuple, Literal
-from .utils import clean_spans
+from utils import clean_spans
 # from dotenv import find_dotenv, load_dotenv
 
 # print(load_dotenv(find_dotenv(".env")))

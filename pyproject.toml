@@ -5,7 +5,7 @@ description = "NER model for Dutch cardiovascular discharges"
 authors = ["Bram van Es, Lorenzo Pratesi and Kasia Smietanka"]
 license = "GPL-3"
 readme = "README.md"
-packages = [{ include = "cardioner" }]
+packages = [{ include = "cardioner", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -45,3 +45,4 @@ build-backend = "poetry.core.masonry.api"
 name = "torch"
 url = "https://download.pytorch.org/whl/cu121"
 priority = "supplemental"
+

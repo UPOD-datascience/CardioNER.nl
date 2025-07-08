@@ -219,7 +219,7 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test the trained model, input a directory with jsonls, outputs a tsv with results')
-    parser.add_argument('--model', type=str, help='The model to test, can be a path or a model name', default='StivenLancheros/mBERT-base-Biomedical-NER')
+    parser.add_argument('--model', type=str, help='The model to test, can be a path or a model name', default='UMCU/CardioNER.nl_128')
     parser.add_argument('--revision', type=str, help='Model revision, optional', default=None)
     parser.add_argument('--lang', type=str, help='The language of the text', choices=['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz'], required=True)
     parser.add_argument('--ignore_zero', action='store_true', default=False)
@@ -231,6 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--aggregation_method', type=str, choices=['simple', 'max', 'first', 'average', 'wesam'], default='simple')
     parser.add_argument('--confidence_threshold', type=float, default=0.35)
+    parser.add_argument('--post_hoc_cleaning', action='store_true', default=False)
     parser.add_argument('--use_pre_chunker', action='store_true')
     parser.add_argument('--annotation_tsv', type=str, help='Annotation file, only for folder with txts', default=None)
 

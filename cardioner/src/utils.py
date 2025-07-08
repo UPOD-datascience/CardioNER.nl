@@ -333,7 +333,8 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
         for token, merge in merges_new:
             fw.write(f"{token} {merge}\n")
 
-def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
+def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags', 
+                      text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
     # go through .jsonl's/.txts in directory
     #
 
@@ -350,14 +351,17 @@ def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: s
                     annotations.append(json.loads(line))
         elif _file.endswith('.txt'):
             if annotation_df is None:
-                raise ValueError("The annotation tsv needs to be provided if you parse a list of .txts")
+                UserWarning("The annotation tsv needs to be provided if you parse a list of .txts")
             file = os.path.join(annotation_directory, _file)
             with open(file, 'r', encoding='utf-') as fr:
                 text = fr.read()
             fn = _file.split('.')[0]
             d = {merge_key: fn, text_key: text}
-            r = annotation_df.query(f'name=="{fn.strip()}"')[['tag', 'start_span', 'end_span']]
-            d[tag_key] = [{'tag': row[0], 'start': row[1], 'end': row[2] } for row in r]
+            if annotation_df is None:
+                d[tag_key] = []
+            else:
+                r = annotation_df.query(f'name=="{fn.strip()}"')[['tag', 'start_span', 'end_span']]
+                d[tag_key] = [{'tag': row[0], 'start': row[1], 'end': row[2] } for row in r]
             annotations.append(d)
     if len(annotations)==0:
         raise ValueError("No JSONL or TXT file found in the directory, maybe check the directory?")
