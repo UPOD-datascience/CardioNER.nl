@@ -6,3 +6,6 @@ wandb/
 .DS_Store
 *.tsv
 *.env
+*.pth
+*.safetensors
+*.parquet

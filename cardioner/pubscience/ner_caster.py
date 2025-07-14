@@ -64,7 +64,7 @@ class NERFormer():
             if not os.path.exists(db_path):
                 raise ValueError("Please provide a valid db_path")
             if name_map is None:
-                name_map = NameMap(**{"id": "name", "tag": "tag", "start": "start_span", "end": "end_span"})
+                name_map = NameMap(**{"id": "filename", "tag": "label", "start": "start_span", "end": "end_span"})
                 print("Continuing with default name map")
 
         if out_path is not None:
@@ -102,9 +102,12 @@ class NERFormer():
         # get the header
         # get the index of the text column
         header = lines[0].strip().split("\t")
+        print(header)
 
         res_dict = defaultdict(list)
         for r in lines[1:]:
+            if r.strip()=="":
+                continue
             rdict = dict(zip(header, r.strip().split("\t")))
             TAG = TAGS(start=int(rdict[start_str]), end=int(rdict[end_str]), tag=rdict[tag_str])
             res_dict[rdict[id_str]].append(TAG)
@@ -169,7 +172,7 @@ if __name__=="__main__":
     parser.add_argument("--db_path", type=str, help="Path to db file")
     parser.add_argument("--out_path", type=str, help="Path to output file")
     parser.add_argument("--name_map", type=str, help="Mapping of column names")
-    parser.add_argument("--write_to_file", type=bool, help="Write to file")
+    parser.add_argument("--write_to_file", action="store_true")
 
     args = parser.parse_args()
     try:
