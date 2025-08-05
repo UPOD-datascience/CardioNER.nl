@@ -6,6 +6,18 @@
     - High syntactic similarity -> small Levenhstein, or eq, distance but negative to anchor
     - High static word similarity -> small word2vec, or eq, distance but negative to anchor
 
+We expand this with negative term pairs by random sampling, followed by selecting the top-N most dissimilar terms with (sim<0.25)
+* using [BioLORD 2023 M Dutch](https://huggingface.co/FremyCompany/BioLORD-2023-M-Dutch-InContext-v1)
+* using [sapMedRoBERTa.nl](https://huggingface.co/UMCU/sap_umls_medroberta.nl_meantoken)
+* using [RotatE graph embedding](https://arxiv.org/abs/1902.10197)
+
+We further expand these lists using LLMs.
+
+We now end up with.
+* ontology-based same-concept positive pairs, extended with LLMs
+* ontology-based related-concept positive pairs, extended with LLMs
+* BioLoRD/RotatE/sap-based negatives, extended with LLMs
+
 """
 
 
