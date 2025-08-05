@@ -3,6 +3,7 @@
 from sentence_transformers import SentenceTransformer, models
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
+from torch import bfloat16
 
 def wrapper(args):
     word_embedding_model = models.Transformer(args.model, args.seq_len)
@@ -26,7 +27,8 @@ def wrapper(args):
     )
 
     sbert_model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
-
+    if args.bf16:
+        sbert_model = sbert_model.to(bfloat16)
     sbert_model.save(args.save_path)
 
 def test(model_loc, list_of_phrases):
@@ -37,23 +39,32 @@ def test(model_loc, list_of_phrases):
     embeddings = model.encode(list_of_phrases)
     distances = cosine_similarity(embeddings)
 
-    print(tabulate(distances, headers=list_of_phrases, tablefmt='psql'))
+    print(tabulate(distances, headers=list_of_phrases, tablefmt='psql', floatfmt='.4f'))
 
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, required=True)
-    parser.add_argument('--seq_len', type=int, required=True)
-    parser.add_argument('--save_path', type=str, required=True)
-    parser.add_argument('--averaging_method', choices=['cls', 'mean', 'max'], required=True)
+    parser.add_argument('--seq_len', type=int, required=False)
+    parser.add_argument('--save_path', type=str, required=False)
+    parser.add_argument('--bf16', action='store_true', default=False)
+    parser.add_argument('--averaging_method', choices=['cls', 'mean', 'max'], required=False)
+    parser.add_argument('--test_only', action='store_true', default=False)
     args = parser.parse_args()
 
-    wrapper(args)
-
-    test(args.save_path, ['De patient heeft gele koorts',
-                          'De patient heeft koorts',
-                          'De patient heeft geelzucht',
-                          'De voetbreuk is geheeld',
-                          'De armbreuk is volledig hersteld'
-    ])
+    if args.test_only:
+        test(args.model, ['koorts [SEP] De patient heeft gele koorts',
+                          'koorts [SEP] De patient heeft koorts',
+                          'verlatingsangst [SEP] De patient heeft verlatingsangst',
+                          'voetbreuk [SEP] De voetbreuk is geheeld',
+                          'voetbreuk [SEP] De voetbreuk is niet hersteld'
+        ])
+    else:
+        wrapper(args)
+        test(args.save_path, ['De patient heeft gele koorts',
+                            'De patient heeft koorts',
+                            'De patient heeft geelzucht',
+                            'De voetbreuk is geheeld',
+                            'De voetbreuk is niet hersteld'
+        ])
