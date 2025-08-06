@@ -1,4 +1,6 @@
 from os import environ
+from os import path
+import shutil
 
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
@@ -310,8 +312,14 @@ class ModelTrainer():
                                                             freeze_backbone=freeze_backbone,
                                                             classifier_hidden_layers=classifier_hidden_layers,
                                                             classifier_dropout=classifier_dropout)
+            self.model.config.auto_map = {
+                "AutoModelForTokenClassification":
+                "modeling_cardioner:MultiLabelTokenClassificationModelCustom"
+            }
+            self.custom_model = True
         else:
             self.model = MultiLabelTokenClassificationModelHF.from_pretrained(model, config=or_config)
+            self.custom_model = False
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
@@ -480,11 +488,17 @@ class ModelTrainer():
 
         self.model = self.model.to(torch.bfloat16)
         try:
+            if self.custom_model:
+                # copy current trainer.py to output_dir
+                src = path.abspath(__file__)
+                dst = path.join(self.output_dir, 'modeling.py')
+                shutil.copyfile(src, dst)
+
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)
-        except:
-            trainer.save_model('output')
-            trainer.save_metrics('output', metrics=metrics)
-            print("Failed to save model and metrics")
+            self.tokenizer.save_pretrained(self.output_dir)
+
+        except Exception as e:
+            raise ValueError("Failed to save model and metrics")
         torch.cuda.empty_cache()
         return True
