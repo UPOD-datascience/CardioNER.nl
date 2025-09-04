@@ -1,26 +1,31 @@
 from os import environ
-from os import path
 import shutil
 
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
-from pydantic import BaseModel
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Union, Tuple, Literal
+from typing import List, Dict, Optional, Union
 from collections import defaultdict
 from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoModel
-from transformers import AutoConfig, DataCollatorForTokenClassification
+from transformers import AutoConfig
 from transformers import TrainingArguments, Trainer, PreTrainedTokenizerBase
 from transformers.modeling_outputs import TokenClassifierOutput
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split, KFold
 from transformers.utils import logging
 logging.set_verbosity_debug()
 
 from utils import pretty_print_classifier
+try:
+    from .modeling import MultiLabelTokenClassificationModelCustom
+except ImportError:
+    try:
+        from modeling import MultiLabelTokenClassificationModelCustom
+    except ImportError:
+        print("Warning: Could not import MultiLabelTokenClassificationModelCustom")
+        MultiLabelTokenClassificationModelCustom = None
 import evaluate
 metric = evaluate.load("seqeval")
 
@@ -114,98 +119,7 @@ class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
         )
 
 
-class MultiLabelTokenClassificationModelCustom(nn.Module): #AutoModelForTokenClassification):
-    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1):
-        super().__init__()
-        self.config = config
-        self.num_labels = config.num_labels
-        self.roberta = base_model
 
-        print(f"Creating model with freeze_backbone={freeze_backbone},\
-                classifier_hidden_layers={classifier_hidden_layers},\
-                classifier_dropout={classifier_dropout}")
-
-        # Access custom attributes correctly
-        self.lm_output_size = self.roberta.config.hidden_size
-
-        if freeze_backbone:
-            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
-            for param in self.roberta.parameters():
-                param.requires_grad = False
-            self.roberta.eval()
-        else:
-            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
-        self.roberta.train(not freeze_backbone)
-
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        #self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-
-        self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
-
-    def _build_classifier_head(self, hidden_layers, dropout_rate):
-        """
-        Build a flexible classifier head with configurable hidden layers and dropout.
-
-        Args:
-            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
-                            None or empty tuple means a simple linear layer.
-            dropout_rate: Dropout probability between layers
-        """
-        layers = []
-        input_size = self.lm_output_size
-
-        # If hidden_layers is None or empty, just create a simple linear layer
-        if not hidden_layers:
-            self.classifier = nn.Sequential(
-                        nn.Dropout(dropout_rate),
-                        nn.Linear(input_size, self.num_labels)
-                    )
-            return
-
-        # Build MLP with specified hidden layers
-        for hidden_size in hidden_layers:
-            layers.append(nn.Linear(input_size, hidden_size))
-            #layers.append(nn.BatchNorm1d(hidden_size))  # Add batch normalization
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
-            input_size = hidden_size
-
-        # Final classification layer
-        layers.append(nn.Linear(input_size, self.num_labels))
-
-        # Create sequential model
-        self.classifier = nn.Sequential(*layers)
-
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        labels=None,
-        **kwargs
-    ):
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            **kwargs
-        )
-        sequence_output = outputs.last_hidden_state
-        sequence_output = self.dropout(sequence_output)
-        logits = self.classifier(sequence_output)
-
-        loss = None
-        if labels is not None:
-            # Compute loss here if necessary
-            loss_fct = nn.BCEWithLogitsLoss(reduction="mean") # potentially weight=.. is better
-            mask = (labels != -100).float()
-            labels = torch.where(labels == -100, torch.zeros_like(labels), labels)
-            loss_tensor = loss_fct(logits, labels.float())
-            loss = (loss_tensor * mask).sum() / mask.sum()
-
-        return TokenClassifierOutput(
-            loss=loss,
-            logits=logits,
-        )
 
 class MultiLabelTrainer(Trainer):
     def __init__(self, *args, class_weights: Optional[torch.FloatTensor] = None, **kwargs):
@@ -305,16 +219,26 @@ class ModelTrainer():
         or_config.freeze_backbone = freeze_backbone
 
         if isinstance(classifier_hidden_layers, tuple):
-            raise Warning("You are now creating a custom model class which cannot be loaded in directly from the HF repository!")
+            if MultiLabelTokenClassificationModelCustom is None:
+                raise ImportError("MultiLabelTokenClassificationModelCustom could not be imported. Please ensure modeling.py is available.")
+
+            print("Warning: You are now creating a custom model class which requires trust_remote_code=True to load!")
             base_model = AutoModel.from_pretrained(model, token=hf_token)
+
+            # Store custom parameters in config for proper saving/loading
+            or_config.freeze_backbone = freeze_backbone
+            or_config.classifier_hidden_layers = classifier_hidden_layers
+            or_config.classifier_dropout = classifier_dropout
+
             self.model = MultiLabelTokenClassificationModelCustom(config=or_config,
                                                             base_model=base_model,
                                                             freeze_backbone=freeze_backbone,
                                                             classifier_hidden_layers=classifier_hidden_layers,
                                                             classifier_dropout=classifier_dropout)
+
+            # Set up auto_map for trust_remote_code loading
             self.model.config.auto_map = {
-                "AutoModelForTokenClassification":
-                "modeling_cardioner:MultiLabelTokenClassificationModelCustom"
+                "AutoModelForTokenClassification": "modeling.MultiLabelTokenClassificationModelCustom"
             }
             self.custom_model = True
         else:
@@ -486,19 +410,40 @@ class ModelTrainer():
         for key, value in training_config.items():
             setattr(self.model.config, key, value)
 
-        self.model = self.model.to(torch.bfloat16)
+        self.model = self.model.to(dtype=torch.bfloat16)
         try:
             if self.custom_model:
-                # copy current trainer.py to output_dir
-                src = path.abspath(__file__)
-                dst = path.join(self.output_dir, 'modeling.py')
-                shutil.copyfile(src, dst)
+                # Copy the modeling.py file to output_dir for trust_remote_code compatibility
+                import os
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                modeling_src = os.path.join(current_dir, 'modeling.py')
+                modeling_dst = os.path.join(self.output_dir, 'modeling.py')
+
+                if os.path.exists(modeling_src):
+                    # Ensure output directory exists
+                    os.makedirs(self.output_dir, exist_ok=True)
+                    shutil.copyfile(modeling_src, modeling_dst)
+                    print(f"Successfully copied modeling.py to {modeling_dst}")
+
+                    # Verify the copy was successful
+                    if not os.path.exists(modeling_dst):
+                        raise ValueError(f"Failed to copy modeling.py to {modeling_dst}")
+                else:
+                    raise ValueError(f"modeling.py not found at {modeling_src}. This file is required for custom models with trust_remote_code=True.")
+
+                # Add additional metadata to config for loading
+                self.model.config.custom_model_type = "MultiLabelTokenClassificationModelCustom"
+                self.model.config.requires_trust_remote_code = True
 
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)
             self.tokenizer.save_pretrained(self.output_dir)
 
+            if self.custom_model:
+                print(f"Custom model saved successfully! To load this model, use:")
+                print(f"AutoModelForTokenClassification.from_pretrained('{self.output_dir}', trust_remote_code=True)")
+
         except Exception as e:
-            raise ValueError("Failed to save model and metrics")
+            raise ValueError(f"Failed to save model and metrics: {str(e)}")
         torch.cuda.empty_cache()
         return True

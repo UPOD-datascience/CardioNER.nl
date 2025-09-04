@@ -1,25 +1,34 @@
 from os import environ
 import spacy
+import shutil
 
 # Load a spaCy model for tokenization
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Union, Tuple, Literal
+from typing import List, Dict, Optional, Union
 from collections import defaultdict
-from transformers import AutoTokenizer, DataCollatorForTokenClassification, AutoModel
+from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from transformers import AutoModelForTokenClassification, TrainingArguments, Trainer
 from transformers import RobertaModel, RobertaForTokenClassification
 from transformers import AutoConfig, PreTrainedModel
-from transformers import RobertaModel
 from transformers.modeling_outputs import TokenClassifierOutput
 import numpy as np
 import torch
-from sklearn.model_selection import train_test_split, KFold
 from transformers.utils import logging
 from torchcrf import CRF
 from utils import pretty_print_classifier
+
+# Import custom model classes
+try:
+    from .modeling import TokenClassificationModelCRF, TokenClassificationModel
+except ImportError:
+    try:
+        from modeling import TokenClassificationModelCRF, TokenClassificationModel
+    except ImportError:
+        print("Warning: Could not import custom model classes from modeling.py")
+        TokenClassificationModelCRF = None
+        TokenClassificationModel = None
 
 logging.set_verbosity_debug()
 
@@ -30,182 +39,7 @@ metric = evaluate.load("seqeval")
 
 # TODO: add multihead CRF: https://github.com/ieeta-pt/Multi-Head-CRF/tree/master/src/model
 
-class TokenClassificationModelCRF(RobertaForTokenClassification):
-    # TODO: add class weights to python-crf..
-    # https://pytorch.org/docs/stable/generated/torch.nn.NLLLoss.html
-    #config_class = AutoConfig
 
-    def __init__(self, config, base_model, freeze_backbone=False, classifier_hidden_layers=None,
-        classifier_dropout=0.1):
-        super().__init__(config)
-        self.config = config
-        self.num_labels = config.num_labels + 1 # Extra label to acocunt for the -100 padding label
-        self.pad_label = self.num_labels + 1
-        self.roberta = base_model
-
-        self.lm_output_size = self.roberta.config.hidden_size
-
-        if freeze_backbone:
-            print(30*"+", "\n\n", "Freezing backbone...", 30*"+", "\n\n")
-            for param in self.roberta.parameters():
-                param.requires_grad = False
-            self.roberta.eval()
-        else:
-            print(30*"+", "\n\n", "NOT Freezing backbone...", 30*"+", "\n\n")
-        self.roberta.train(not freeze_backbone)
-
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.crf = CRF(self.num_labels, batch_first=True)
-
-        self._build_classifier_head(classifier_hidden_layers,
-            classifier_dropout)
-
-    def _build_classifier_head(self, hidden_layers, dropout_rate):
-        """
-        Build a flexible classifier head with configurable hidden layers and dropout.
-
-        Args:
-            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
-                            None or empty tuple means a simple linear layer.
-            dropout_rate: Dropout probability between layers
-        """
-        layers = []
-        input_size = self.lm_output_size
-
-        # If hidden_layers is None or empty, just create a simple linear layer
-        if not hidden_layers:
-            self.classifier = nn.Sequential(
-                        nn.Dropout(dropout_rate),
-                        nn.Linear(input_size, self.num_labels)
-                    )
-            return
-
-        # Build MLP with specified hidden layers
-        for hidden_size in hidden_layers:
-            layers.append(nn.Linear(input_size, hidden_size))
-            #layers.append(nn.BatchNorm1d(hidden_size))  # Add batch normalization
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
-            input_size = hidden_size
-
-        # Final classification layer
-        layers.append(nn.Linear(input_size, self.num_labels))
-
-        # Create sequential model
-        self.classifier = nn.Sequential(*layers)
-
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        labels=None,
-        **kwargs
-    ):
-        outputs = self.roberta(input_ids, attention_mask=attention_mask, **kwargs)
-        sequence_output = self.dropout(outputs.last_hidden_state)
-        logits = self.classifier(sequence_output)  # Emissions for CRF
-
-        loss = None
-        if labels is not None:
-            # CRF calculates the log-likelihood of the correct sequence
-            # We use a negative sign to convert it into a loss
-            labels = labels.long()
-            loss = -self.crf(logits, labels, mask=attention_mask.bool(), reduction='mean')
-
-        # Return a TokenClassifierOutput for interoperability
-        return TokenClassifierOutput(
-             loss=loss,
-             logits=logits,             # raw emissions (logits)
-             hidden_states=outputs.hidden_states if hasattr(outputs, 'hidden_states') else None,
-             attentions=outputs.attentions if hasattr(outputs, 'attentions') else None
-        )
-
-    @property
-    def device_info(self):
-        return next(self.parameters()).device
-
-    def get_input_embeddings(self):
-        return self.roberta.get_input_embeddings()
-
-    def set_input_embeddings(self, value):
-        self.roberta.set_input_embeddings(value)
-
-
-class TokenClassificationModel(RobertaForTokenClassification):
-    #config_class = AutoConfig
-    def __init__(self, config):
-        super().__init__(config)
-        self.config = config
-        self.num_labels = config.num_labels
-
-        classifier_hidden_layers = getattr(config, "classifier_hidden_layers", None)
-        classifier_dropout  = getattr(config, "classifier_dropout", 0.1)
-
-        if classifier_hidden_layers is not None:
-            # rebuild the MLP head
-            in_size = config.hidden_size
-            layers = []
-            if classifier_hidden_layers:
-                for h in classifier_hidden_layers:
-                    layers += [
-                        nn.Linear(in_size, h),
-                        nn.ReLU(),
-                        nn.Dropout(classifier_dropout)
-                    ]
-                    in_size = h
-            layers.append(nn.Linear(in_size, config.num_labels))
-            self.classifier = nn.Sequential(*layers)
-
-            # initialize the new head weights
-            self.init_weights()
-
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        labels=None,
-        **kwargs
-    ):
-        # Run inputs through the RoBERTa backbone
-        # TODO: see https://github.com/huggingface/transformers/pull/35875/files#diff-5707805d290617078f996faf1138de197fa813f78c0aa5ea497e73b5228f1103
-        # drop 'num_items_in_batch' from **kwargs
-        # modeling_roberta.py
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            **kwargs
-        )
-
-        sequence_output = outputs.last_hidden_state
-        sequence_output = self.dropout(sequence_output)
-        logits = self.classifier(sequence_output)
-
-        loss = None
-        if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            if attention_mask is not None:
-                # Only keep active parts of the sequence
-                active_loss = attention_mask.view(-1) == 1
-                active_logits = logits.view(-1, self.num_labels)[active_loss]
-                active_labels = labels.view(-1)[active_loss]
-                loss = loss_fct(active_logits, active_labels)
-            else:
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        return TokenClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-    def get_input_embeddings(self):
-        return self.roberta.get_input_embeddings()
-
-    def set_input_embeddings(self, value):
-        self.roberta.set_input_embeddings(value)
 
 
 class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassification):
@@ -288,7 +122,7 @@ class ModelTrainer():
             label2id['PADDING'] = self.pad_token_id
         else:
             self.pad_token_id  = -100
-            num_labels = len(label2id)
+            # num_labels = len(label2id)  # unused variable
 
         if tokenizer is None:
             print("LOADING TOKENIZER")
@@ -315,12 +149,29 @@ class ModelTrainer():
         self.class_weights = class_weights
 
         if use_crf:
+            if TokenClassificationModelCRF is None:
+                raise ImportError("TokenClassificationModelCRF could not be imported. Please ensure modeling.py is available.")
             print("USING CRF:", self.crf)
             base_model = RobertaForTokenClassification.from_pretrained(model, config=or_config)
             self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
+
+            # Set up auto_map for trust_remote_code loading
+            self.model.config.auto_map = {
+                "AutoModelForTokenClassification": "modeling.TokenClassificationModelCRF"
+            }
         else:
-            #base_model = RobertaForTokenClassification.from_pretrained(model, config=or_config)
+            if TokenClassificationModel is None:
+                raise ImportError("TokenClassificationModel could not be imported. Please ensure modeling.py is available.")
             self.model = TokenClassificationModel.from_pretrained(model, config=or_config)
+
+            # Set up auto_map for trust_remote_code loading
+            self.model.config.auto_map = {
+                "AutoModelForTokenClassification": "modeling.TokenClassificationModel"
+            }
+
+        # Mark that this is a custom model requiring trust_remote_code
+        self.model.config.custom_model_type = "TokenClassificationModelCRF" if use_crf else "TokenClassificationModel"
+        self.model.config.requires_trust_remote_code = True
 
         # optionally freeze the backbone
         if freeze_backbone:
@@ -386,24 +237,38 @@ class ModelTrainer():
         """Custom method to save both the model architecture and state dict properly"""
         save_dir = output_dir or self.output_dir
 
-        # # Save the model config
-        # self.model.config.save_pretrained(save_dir)
+        # Copy the modeling.py file to output_dir for trust_remote_code compatibility
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        modeling_src = os.path.join(current_dir, 'modeling.py')
+        modeling_dst = os.path.join(save_dir, 'modeling.py')
 
-        # # Save the tokenizer
-        # if self.tokenizer:
-        #     self.tokenizer.save_pretrained(save_dir)
+        # Ensure output directory exists
+        os.makedirs(save_dir, exist_ok=True)
 
-        # # Save the model weights
-        # torch.save(self.model.state_dict(), f"{save_dir}/pytorch_model.bin")
+        if os.path.exists(modeling_src):
+            shutil.copyfile(modeling_src, modeling_dst)
+            print(f"Successfully copied modeling.py to {modeling_dst}")
 
-        self.model.config.architectures = [self.model.__class__.__name__] # "RobertaForTokenClassification"
+            # Verify the copy was successful
+            if not os.path.exists(modeling_dst):
+                raise ValueError(f"Failed to copy modeling.py to {modeling_dst}")
+        else:
+            raise ValueError(f"modeling.py not found at {modeling_src}. This file is required for custom models with trust_remote_code=True.")
+
+        # Set model configuration
+        self.model.config.architectures = [self.model.__class__.__name__]
         self.model.config.classifier_hidden_layers = self.classifier_hidden_layers
-        self.model.config.classifier_dropout       = self.classifier_dropout
+        self.model.config.classifier_dropout = self.classifier_dropout
         self.model.config.class_weights = self.class_weights
+
+        # Save model and tokenizer
         self.model.save_pretrained(save_dir)
         if self.tokenizer:
             self.tokenizer.save_pretrained(save_dir)
 
+        print(f"Custom model saved successfully! To load this model, use:")
+        print(f"AutoModelForTokenClassification.from_pretrained('{save_dir}', trust_remote_code=True)")
         print(f"Model saved to {save_dir}")
 
 
@@ -452,13 +317,16 @@ class ModelTrainer():
 
         # TODO: if there is a test set and evaluation set, evaluate on the eval set
         metrics = trainer.evaluate(eval_dataset=eval_data)
-        self.model = self.model.to(torch.bfloat16)
+        self.model = self.model.to(dtype=torch.bfloat16)
         try:
             trainer.save_model(self.output_dir)
             trainer.save_metrics(self.output_dir, metrics=metrics)
-        except:
-            trainer.save_model('output')
-            trainer.save_metrics('output', metrics=metrics)
-            print("Failed to save model and metrics")
+        except Exception as e:
+            try:
+                trainer.save_model('output')
+                trainer.save_metrics('output', metrics=metrics)
+                print(f"Saved to fallback directory 'output' due to error: {str(e)}")
+            except Exception as e2:
+                raise ValueError(f"Failed to save model and metrics: {str(e2)}")
         torch.cuda.empty_cache()
         return True
