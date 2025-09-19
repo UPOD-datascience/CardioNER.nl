@@ -56,7 +56,7 @@ text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
 
 def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str,
          stride: int, batchwise: bool, batch_size: int, annotation_tsv: str, file_prefix: str,
-         split_by_class: bool=False, custom_predictor: bool=False,
+         split_by_class: bool=False, custom_predictor: bool=False, device='cpu',
          aggregation_method: Literal['simple', 'first', 'max', 'average', 'wesam']='simple',
          confidence_threshold: float=0.35, use_pre_chunker: bool=False, post_hoc_cleaning=True,
          **kwargs):
@@ -75,7 +75,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                 tokenizer=tokenizer,
                                 aggregation_strategy="simple",
                                 batch_size=16 if batchwise else None,
-                                device=0)
+                                device=device,
+                                trust_remote_code=True)
 
         else:
             # if dirty fix
@@ -95,7 +96,8 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                 tokenizer=tokenizer,
                                 aggregation_strategy=aggregation_method,
                                 batch_size=16 if batchwise else None,
-                                device=0)
+                                device=device,
+                                trust_remote_code=True)
 
             print("Pipeline’s tokenizer class:", type(le_pipe.tokenizer))
             print("Pipeline’s tokenizer.is_fast:", le_pipe.tokenizer.is_fast)
@@ -120,8 +122,9 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                     tokenizer=tokenizer,
                                     aggregation_strategy=aggregation_method,
                                     batch_size=16 if batchwise else None,
-                                    device=0,
-                                    prefix="Ġ")
+                                    device=device,
+                                    prefix="Ġ",
+                                    trust_remote_code=True)
             else:  # Default to BERT-style
                 #tokenizer._tokenizer.model.continuing_subword_prefix = '##'
                 _model = AutoModelForTokenClassification.from_pretrained(model, revision=revision)
@@ -130,8 +133,9 @@ def main(model: str, revision: str, lang: str, ignore_zero: bool, input_dir :str
                                     tokenizer=tokenizer,
                                     aggregation_strategy=aggregation_method,
                                     batch_size=16 if batchwise else None,
-                                    device=0,
-                                    prefix="##")
+                                    device=device,
+                                    prefix="##",
+                                    trust_remote_code=True)
 
     # TODO: HERE WE CAN ACTUALLY DO POST-HOC filtering/cleaning of the spans..
         if batchwise==False:

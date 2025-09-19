@@ -434,7 +434,7 @@ if __name__ == "__main__":
     train_model = args.train_model
     hf_token = args.hf_token
     freeze_backbone = args.freeze_backbone
-    classifier_hidden_layers = args.classifier_hidden_layers
+    classifier_hidden_layers = tuple(args.classifier_hidden_layers)
     classifier_dropout = args.classifier_dropout
     lang = args.lang
 

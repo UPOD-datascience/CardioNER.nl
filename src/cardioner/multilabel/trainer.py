@@ -17,12 +17,12 @@ import torch.nn as nn
 from transformers.utils import logging
 logging.set_verbosity_debug()
 
-from utils import pretty_print_classifier
+from cardioner.utils import pretty_print_classifier
 try:
-    from .modeling import MultiLabelTokenClassificationModelCustom
+    from cardioner.multilabel.modeling import MultiLabelTokenClassificationModelCustom
 except ImportError:
     try:
-        from modeling import MultiLabelTokenClassificationModelCustom
+        from .modeling import MultiLabelTokenClassificationModelCustom
     except ImportError:
         print("Warning: Could not import MultiLabelTokenClassificationModelCustom")
         MultiLabelTokenClassificationModelCustom = None
@@ -117,8 +117,6 @@ class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
             loss=loss,
             logits=logits,
         )
-
-
 
 
 class MultiLabelTrainer(Trainer):
@@ -252,6 +250,8 @@ class ModelTrainer():
         print("id2label:", self.id2label)
         print("Model config:", self.model.config)
         print("Head only fine-tuning:", freeze_backbone)
+        if freeze_backbone:
+            print(f"Hidden layers: {classifier_hidden_layers},{type(classifier_hidden_layers)}")
         print("Classifier architecture:", pretty_print_classifier(self.model.classifier))
 
         self.args = TrainingArguments(
