@@ -1,4 +1,4 @@
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, RobertaConfig
 from transformers.modeling_outputs import TokenClassifierOutput
 import torch
 import torch.nn as nn
@@ -10,10 +10,11 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
     Custom multi-label token classification model with configurable classifier head.
     This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
-
+    config_class = RobertaConfig
     def __init__(self, config, base_model=None, freeze_backbone=False,
                  classifier_hidden_layers=None, classifier_dropout=0.1):
         super().__init__(config)
+
         self.config = config
         self.num_labels = config.num_labels
 

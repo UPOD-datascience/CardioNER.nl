@@ -44,14 +44,14 @@ import transformers
 
 def model_averager(model_locations):
     # Load the first model to get initial weights
-    model = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0])
+    model = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0], trust_remote_code=True)
     averaged_weights = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
     num_models = len(model_locations)
 
     # Iterate through each model, accumulate weights
     for location in model_locations:
         print(f"Processing model at {location}")
-        model = transformers.AutoModelForTokenClassification.from_pretrained(location)
+        model = transformers.AutoModelForTokenClassification.from_pretrained(location, trust_remote_code=True)
         for name, param in model.named_parameters():
             averaged_weights[name] += param.data
 
@@ -60,19 +60,21 @@ def model_averager(model_locations):
         averaged_weights[name] /= num_models
 
     # Load a new model (or reuse the first model) and update weights
-    model_averaged = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0])
+    model_averaged = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0], trust_remote_code=True)
     model_averaged.load_state_dict(averaged_weights, strict=False)
-    
+
     # Handle the heads separately if needed
     head_averaged_weights = {}
     for location in model_locations:
-        model = transformers.AutoModelForTokenClassification.from_pretrained(location)
+        model = transformers.AutoModelForTokenClassification.from_pretrained(location, trust_remote_code=True)
         for name, param in model.classifier.named_parameters():
+            print(f"Appending layer: {name}, of shape {param.shape}", flush=True)
             if name not in head_averaged_weights:
                 head_averaged_weights[name] = torch.zeros_like(param)
             head_averaged_weights[name] += param.data
 
     for name, param in head_averaged_weights.items():
+        print(f"Averaging layer: {name}", flush=True)
         head_averaged_weights[name] /= num_models
 
     # Update the head weights
