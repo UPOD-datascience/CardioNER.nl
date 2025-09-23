@@ -1,5 +1,7 @@
 from transformers import PreTrainedModel, RobertaConfig
 from transformers.modeling_outputs import TokenClassifierOutput
+from transformers import AutoModel, AutoConfig
+
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union
@@ -11,48 +13,53 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
     This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
     config_class = RobertaConfig
-    def __init__(self, config, base_model=None, freeze_backbone=False,
-                 classifier_hidden_layers=None, classifier_dropout=0.1):
+    def __init__(self, config,
+                 base_model=None,
+                 freeze_backbone=False,
+                 classifier_hidden_layers=None,
+                 classifier_dropout=0.1):
         super().__init__(config)
 
         self.config = config
         self.num_labels = config.num_labels
 
+        # READ FROM CONFIG (critical)
+        freeze_backbone = getattr(config, 'freeze_backbone', False)
+        classifier_hidden_layers = getattr(config, 'classifier_hidden_layers', None)
+        classifier_dropout = getattr(config, 'classifier_dropout', 0.1)
+
         # If base_model is not provided, load it from config
         if base_model is None:
-            from transformers import AutoModel
-            self.roberta = AutoModel.from_pretrained(
-                config.name_or_path or config._name_or_path,
-                config=config
-            )
+            self.roberta = AutoModel.from_config(config=config)
         else:
             self.roberta = base_model
 
-        print(f"Creating model with freeze_backbone={freeze_backbone}, "
-              f"classifier_hidden_layers={classifier_hidden_layers}, "
-              f"classifier_dropout={classifier_dropout}")
-
         # Access custom attributes correctly
         self.lm_output_size = self.roberta.config.hidden_size
-
         # Store configuration for saving/loading
         self.config.freeze_backbone = freeze_backbone
         self.config.classifier_hidden_layers = classifier_hidden_layers
         self.config.classifier_dropout = classifier_dropout
 
         if freeze_backbone:
-            print("+" * 30, "\n\n", "Freezing backbone...", "+" * 30, "\n\n")
+            #print("+" * 30, "\n\n", "Freezing backbone...", "+" * 30, "\n\n")
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
         else:
-            print("+" * 30, "\n\n", "NOT Freezing backbone...", "+" * 30, "\n\n")
-
-        self.roberta.train(not freeze_backbone)
+            self.roberta.train(True)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, 'hidden_dropout_prob') else 0.1)
-
         self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(
+            config=config,
+            freeze_backbone=getattr(config, 'freeze_backbone', False),
+            classifier_hidden_layers=getattr(config, 'classifier_hidden_layers', None),
+            classifier_dropout=getattr(config, 'classifier_dropout', 0.1),
+        )
 
     def _build_classifier_head(self, hidden_layers, dropout_rate):
         """
@@ -132,6 +139,13 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             loss_tensor = loss_fct(logits, labels_masked.float())
             loss = (loss_tensor * mask).sum() / mask.sum()
 
+            # loss_fct = nn.BCEWithLogitsLoss(reduction="none")
+            # # labels: [B, T, C] with -100 for masked positions
+            # valid = (labels != -100).float()
+            # labels = torch.where(labels == -100, torch.zeros_like(labels), labels).float()
+            # per_elem = loss_fct(logits, labels)          # [B, T, C]
+            # loss = (per_elem * valid).sum() / valid.sum().clamp_min(1.0)
+
         if not return_dict:
             output = (logits,) + outputs[2:]
             return ((loss,) + output) if loss is not None else output
@@ -143,38 +157,60 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             attentions=outputs.attentions,
         )
 
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        """Override from_pretrained to handle custom model loading"""
-        config = kwargs.pop('config', None)
-        if config is None:
-            from transformers import AutoConfig
-            config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+    # @classmethod
+    # def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+    #     config = kwargs.pop('config', None)
+    #     if config is None:
+    #         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
-        # Extract custom parameters from config if they exist
-        freeze_backbone = getattr(config, 'freeze_backbone', False)
-        classifier_hidden_layers = getattr(config, 'classifier_hidden_layers', None)
-        classifier_dropout = getattr(config, 'classifier_dropout', 0.1)
+    #     # Build instance from config (no weights)
+    #     _ = cls(
+    #         config=config,
+    #         freeze_backbone=getattr(config, 'freeze_backbone', False),
+    #         classifier_hidden_layers=getattr(config, 'classifier_hidden_layers', None),
+    #         classifier_dropout=getattr(config, 'classifier_dropout', 0.1),
+    #     )
 
-        model = cls(
-            config=config,
-            freeze_backbone=freeze_backbone,
-            classifier_hidden_layers=classifier_hidden_layers,
-            classifier_dropout=classifier_dropout
-        )
+    #     # Now let HF load the actual weights (safetensors/shards/Hub/local, etc.)
+    #     return super(MultiLabelTokenClassificationModelCustom, cls).from_pretrained(
+    #         pretrained_model_name_or_path,
+    #         *model_args,
+    #         config=config,
+    #         **kwargs
+    #     )
 
-        # Load state dict if available
-        try:
-            state_dict = torch.load(
-                f"{pretrained_model_name_or_path}/pytorch_model.bin",
-                map_location="cpu"
-            )
-            model.load_state_dict(state_dict)
-        except:
-            # If loading fails, the model will be initialized with random weights
-            print("Warning: Could not load pre-trained weights. Using randomly initialized model.")
+    # @classmethod
+    # def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+    #     """Override from_pretrained to handle custom model loading"""
+    #     config = kwargs.pop('config', None)
+    #     if config is None:
+    #         from transformers import AutoConfig
+    #         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
-        return model
+    #     # Extract custom parameters from config if they exist
+    #     freeze_backbone = getattr(config, 'freeze_backbone', False)
+    #     classifier_hidden_layers = getattr(config, 'classifier_hidden_layers', None)
+    #     classifier_dropout = getattr(config, 'classifier_dropout', 0.1)
+
+    #     model = cls(
+    #         config=config,
+    #         freeze_backbone=freeze_backbone,
+    #         classifier_hidden_layers=classifier_hidden_layers,
+    #         classifier_dropout=classifier_dropout
+    #     )
+
+    #     # Load state dict if available
+    #     try:
+    #         state_dict = torch.load(
+    #             f"{pretrained_model_name_or_path}/model.safetensors",
+    #             map_location="cpu"
+    #         )
+    #         model.load_state_dict(state_dict)
+    #     except Exception as e:
+    #         # If loading fails, the model will be initialized with random weights
+    #         print(f"Warning: Could not load pre-trained weights. Using randomly initialized model: {e}")
+
+    #     return model
 
 
 def load_custom_cardioner_model(model_path: str, device: str = "auto"):
