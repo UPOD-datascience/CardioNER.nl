@@ -363,6 +363,7 @@ class PredictionNER:
             for pred in predictions:
                 pred["start"] += sub_text_start
                 pred["end"] += sub_text_start
+                pred["entity"] = pred["tag"]
                 final_prediction.append(pred)
         return final_prediction
 
