@@ -13,7 +13,7 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
     This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
 
-    # TODO: need to add options for BERT and DeBERTa(V2)
+    # Supports BERT, RoBERTa, and DeBERTa(V2) models
 
     # config_class = RobertaConfig
 
@@ -37,12 +37,12 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
 
         # If base_model is not provided, load it from config
         if base_model is None:
-            self.roberta = AutoModel.from_config(config=config)
+            self.backbone = AutoModel.from_config(config=config)
         else:
-            self.roberta = base_model
+            self.backbone = base_model
 
         # Access custom attributes correctly
-        self.lm_output_size = self.roberta.config.hidden_size
+        self.lm_output_size = self.backbone.config.hidden_size
         # Store configuration for saving/loading
         self.config.freeze_backbone = freeze_backbone
         self.config.classifier_hidden_layers = classifier_hidden_layers
@@ -50,11 +50,11 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
 
         if freeze_backbone:
             # print("+" * 30, "\n\n", "Freezing backbone...", "+" * 30, "\n\n")
-            for param in self.roberta.parameters():
+            for param in self.backbone.parameters():
                 param.requires_grad = False
-            self.roberta.eval()
+            self.backbone.eval()
         else:
-            self.roberta.train(True)
+            self.backbone.train(True)
 
         self.dropout = nn.Dropout(
             config.hidden_dropout_prob
@@ -133,10 +133,12 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             "head_mask": head_mask,
         }
 
-        if any(["deberta" in n for n in self.config["architectures"]]):
-            forward_kwargs.pop("head_mask")
+        # Remove head_mask for DeBERTa models as they don't support it
+        architectures = getattr(self.config, "architectures", [])
+        if any(["deberta" in arch.lower() for arch in architectures]):
+            forward_kwargs.pop("head_mask", None)
 
-        outputs = self.roberta(input_ids, **forward_kwargs)
+        outputs = self.backbone(input_ids, **forward_kwargs)
 
         sequence_output = outputs[0]
         sequence_output = self.dropout(sequence_output)
