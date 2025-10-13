@@ -1,11 +1,17 @@
 assets/
+results/
 output/
 .idea/
 wandb/
 *.pyc
 .DS_Store
+*.lock
 *.tsv
 *.env
 *.pth
 *.safetensors
 *.parquet
+
+sandbox/lightning_logs/version_0/
+
+src/cardioner/python
