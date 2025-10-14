@@ -77,7 +77,7 @@ class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.roberta = AutoModel.from_pretrained(config)  # Use the RobertaModel backbone
+        self.roberta = AutoModel.from_pretrained(config.name_or_path, config=config)
 
         if config.freeze_backbone:
             for param in self.roberta.parameters():
@@ -101,7 +101,7 @@ class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
             **kwargs
         )
         sequence_output = outputs.last_hidden_state
-        sequence_output = self.dropout(sequence_output)
+        sequence_output = self.dropout(sequence_output) 
         logits = self.classifier(sequence_output)
 
         loss = None
@@ -163,6 +163,8 @@ class ModelTrainer():
                  classifier_dropout: float=0.1,
                  class_weights: List[float]|None = None
     ):
+        self.model_name_or_path = model
+        self.hf_token = hf_token
         self.class_weights = torch.tensor(class_weights, dtype=torch.float) if class_weights is not None else None
         if self.class_weights is not None:
             # Ensure all weights are positive
@@ -181,8 +183,7 @@ class ModelTrainer():
             'num_train_epochs': num_train_epochs,
             'weight_decay': weight_decay,
             'eval_strategy':'epoch',
-            'save_strategy': 'best',
-            'metric_for_best_model': 'f1_macro',
+            'save_strategy': 'epoch',
             'save_total_limit': 1,
             'report_to': 'tensorboard',
             'use_cpu': False,
@@ -190,6 +191,9 @@ class ModelTrainer():
             'logging_dir': f"{output_dir}/logs",
             'logging_strategy': 'steps',
             'logging_steps': 256,
+            'load_best_model_at_end' : True,
+            'greater_is_better': True,
+            'metric_for_best_model': 'f1_macro',
         }
 
         if tokenizer is None:
@@ -209,7 +213,7 @@ class ModelTrainer():
             max_length=max_length,
             label_pad_token_id=-100
         )
-        or_config = AutoConfig.from_pretrained(model, hf_token=hf_token, return_unused_kwargs=False)
+        or_config = AutoConfig.from_pretrained(model, hf_token=self.hf_token, return_unused_kwargs=False)
         or_config.num_labels=len(self.label2id)
         or_config.id2label=self.id2label
         or_config.label2id=self.label2id
@@ -227,17 +231,25 @@ class ModelTrainer():
             or_config.freeze_backbone = freeze_backbone
             or_config.classifier_hidden_layers = classifier_hidden_layers
             or_config.classifier_dropout = classifier_dropout
-
-            self.model = MultiLabelTokenClassificationModelCustom(config=or_config,
-                                                            base_model=base_model,
-                                                            freeze_backbone=freeze_backbone,
-                                                            classifier_hidden_layers=classifier_hidden_layers,
-                                                            classifier_dropout=classifier_dropout)
-
-            # Set up auto_map for trust_remote_code loading
-            self.model.config.auto_map = {
+            or_config.auto_map = {
                 "AutoModelForTokenClassification": "modeling.MultiLabelTokenClassificationModelCustom"
             }
+            self.or_config = or_config
+
+
+            self.custom_kwargs = {
+                    'config': or_config,
+                    'base_model': base_model,
+                    'freeze_backbone': freeze_backbone,
+                    'classifier_hidden_layers': classifier_hidden_layers,
+                    'classifier_dropout': classifier_dropout
+            }
+            
+            self.model = MultiLabelTokenClassificationModelCustom(**self.custom_kwargs)                                                                                                      
+            # Set up auto_map for trust_remote_code loading
+            #self.model.config.auto_map = {
+            #    "AutoModelForTokenClassification": "modeling.MultiLabelTokenClassificationModelCustom"
+            #}
             self.custom_model = True
         else:
             self.model = MultiLabelTokenClassificationModelHF.from_pretrained(model, config=or_config)
@@ -258,7 +270,8 @@ class ModelTrainer():
             output_dir=output_dir,
             **self.train_kwargs
         )
-
+                
+        
     def compute_seqeval_metrics(self, eval_preds):
         logits, labels = eval_preds
         probs = torch.sigmoid(torch.tensor(logits))
@@ -362,6 +375,18 @@ class ModelTrainer():
               test_data: List[Dict],
               eval_data: List[Dict],
               profile: bool=False):
+                  
+        if self.custom_model:
+            def model_init():
+                base_model = AutoModel.from_pretrained(self.model_name_or_path, token=self.hf_token)
+                self.custom_kwargs['base_model'] = base_model
+                return MultiLabelTokenClassificationModelCustom(**self.custom_kwargs)
+        else:
+            def model_init():
+                return MultiLabelTokenClassificationModelHF.from_pretrained(
+                    self.model_name_or_path, config=self.or_config
+                )
+
 
         if len(test_data)>0:
             _eval_data = test_data
@@ -369,7 +394,6 @@ class ModelTrainer():
             _eval_data = eval_data
 
         trainer = MultiLabelTrainer(
-            model=self.model,
             args=self.args,
             class_weights=self.class_weights,
             train_dataset=train_data,
@@ -377,6 +401,7 @@ class ModelTrainer():
             data_collator=self.data_collator,
             compute_metrics=self.compute_metrics,
             processing_class=self.tokenizer,
+            model_init=model_init
         )
 
         if profile:
