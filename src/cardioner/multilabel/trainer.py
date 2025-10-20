@@ -11,7 +11,9 @@ from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoMod
 from transformers import AutoConfig
 from transformers import TrainingArguments, Trainer, PreTrainedTokenizerBase
 from transformers.modeling_outputs import TokenClassifierOutput
+from transformers import TrainerCallback
 import numpy as np
+import copy
 import torch
 import torch.nn as nn
 from transformers.utils import logging
@@ -28,6 +30,12 @@ except ImportError:
         MultiLabelTokenClassificationModelCustom = None
 import evaluate
 metric = evaluate.load("seqeval")
+
+
+class WhoAmI(TrainerCallback):
+    def on_save(self, args, state, control, **kw): print("[DBG] on_save:", kw["model"].__class__.__name__)
+    def on_evaluate(self, args, state, control, **kw): print("[DBG] on_eval:", kw["model"].__class__.__name__)
+    def on_train_end(self, args, state, control, **kw): print("[DBG] end:", kw["model"].__class__.__name__)
 
 @dataclass
 class MultiLabelDataCollatorForTokenClassification:
@@ -228,7 +236,6 @@ class ModelTrainer():
             base_model = AutoModel.from_pretrained(model, token=hf_token)
 
             # Store custom parameters in config for proper saving/loading
-            or_config.freeze_backbone = freeze_backbone
             or_config.classifier_hidden_layers = classifier_hidden_layers
             or_config.classifier_dropout = classifier_dropout
             or_config.auto_map = {
@@ -254,6 +261,7 @@ class ModelTrainer():
         else:
             self.model = MultiLabelTokenClassificationModelHF.from_pretrained(model, config=or_config)
             self.custom_model = False
+            self.or_config = or_config
 
         print("Tokenizer max length:", self.tokenizer.model_max_length)
         print("Model max position embeddings:", self.model.config.max_position_embeddings)
@@ -378,9 +386,15 @@ class ModelTrainer():
                   
         if self.custom_model:
             def model_init():
-                base_model = AutoModel.from_pretrained(self.model_name_or_path, token=self.hf_token)
-                self.custom_kwargs['base_model'] = base_model
-                return MultiLabelTokenClassificationModelCustom(**self.custom_kwargs)
+                cfg = copy.deepcopy(self.or_config)
+                cfg.name_or_path = self.model_name_or_path
+                #base_model = AutoModel.from_pretrained(self.model_name_or_path, token=self.hf_token)
+                return MultiLabelTokenClassificationModelCustom(
+                        config=cfg,
+                        freeze_backbone=self.custom_kwargs.get("freeze_backbone", False),
+                        classifier_hidden_layers=self.custom_kwargs.get("classifier_hidden_layers", None),
+                        classifier_dropout=self.custom_kwargs.get("classifier_dropout", 0.1)
+                        )
         else:
             def model_init():
                 return MultiLabelTokenClassificationModelHF.from_pretrained(
@@ -403,6 +417,7 @@ class ModelTrainer():
             processing_class=self.tokenizer,
             model_init=model_init
         )
+        trainer.add_callback(WhoAmI())
 
         if profile:
             with torch.profiler.profile(

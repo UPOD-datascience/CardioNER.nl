@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union
 
+import inspect
+
 
 class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
     """
@@ -36,10 +38,15 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
         classifier_dropout = getattr(config, "classifier_dropout", 0.1)
 
         # If base_model is not provided, load it from config
+        # modeling.py
         if base_model is None:
-            self.backbone = AutoModel.from_config(config=config)
+            name = getattr(config, "name_or_path", None)
+            if name is None:
+                raise ValueError("config.name_or_path is required to load pretrained backbone")
+            self.backbone = AutoModel.from_pretrained(name, config=config)   # ← use pretrained
         else:
             self.backbone = base_model
+
 
         # Access custom attributes correctly
         self.lm_output_size = self.backbone.config.hidden_size
@@ -134,9 +141,10 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
         }
 
         # Remove head_mask for DeBERTa models as they don't support it
-        architectures = getattr(self.config, "architectures", [])
-        if any(["deberta" in arch.lower() for arch in architectures]):
-            forward_kwargs.pop("head_mask", None)
+        # Filter by the backbone's actual signature and skip Nones
+        sig = inspect.signature(getattr(self.backbone, "forward", self.backbone.__call__))
+        allowed = sig.parameters.keys()
+        forward_kwargs = {k: v for k, v in forward_kwargs.items() if k in allowed and v is not None}
 
         outputs = self.backbone(input_ids, **forward_kwargs)
 
