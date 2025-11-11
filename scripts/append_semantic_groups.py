@@ -4,3 +4,5 @@
 # SEM_UMLS: Dict[str,str] cui, semgroup
 # texts: csv -> List[Dict[str,str]] id,text
 # annotations: csv -> List[Dict[str,str]] id,CUI,from,to,value
+# ISA
+# Hypernyms
