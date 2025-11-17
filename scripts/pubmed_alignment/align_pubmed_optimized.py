@@ -650,6 +650,11 @@ Examples:
   python align_pubmed_optimized.py --abstracts abstracts.txt --dataset my_dataset \\
       --text-column text --id-column pmid --mesh-ids-column mesh_ids \\
       --strategy hybrid --threshold 0.7
+  #
+  # python .\align_pubmed_optimized.py --abstracts=T:\pubmed_english_abstracts\pmc_part_002.txt \\
+  # --dataset=UMCU\pubmedabstracts_2025 --id-column=meta_pmid \\
+  # --mesh-ids-columns=meta_mesh_ids --text-column=text --output=T:\bla.txt \\
+  # --strategy hybrid --threshold 0.7
         """,
     )
 
