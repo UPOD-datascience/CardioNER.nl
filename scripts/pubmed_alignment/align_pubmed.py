@@ -439,7 +439,7 @@ Examples:
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
     # Validate inputs
-    if not args.abstracts_file.exists():
+    if not args.abstracts.exists():
         logger.error(f"Abstracts file not found: {args.abstracts_file}")
         sys.exit(1)
 
