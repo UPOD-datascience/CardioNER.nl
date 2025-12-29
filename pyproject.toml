@@ -41,6 +41,7 @@ nltk = "^3.9.2"
 levenshtein = "^0.27.3"
 duckdb = "^1.4.2"
 pysbd = "^0.3.4"
+pyarrow = "^22.0.0"
 
 [build-system]
 requires = ["poetry-core"]
