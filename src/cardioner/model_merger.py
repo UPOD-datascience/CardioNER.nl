@@ -35,31 +35,39 @@ Output:
 - averaged_model
 """
 
-from os import environ
-import os
-import json
 import argparse
+import gc
+import glob
+import json
+import math
+import os
+from collections import defaultdict
+from os import environ
+from typing import Dict, List, Literal, Optional
+
 import torch
 import transformers
-from collections import defaultdict
-from typing import Literal, List, Dict, Optional
-import gc
-import glob, math
+
 
 def load_state_dict(model_dir: str):
     # Load a full model (handles shards, safetensors/bin) then grab its sd.
-    model = transformers.AutoModelForTokenClassification.from_pretrained(model_dir, trust_remote_code=True)
+    model = transformers.AutoModelForTokenClassification.from_pretrained(
+        model_dir, trust_remote_code=True
+    )
     sd = model.state_dict()
     del model
     gc.collect()
     return sd
 
+
 def average_state_dict_advanced(
     model_dirs: List[str],
-    method: str = "chordal",               # "chordal" | "karcher" | "chain"
-    weights: Optional[List[float]] = None, # same length as model_dirs (chordal/karcher)
-    chain_ts: Optional[List[float]] = None,# length len(model_dirs)-1 (chain)
-    keep_missing: bool = False,            # carry through tensors not shared by all
+    method: str = "chordal",  # "chordal" | "karcher" | "chain"
+    weights: Optional[
+        List[float]
+    ] = None,  # same length as model_dirs (chordal/karcher)
+    chain_ts: Optional[List[float]] = None,  # length len(model_dirs)-1 (chain)
+    keep_missing: bool = False,  # carry through tensors not shared by all
 ) -> Dict[str, torch.Tensor]:
     """
     Load checkpoints from each directory in `model_dirs`, average them on a per-tensor basis,
@@ -78,11 +86,12 @@ def average_state_dict_advanced(
     """
 
     # check if gpu available and assign device
-    device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cpu"  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ----------------- helpers -----------------
     try:
         from safetensors.torch import load_file as load_safetensors
+
         _has_safetensors = True
     except Exception:
         _has_safetensors = False
@@ -95,7 +104,7 @@ def average_state_dict_advanced(
             "model.bin",
             "*.pt",
             "*.pth",
-            "*.bin"
+            "*.bin",
         ]
         for pat in priority:
             paths = []
@@ -103,7 +112,8 @@ def average_state_dict_advanced(
                 paths = glob.glob(os.path.join(d, pat))
             else:
                 p = os.path.join(d, pat)
-                if os.path.isfile(p): paths = [p]
+                if os.path.isfile(p):
+                    paths = [p]
             # Prefer exact matches, then first match
             if paths:
                 # If both .bin and .safetensors exist, we'll still respect priority order
@@ -127,7 +137,8 @@ def average_state_dict_advanced(
 
     def _angle(u, v):
         un, vn = u.norm(), v.norm()
-        if un < 1e-12 or vn < 1e-12: return 0.0
+        if un < 1e-12 or vn < 1e-12:
+            return 0.0
         cosw = torch.clamp((u @ v) / (un * vn), -1.0, 1.0)
         return float(math.acos(cosw))
 
@@ -137,29 +148,38 @@ def average_state_dict_advanced(
 
     def _slerp_vec(a, b, t):
         an, bn = a.norm(), b.norm()
-        if an < 1e-12 or bn < 1e-12: return (1-t)*a + t*b
+        if an < 1e-12 or bn < 1e-12:
+            return (1 - t) * a + t * b
         w = _angle(a, b)
-        if w < 1e-7: return (1-t)*a + t*b
+        if w < 1e-7:
+            return (1 - t) * a + t * b
         so = math.sin(w)
-        return (math.sin((1-t)*w)/so)*a + (math.sin(t*w)/so)*b
+        return (math.sin((1 - t) * w) / so) * a + (math.sin(t * w) / so) * b
 
     def _log_map(p, q):
-        p = _normalize(p); q = _normalize(q)
+        p = _normalize(p)
+        q = _normalize(q)
         w = _angle(p, q)
-        if w < 1e-7: return torch.zeros_like(p)
+        if w < 1e-7:
+            return torch.zeros_like(p)
         v = q - (p @ q) * p
         nv = v.norm()
-        if nv < 1e-12: return torch.zeros_like(p)
+        if nv < 1e-12:
+            return torch.zeros_like(p)
         return v * (w / nv)
 
     def _exp_map(p, v):
         pv = v.norm()
-        if pv < 1e-12: return p
+        if pv < 1e-12:
+            return p
         p = _normalize(p)
         return math.cos(pv) * p + math.sin(pv) * (v / pv)
 
-    def _to_vec(x): return x.reshape(-1).double()
-    def _from_vec(x, shape, dtype): return x.reshape(shape).to(dtype)
+    def _to_vec(x):
+        return x.reshape(-1).double()
+
+    def _from_vec(x, shape, dtype):
+        return x.reshape(shape).to(dtype)
 
     def _slerp_tensor(A, B, t):
         v = _slerp_vec(_to_vec(A), _to_vec(B), t)
@@ -173,10 +193,11 @@ def average_state_dict_advanced(
     def _chordal_barycenter(tensors: List[torch.Tensor], wts: List[float]):
         # direction (unit) + radius preservation
         units, norms = zip(*[_safe_unit(t) for t in tensors])
-        w = torch.tensor(wts, dtype=torch.double); w = w / w.sum()
+        w = torch.tensor(wts, dtype=torch.double)
+        w = w / w.sum()
 
         # weighted Euclidean mean of unit vectors, then renormalize => fast spherical approx
-        m = torch.stack(units, 0).mul(w.view(-1,1)).sum(0)
+        m = torch.stack(units, 0).mul(w.view(-1, 1)).sum(0)
         if m.norm() < 1e-12:
             # degenerate: fall back to weighted Euclidean avg of original tensors
             return sum(t * wi for t, wi in zip(tensors, w.tolist()))
@@ -186,24 +207,31 @@ def average_state_dict_advanced(
         r = float(torch.tensor(norms, dtype=torch.double).dot(w))
         return _from_vec(r * u_mean, tensors[0].shape, tensors[0].dtype)
 
-    def _karcher_mean(tensors: List[torch.Tensor], wts: List[float], iters=10, tol=1e-7):
+    def _karcher_mean(
+        tensors: List[torch.Tensor], wts: List[float], iters=10, tol=1e-7
+    ):
         # Karcher mean **on unit vectors**, then re-apply radius
         units, norms = zip(*[_safe_unit(t) for t in tensors])
-        w = torch.tensor(wts, dtype=torch.double); w = w / w.sum()
+        w = torch.tensor(wts, dtype=torch.double)
+        w = w / w.sum()
 
         # init with chordal direction
-        m = torch.stack(units,0).mul(w.view(-1,1)).sum(0)
+        m = torch.stack(units, 0).mul(w.view(-1, 1)).sum(0)
         if m.norm() < 1e-12:
             # if all near-zero, fallback to weighted Euclidean avg of originals
             return sum(t * wi for t, wi in zip(tensors, w.tolist()))
         m = m / m.norm()
 
         for _ in range(iters):
-            logs = torch.stack([_log_map(m, q) * wi for q, wi in zip(units, w.tolist())], 0).sum(0)
-            if logs.norm() < tol: break
+            logs = torch.stack(
+                [_log_map(m, q) * wi for q, wi in zip(units, w.tolist())], 0
+            ).sum(0)
+            if logs.norm() < tol:
+                break
             m = _exp_map(m, logs)
             # keep on sphere
-            if m.norm() > 0: m = m / m.norm()
+            if m.norm() > 0:
+                m = m / m.norm()
 
         # **preserve scale**: arithmetic radius (or try geometric if you like)
         r = float(torch.tensor(norms, dtype=torch.double).dot(w))
@@ -211,7 +239,18 @@ def average_state_dict_advanced(
 
     def _use_spherical(key: str, t: torch.Tensor) -> bool:
         k = key.lower()
-        if any(s in k for s in ["bias", "layernorm.weight", "layernorm.bias", "ln_", ".norm.", "norm.weight", "norm.bias"]):
+        if any(
+            s in k
+            for s in [
+                "bias",
+                "layernorm.weight",
+                "layernorm.bias",
+                "ln_",
+                ".norm.",
+                "norm.weight",
+                "norm.bias",
+            ]
+        ):
             return False
         # tiny or 1D params are often scales/offsets; lerp them
         if t.ndim <= 1 or t.numel() < 32:
@@ -245,7 +284,7 @@ def average_state_dict_advanced(
                 raise ValueError("chain_ts must have length len(model_dirs)-1")
             ts = list(map(float, chain_ts))
         else:
-            ts = [1.0/(n - i) for i in range(1, n)]  # gentle progression
+            ts = [1.0 / (n - i) for i in range(1, n)]  # gentle progression
     else:
         if weights is None:
             weights = [1.0 / len(ckpts)] * len(ckpts)
@@ -258,18 +297,29 @@ def average_state_dict_advanced(
 
     # Shared tensors → averaged
     for k in sorted(inter_keys):
-        vals = [s[k].to(device) if isinstance(s[k], torch.Tensor) else s[k] for s in ckpts]
-        if all(isinstance(v, torch.Tensor) and v.dtype.is_floating_point for v in vals) and \
-           all(v.shape == vals[0].shape for v in vals):
+        vals = [
+            s[k].to(device) if isinstance(s[k], torch.Tensor) else s[k] for s in ckpts
+        ]
+        if all(
+            isinstance(v, torch.Tensor) and v.dtype.is_floating_point for v in vals
+        ) and all(v.shape == vals[0].shape for v in vals):
             if method == "chain":
                 # keep your existing SLERP (already preserves radius)
                 acc = vals[0]
                 for i in range(1, len(vals)):
                     # optionally: force LERP for fragile keys even in chain
-                    acc = _slerp_tensor(acc, vals[i], ts[i-1]) if _use_spherical(k, vals[0]) else ((1-ts[i-1])*acc + ts[i-1]*vals[i])
+                    acc = (
+                        _slerp_tensor(acc, vals[i], ts[i - 1])
+                        if _use_spherical(k, vals[0])
+                        else ((1 - ts[i - 1]) * acc + ts[i - 1] * vals[i])
+                    )
                 out[k] = acc
             elif _use_spherical(k, vals[0]):
-                out[k] = _chordal_barycenter(vals, weights) if method == "chordal" else _karcher_mean(vals, weights)
+                out[k] = (
+                    _chordal_barycenter(vals, weights)
+                    if method == "chordal"
+                    else _karcher_mean(vals, weights)
+                )
             else:
                 # arithmetic average for fragile params
                 w = torch.tensor(weights, dtype=vals[0].dtype, device=vals[0].device)
@@ -296,15 +346,14 @@ def average_state_dict_advanced(
     return out
 
 
-
 def average_state_dicts(
     model_dirs,
     skip_key_pred=None,
-    dtype_str: Literal['float32', 'bfloat16'] = 'bfloat16',
+    dtype_str: Literal["float32", "bfloat16"] = "bfloat16",
     mode="arithmetic",
 ):
     assert len(model_dirs) > 1, "Need at least two models to average"
-    assert dtype_str in ['float32', 'bfloat16'], "dtype must be 'float32' or 'bfloat16'"
+    assert dtype_str in ["float32", "bfloat16"], "dtype must be 'float32' or 'bfloat16'"
     """
     Average state_dicts across models.
     - mode='arithmetic' (standard). 'harmonic' supported but rarely sensible for signed weights.
@@ -314,7 +363,7 @@ def average_state_dicts(
     counts = defaultdict(int)
     template_sd = None
 
-    dtype = torch.float32 if dtype_str == 'float32' else torch.bfloat16
+    dtype = torch.float32 if dtype_str == "float32" else torch.bfloat16
 
     for ix, d in enumerate(model_dirs):
         sd = load_state_dict(d)
@@ -371,14 +420,20 @@ def average_state_dicts(
 
 def model_averager(model_locations, mode="arithmetic"):
     # Load the first model to get initial weights
-    model = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0], trust_remote_code=True)
-    averaged_weights = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+    model = transformers.AutoModelForTokenClassification.from_pretrained(
+        model_locations[0], trust_remote_code=True
+    )
+    averaged_weights = {
+        name: torch.zeros_like(param) for name, param in model.named_parameters()
+    }
     num_models = len(model_locations)
 
     # Iterate through each model, accumulate weights
     for location in model_locations:
         print(f"Processing model at {location}")
-        model = transformers.AutoModelForTokenClassification.from_pretrained(location, trust_remote_code=True)
+        model = transformers.AutoModelForTokenClassification.from_pretrained(
+            location, trust_remote_code=True
+        )
         for name, param in model.named_parameters():
             if mode == "arithmetic":
                 averaged_weights[name] += param.data
@@ -396,13 +451,17 @@ def model_averager(model_locations, mode="arithmetic"):
             averaged_weights[name] = num_models / averaged_weights[name]
 
     # Load a new model (or reuse the first model) and update weights
-    model_averaged = transformers.AutoModelForTokenClassification.from_pretrained(model_locations[0], trust_remote_code=True)
+    model_averaged = transformers.AutoModelForTokenClassification.from_pretrained(
+        model_locations[0], trust_remote_code=True
+    )
     model_averaged.load_state_dict(averaged_weights, strict=False)
 
     # Handle the heads separately if needed
     head_averaged_weights = {}
     for location in model_locations:
-        model = transformers.AutoModelForTokenClassification.from_pretrained(location, trust_remote_code=True)
+        model = transformers.AutoModelForTokenClassification.from_pretrained(
+            location, trust_remote_code=True
+        )
         for name, param in model.classifier.named_parameters():
             print(f"Appending layer: {name}, of shape {param.shape}", flush=True)
             if name not in head_averaged_weights:
@@ -425,10 +484,10 @@ def model_averager(model_locations, mode="arithmetic"):
             head_averaged_weights[name] = num_models / head_averaged_weights[name]
 
     # Update the head weights
-    model_averaged.classifier.load_state_dict(head_averaged_weights,
-      strict=False)
+    model_averaged.classifier.load_state_dict(head_averaged_weights, strict=False)
 
     return model_averaged.state_dict()
+
 
 def path_parser(models_dir):
     """
@@ -443,21 +502,32 @@ def path_parser(models_dir):
     model_paths = []
     for root, dirs, files in os.walk(models_dir):
         # if last folder name contains 'average' skip
-        if 'average' in os.path.basename(root):
+        if "average" in os.path.basename(root):
             continue
         for file in files:
-            if (('model' in file) and (file.endswith('.bin') or file.endswith('.safetensors'))) or os.path.isdir(os.path.join(root, file)):
+            if (
+                ("model" in file)
+                and (file.endswith(".bin") or file.endswith(".safetensors"))
+            ) or os.path.isdir(os.path.join(root, file)):
                 model_paths.append(os.path.join(root))
                 continue
     return model_paths
 
+
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(exit_on_error=True)
-    argparser.add_argument('--models_dir', type=str, required=True)
-    argparser.add_argument('--output_dir', type=str, required=True)
-    argparser.add_argument('--averaging', type=str, choices=['arithmetic', 'harmonic', 'chordal', 'karcher', 'chain'], default='arithmetic')
-    argparser.add_argument('--version', type=int, default=1)
-    argparser.add_argument('--dtype', type=str, choices=['float32','bfloat16'], default='bfloat16')
+    argparser.add_argument("--models_dir", type=str, required=True)
+    argparser.add_argument("--output_dir", type=str, required=True)
+    argparser.add_argument(
+        "--averaging",
+        type=str,
+        choices=["arithmetic", "harmonic", "chordal", "karcher", "chain"],
+        default="arithmetic",
+    )
+    argparser.add_argument("--version", type=int, default=1)
+    argparser.add_argument(
+        "--dtype", type=str, choices=["float32", "bfloat16"], default="bfloat16"
+    )
 
     args = argparser.parse_args()
 
@@ -465,25 +535,42 @@ if __name__ == "__main__":
     print("Models to merge..")
     print(list_of_model_locations)
 
-    model_config = transformers.AutoConfig.from_pretrained(list_of_model_locations[0], trust_remote_code=True)
+    model_config = transformers.AutoConfig.from_pretrained(
+        list_of_model_locations[0], trust_remote_code=True
+    )
 
-    if args.averaging in ['chordal', 'karcher', 'chain']:
+    if args.averaging in ["chordal", "karcher", "chain"]:
         args.version = 3
         print(f"Continuing with SLERP averaging: {args.averaging}", flush=True)
 
-    if args.version==1:
-        print(f"Performing {args.averaging} averaging using method {args.version}...", flush=True)
+    if args.version == 1:
+        print(
+            f"Performing {args.averaging} averaging using method {args.version}...",
+            flush=True,
+        )
         new_state_dict = model_averager(list_of_model_locations, mode=args.averaging)
-    elif args.version==2:
-        print(f"Performing {args.averaging} averaging using method {args.version}...", flush=True)
-        new_state_dict = average_state_dicts(list_of_model_locations, dtype_str=args.dtype, mode=args.averaging)
-    elif args.version==3:
-        print(f"Performing {args.averaging} averaging using method {args.version}...", flush=True)
-        new_state_dict = average_state_dict_advanced(list_of_model_locations, method=args.averaging)
+    elif args.version == 2:
+        print(
+            f"Performing {args.averaging} averaging using method {args.version}...",
+            flush=True,
+        )
+        new_state_dict = average_state_dicts(
+            list_of_model_locations, dtype_str=args.dtype, mode=args.averaging
+        )
+    elif args.version == 3:
+        print(
+            f"Performing {args.averaging} averaging using method {args.version}...",
+            flush=True,
+        )
+        new_state_dict = average_state_dict_advanced(
+            list_of_model_locations, method=args.averaging
+        )
     else:
         raise ValueError("Invalid version: has to be one of [1,2]")
 
-    model_averaged = transformers.AutoModelForTokenClassification.from_config(config=model_config, trust_remote_code=True)
+    model_averaged = transformers.AutoModelForTokenClassification.from_config(
+        config=model_config, trust_remote_code=True
+    )
     missing, unexpected = model_averaged.load_state_dict(new_state_dict, strict=False)
 
     if missing:
@@ -491,9 +578,9 @@ if __name__ == "__main__":
     if unexpected:
         print("[load_state_dict] Unexpected keys:", unexpected)
 
-    if args.dtype == 'float32':
+    if args.dtype == "float32":
         model_averaged = model_averaged.to(torch.float32)
-    elif args.dtype == 'bfloat16':
+    elif args.dtype == "bfloat16":
         model_averaged = model_averaged.to(torch.bfloat16)
     else:
         raise ValueError("dtype must be 'float32' or 'bfloat16'")

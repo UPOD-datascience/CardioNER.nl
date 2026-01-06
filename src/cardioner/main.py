@@ -1,5 +1,6 @@
-from os import environ
 import os
+from os import environ
+
 import spacy
 
 # Load a spaCy model for tokenization
@@ -8,26 +9,27 @@ environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-from typing import List, Dict, Optional, Literal, Tuple
-import json
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoConfig
 import argparse
+import json
+from collections import defaultdict
 from functools import partial
-
-from sklearn.model_selection import train_test_split, GroupKFold
-from sklearn.utils import shuffle
-
-from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
-from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
-
-from tqdm import tqdm
+from typing import Dict, List, Literal, Optional, Tuple
 
 import evaluate
+from datasets import Dataset
+from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
+from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
+from sklearn.model_selection import GroupKFold, train_test_split
+from sklearn.utils import shuffle
+from torch import bfloat16
+from tqdm import tqdm
+from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 
 metric = evaluate.load("seqeval")
 
-from utils import calculate_class_weights, merge_annotations, process_pipe
+from cardioner import model_merger, parse_performance_json
+from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
+
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 
 
@@ -84,9 +86,9 @@ def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
 
 def prepare(
     Model: str = "CLTL/MedRoBERTa.nl",
-    corpus_train: List[Dict] | None = None,
+    corpus_train: List[Dict] | List[List[Dict]] | None = None,
     corpus_validation: List[Dict] | None = None,
-    corpus_test: List[Dict] | None = None,
+    corpus_test: List[Dict] | List[List[Dict]] | None = None,
     annotation_loc: Optional[str] = None,
     label2id: Optional[Dict[str, int]] = None,
     id2label: Optional[Dict[int, str]] = None,
@@ -99,16 +101,20 @@ def prepare(
     tags_to_keep: List[str] | None = None,
 ):
     if multi_class:
-        from multiclass.loader import annotate_corpus_paragraph
-        from multiclass.loader import annotate_corpus_standard
-        from multiclass.loader import annotate_corpus_centered
-        from multiclass.loader import tokenize_and_align_labels
+        from multiclass.loader import (
+            annotate_corpus_centered,
+            annotate_corpus_paragraph,
+            annotate_corpus_standard,
+            tokenize_and_align_labels,
+        )
     else:
-        from multilabel.loader import annotate_corpus_paragraph
-        from multilabel.loader import annotate_corpus_standard
-        from multilabel.loader import annotate_corpus_centered
-        from multilabel.loader import tokenize_and_align_labels
-        from multilabel.loader import count_tokens_with_multiple_labels
+        from multilabel.loader import (
+            annotate_corpus_centered,
+            annotate_corpus_paragraph,
+            annotate_corpus_standard,
+            count_tokens_with_multiple_labels,
+            tokenize_and_align_labels,
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(
         Model, add_prefix_space=True, token=hf_token
@@ -233,11 +239,11 @@ def prepare(
 
 def train(
     tokenized_data_train: List[Dict],
-    tokenized_data_test: List[Dict],
+    tokenized_data_test: List[Dict] | None,
     tokenized_data_validation: List[Dict],
     force_splitter: bool = False,
     Model: str = "CLTL/MedRoBERTa.nl",
-    Splits: List[List[str]] | int = 5,
+    Splits: List[Tuple[List[str], List[str]]] | int | None = 5,
     output_dir: str = "../output",
     max_length: int = 514,
     num_epochs: int = 10,
@@ -311,19 +317,34 @@ def train(
                 [label in [-100] + list(range(num_labels)) for label in labels]
             ), f"Labels should be in range (0,{num_labels})  or -100."
 
-    if (tokenized_data_validation is None) | (
-        (tokenized_data_validation is not None) & (force_splitter == True)
+    if (
+        (tokenized_data_validation is None)
+        | (isinstance(Splits, list))
+        | ((tokenized_data_validation is not None) & (force_splitter == True))
     ):
         print("Using cross-validation for model training and validation..")
+        groups = [entry["gid"] for entry in tokenized_data_train]
+        shuffled_data, shuffled_groups = shuffle(
+            tokenized_data_train, groups, random_state=42
+        )
         if isinstance(Splits, int):
             splitter = GroupKFold(n_splits=Splits)
-            groups = [entry["gid"] for entry in tokenized_data_train]
-            shuffled_data, shuffled_groups = shuffle(
-                tokenized_data_train, groups, random_state=42
-            )
             SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
-        else:
-            SplitList = Splits
+        elif Splits is not None:
+            # we have to turn the List[Tuple[List['id'], List['id']]] into List[Tuple[List[int], List[int]]] based on shuffled_data which is a list of {'gid':.. }
+            # where gid=id
+            gid_id = defaultdict(list)
+            for k, d in enumerate(shuffled_data):
+                gid_id[d["gid"]].append(k)
+            SplitList = [
+                tuple(
+                    [
+                        [idx for ind in T[0] for idx in gid_id[ind]],
+                        [jdx for jind in T[1] for jdx in gid_id[jind]],
+                    ],
+                )
+                for T in Splits
+            ]
 
         print(f"Splitting data into {len(SplitList)} folds")
         for k, (train_idx, test_idx) in enumerate(SplitList):
@@ -375,7 +396,7 @@ def train(
                 TrainClass.train(
                     train_data=train_data,
                     test_data=test_data,
-                    eval_data=test_data,
+                    eval_data=tokenized_data_validation,
                     profile=profile,
                 )
             else:
@@ -385,6 +406,66 @@ def train(
                     eval_data=tokenized_data_validation,
                     profile=profile,
                 )
+        # perform model merger
+        # ######################
+        print(100 * "=")
+        print(
+            f"Performing SLERP model merging using the chordal method in {output_dir}"
+        )
+        list_of_model_locations = model_merger.path_parser(output_dir)
+
+        # remove checkpoint-xx folders
+        list_of_model_locations = [
+            path
+            for path in list_of_model_locations
+            if not path.split("/")[-1].startswith("checkpoint-")
+        ]
+        print(f"Merging models from the following folders: {list_of_model_locations}")
+
+        new_state_dict = model_merger.average_state_dict_advanced(
+            list_of_model_locations, method="chordal"
+        )
+        model_config = AutoConfig.from_pretrained(
+            list_of_model_locations[0], trust_remote_code=True
+        )
+        model_averaged = AutoModelForTokenClassification.from_config(
+            config=model_config, trust_remote_code=True
+        )
+        missing, unexpected = model_averaged.load_state_dict(
+            new_state_dict, strict=False
+        )
+        if missing:
+            print("[load_state_dict] Missing keys:", missing)
+        if unexpected:
+            print("[load_state_dict] Unexpected keys:", unexpected)
+
+        model_averaged = model_averaged.to(bfloat16)
+
+        merged_path = os.path.join(output_dir, "merged_model")
+        os.makedirs(merged_path, exist_ok=True)
+        model_averaged.save_pretrained(merged_path)
+
+        # get performance aggregations
+        #
+        collected_dict = parse_performance_json.parse_dir(output_dir)
+        json.dump(
+            collected_dict,
+            open(
+                os.path.join(output_dir, "collected_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+        aggregated_dict = parse_performance_json.get_aggregates(collected_dict)
+        json.dump(
+            aggregated_dict,
+            open(
+                os.path.join(output_dir, "aggregated_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+
     elif (tokenized_data_validation is not None) and (tokenized_data_test is not None):
         print(
             "Using preset train/test/validation split for model training and validation.."
@@ -544,19 +625,21 @@ if __name__ == "__main__":
         "Either parse annotations or train the model, or both..do something!"
     )
 
-    if corpus_train is not None:
-        if os.path.isdir(corpus_train):
-            # go through jsons and merge into one
-            corpus_train_list = merge_annotations(corpus_train)
-        else:
-            assert os.path.isfile(corpus_train), (
-                f"Corpus_train file {corpus_train} does not exist."
-            )
-            # read jsonl
-            corpus_train_list = []
-            with open(corpus_train, "r", encoding="utf-8") as fr:
-                for line in fr:
-                    corpus_train_list.append(json.loads(line))
+    assert corpus_train is not None, "Corpus_train is required"
+
+    if os.path.isdir(corpus_train):
+        # go through jsons and merge into one
+        corpus_train_list = merge_annotations(corpus_train)
+    else:
+        assert os.path.isfile(corpus_train), (
+            f"Corpus_train file {corpus_train} does not exist."
+        )
+        # read jsonl
+        corpus_train_list = []
+        with open(corpus_train, "r", encoding="utf-8") as fr:
+            for line in fr:
+                corpus_train_list.append(json.loads(line))
+
     corpus_validation_list = None
     if corpus_validation is not None:
         if os.path.isdir(corpus_validation):
@@ -597,25 +680,50 @@ if __name__ == "__main__":
         with open(split_file, "r", encoding="utf-8") as fr:
             split_data = json.load(fr)
             # TODO: check if the split file is correct, seems redundant to have separate entries for class/language.
-            corpus_train_ids = split_data[lang]["train"]["symp"]
-            corpus_test_ids = split_data[lang]["test"]["symp"]
-            corpus_validation_ids = split_data[lang]["validation"]["symp"]
+            corpus_folds = split_data["folds"]
+            corpus_validation_ids = [
+                entry.strip(".txt") for entry in split_data["test_files"]
+            ]  # split_data #[lang]["validation"]["symp"]
 
-        _corpus_train_list = [
-            entry for entry in corpus_train_list if entry["id"] in corpus_train_ids
+        corpus_train_id_lists = [
+            [entry.strip(".txt") for entry in fold["train_files"]]
+            for fold in corpus_folds
         ]
-        corpus_test_list = [
-            entry for entry in corpus_train_list if entry["id"] in corpus_test_ids
+
+        corpus_test_id_lists = [
+            [entry.strip(".txt") for entry in fold["val_files"]]
+            for fold in corpus_folds
         ]
+
+        splits = list(zip(corpus_train_id_lists, corpus_test_id_lists))
+
+        # corpus_training_lists = [
+        #     [entry for entry in corpus_train_list if entry["id"] in corpus_train_ids]
+        #     for corpus_train_ids in corpus_train_id_lists
+        # ]
+
+        # corpus_test_lists = [
+        #     [entry for entry in corpus_train_list if entry["id"] in corpus_test_ids]
+        #     for corpus_test_ids in corpus_test_id_lists
+        # ]
+        corpus_test_list = []
         corpus_validation_list = [
             entry for entry in corpus_train_list if entry["id"] in corpus_validation_ids
         ]
 
-        corpus_train_list = _corpus_train_list
-        print(
-            f"\n\n{len(corpus_train_list)} training samples ({len(corpus_train_ids)}), {len(corpus_test_list)} test samples ({len(corpus_test_ids)}), {len(corpus_validation_list)} validation samples({len(corpus_validation_ids)})\n\n"
-        )
+        # print overview of counts per fold
+        print(100 * "=")
+        print("Overview of counts per fold:")
+        print(100 * "=")
+        for k, fold in enumerate(corpus_folds):
+            print(f"Fold {k}:")
+            print(f"  Train: {len(fold['train_files'])}")
+            print(f"  Validation: {len(fold['val_files'])}")
+        print(f"  Test: {len(corpus_validation_list)}")
+        print(100 * "=")
+        print(100 * "=")
     else:
+        splits = None
         corpus_test_list = []
 
     OutputDir = args.output_dir
@@ -633,6 +741,9 @@ if __name__ == "__main__":
     learning_rate = args.learning_rate
     accumulation_steps = args.accumulation_steps
     tag_classes = args.tag_classes
+
+    if not splits:
+        splits = num_splits
 
     if args.write_annotations == False:
         _annotation_loc = None
@@ -715,7 +826,7 @@ if __name__ == "__main__":
             tokenized_data_validation,
             force_splitter=force_splitter,
             Model=_model,
-            Splits=num_splits,
+            Splits=splits,
             output_dir=OutputDir,
             max_length=max_length,
             num_epochs=num_epochs,
@@ -740,8 +851,8 @@ if __name__ == "__main__":
         # casos_clinicos_cardiologia286	MEDICATION	905	914	warfarine
         # ...
         if args.output_test_tsv:
-            from transformers import pipeline
             import pandas as pd
+            from transformers import pipeline
 
             # load model from output_dir, load in transformer pipeline for NER classification
             # Create output tsv path
