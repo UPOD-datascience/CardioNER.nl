@@ -21,11 +21,13 @@ from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from sklearn.model_selection import GroupKFold, train_test_split
 from sklearn.utils import shuffle
+from torch import bfloat16
 from tqdm import tqdm
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 
 metric = evaluate.load("seqeval")
 
+from cardioner import model_merger, parse_performance_json
 from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
@@ -315,8 +317,10 @@ def train(
                 [label in [-100] + list(range(num_labels)) for label in labels]
             ), f"Labels should be in range (0,{num_labels})  or -100."
 
-    if (tokenized_data_validation is None) | (
-        (tokenized_data_validation is not None) & (force_splitter == True)
+    if (
+        (tokenized_data_validation is None)
+        | (isinstance(Splits, list))
+        | ((tokenized_data_validation is not None) & (force_splitter == True))
     ):
         print("Using cross-validation for model training and validation..")
         groups = [entry["gid"] for entry in tokenized_data_train]
@@ -329,13 +333,15 @@ def train(
         elif Splits is not None:
             # we have to turn the List[Tuple[List['id'], List['id']]] into List[Tuple[List[int], List[int]]] based on shuffled_data which is a list of {'gid':.. }
             # where gid=id
-            gid_id = defaultdict(List[int])
+            gid_id = defaultdict(list)
             for k, d in enumerate(shuffled_data):
                 gid_id[d["gid"]].append(k)
             SplitList = [
                 tuple(
-                    [idx for ind in T[0] for idx in gid_id[ind]],
-                    [jdx for jind in T[1] for jdx in gid_id[jind]],
+                    [
+                        [idx for ind in T[0] for idx in gid_id[ind]],
+                        [jdx for jind in T[1] for jdx in gid_id[jind]],
+                    ],
                 )
                 for T in Splits
             ]
@@ -390,7 +396,7 @@ def train(
                 TrainClass.train(
                     train_data=train_data,
                     test_data=test_data,
-                    eval_data=test_data,
+                    eval_data=tokenized_data_validation,
                     profile=profile,
                 )
             else:
@@ -400,6 +406,66 @@ def train(
                     eval_data=tokenized_data_validation,
                     profile=profile,
                 )
+        # perform model merger
+        # ######################
+        print(100 * "=")
+        print(
+            f"Performing SLERP model merging using the chordal method in {output_dir}"
+        )
+        list_of_model_locations = model_merger.path_parser(output_dir)
+
+        # remove checkpoint-xx folders
+        list_of_model_locations = [
+            path
+            for path in list_of_model_locations
+            if not path.split("/")[-1].startswith("checkpoint-")
+        ]
+        print(f"Merging models from the following folders: {list_of_model_locations}")
+
+        new_state_dict = model_merger.average_state_dict_advanced(
+            list_of_model_locations, method="chordal"
+        )
+        model_config = AutoConfig.from_pretrained(
+            list_of_model_locations[0], trust_remote_code=True
+        )
+        model_averaged = AutoModelForTokenClassification.from_config(
+            config=model_config, trust_remote_code=True
+        )
+        missing, unexpected = model_averaged.load_state_dict(
+            new_state_dict, strict=False
+        )
+        if missing:
+            print("[load_state_dict] Missing keys:", missing)
+        if unexpected:
+            print("[load_state_dict] Unexpected keys:", unexpected)
+
+        model_averaged = model_averaged.to(bfloat16)
+
+        merged_path = os.path.join(output_dir, "merged_model")
+        os.makedirs(merged_path, exist_ok=True)
+        model_averaged.save_pretrained(merged_path)
+
+        # get performance aggregations
+        #
+        collected_dict = parse_performance_json.parse_dir(output_dir)
+        json.dump(
+            collected_dict,
+            open(
+                os.path.join(output_dir, "collected_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+        aggregated_dict = parse_performance_json.get_aggregates(collected_dict)
+        json.dump(
+            aggregated_dict,
+            open(
+                os.path.join(output_dir, "aggregated_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+
     elif (tokenized_data_validation is not None) and (tokenized_data_test is not None):
         print(
             "Using preset train/test/validation split for model training and validation.."
