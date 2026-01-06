@@ -19,10 +19,10 @@ seaborn = "^0.13.2"
 simpletransformers = "^0.70.1"
 seqeval = "^1.2.2"
 datasets = "^3.1.0"
-sentencepiece = "^0.2.0"
+sentencepiece = "^0.2.1"
 pydantic = "^2.9.2"
 evaluate = "^0.4.3"
-torchtext = "^0.18.0"
+#torchtext = "^0.18.0"
 torch = "2.6.0"  #{ version = "2.5.0", source = "torch" }
 accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"
@@ -42,6 +42,7 @@ levenshtein = "^0.27.3"
 duckdb = "^1.4.2"
 pysbd = "^0.3.4"
 pyarrow = "^22.0.0"
+ipykernel = "^7.1.0"
 
 [build-system]
 requires = ["poetry-core"]
