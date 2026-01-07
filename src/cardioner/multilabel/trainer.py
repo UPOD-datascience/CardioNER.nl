@@ -17,6 +17,7 @@ from transformers import (
     AutoModel,
     AutoModelForTokenClassification,
     AutoTokenizer,
+    PreTrainedModel,
     PreTrainedTokenizerBase,
     Trainer,
     TrainerCallback,
@@ -97,20 +98,34 @@ class MultiLabelDataCollatorForTokenClassification:
         return batch
 
 
-class MultiLabelTokenClassificationModelHF(AutoModelForTokenClassification):
+class MultiLabelTokenClassificationModelHF(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.roberta = AutoModel.from_pretrained(config.name_or_path, config=config)
 
-        if config.freeze_backbone:
+        freeze_backbone = getattr(config, "freeze_backbone", False)
+        if freeze_backbone:
             for param in self.roberta.parameters():
                 param.requires_grad = False
             self.roberta.eval()
-        self.roberta.train(not config.freeze_backbone)
+        else:
+            self.roberta.train()
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        """Override from_config to ensure config is properly passed to __init__"""
+        return cls(config=config, **kwargs)
+
+    def train(self, mode=True):
+        """Override train method to keep frozen backbone in eval mode"""
+        super().train(mode)
+        if hasattr(self.config, "freeze_backbone") and self.config.freeze_backbone:
+            self.roberta.eval()
+        return self
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         outputs = self.roberta(input_ids, attention_mask=attention_mask, **kwargs)
@@ -440,9 +455,9 @@ class ModelTrainer:
         else:
 
             def model_init():
-                return MultiLabelTokenClassificationModelHF.from_pretrained(
-                    self.model_name_or_path, config=self.or_config
-                )
+                cfg = copy.deepcopy(self.or_config)
+                cfg.name_or_path = self.model_name_or_path
+                return MultiLabelTokenClassificationModelHF.from_config(config=cfg)
 
         if len(test_data) > 0:
             _eval_data = test_data
