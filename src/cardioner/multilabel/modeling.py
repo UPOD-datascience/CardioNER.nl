@@ -1,12 +1,16 @@
-from transformers import PreTrainedModel, RobertaConfig, DebertaV2Config
-from transformers.modeling_outputs import TokenClassifierOutput
-from transformers import AutoModel, AutoConfig
+import inspect
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Union
-
-import inspect
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    DebertaV2Config,
+    PreTrainedModel,
+    RobertaConfig,
+)
+from transformers.modeling_outputs import TokenClassifierOutput
 
 
 class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
@@ -28,7 +32,7 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
         classifier_dropout=0.1,
     ):
         super().__init__(config)
-
+        self.__class__.config_class = config.__class__
         self.config = config
         self.num_labels = config.num_labels
 
@@ -42,11 +46,14 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
         if base_model is None:
             name = getattr(config, "name_or_path", None)
             if name is None:
-                raise ValueError("config.name_or_path is required to load pretrained backbone")
-            self.backbone = AutoModel.from_pretrained(name, config=config)   # ← use pretrained
+                raise ValueError(
+                    "config.name_or_path is required to load pretrained backbone"
+                )
+            self.backbone = AutoModel.from_pretrained(
+                name, config=config
+            )  # ← use pretrained
         else:
             self.backbone = base_model
-
 
         # Access custom attributes correctly
         self.lm_output_size = self.backbone.config.hidden_size
@@ -142,9 +149,13 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
 
         # Remove head_mask for DeBERTa models as they don't support it
         # Filter by the backbone's actual signature and skip Nones
-        sig = inspect.signature(getattr(self.backbone, "forward", self.backbone.__call__))
+        sig = inspect.signature(
+            getattr(self.backbone, "forward", self.backbone.__call__)
+        )
         allowed = sig.parameters.keys()
-        forward_kwargs = {k: v for k, v in forward_kwargs.items() if k in allowed and v is not None}
+        forward_kwargs = {
+            k: v for k, v in forward_kwargs.items() if k in allowed and v is not None
+        }
 
         outputs = self.backbone(input_ids, **forward_kwargs)
 
@@ -251,11 +262,11 @@ def load_custom_cardioner_model(model_path: str, device: str = "auto"):
     Returns:
         tuple: (model, tokenizer, config)
     """
-    from transformers import AutoTokenizer, AutoModelForTokenClassification
-    import torch
-
     # Validate model directory
     import os
+
+    import torch
+    from transformers import AutoModelForTokenClassification, AutoTokenizer
 
     required_files = ["config.json", "modeling.py", "pytorch_model.bin"]
     missing_files = [
@@ -300,8 +311,8 @@ def validate_custom_model_directory(model_path: str) -> dict:
     Returns:
         dict: Validation results with status and details
     """
-    import os
     import json
+    import os
 
     validation_results = {
         "valid": True,

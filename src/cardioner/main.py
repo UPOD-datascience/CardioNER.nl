@@ -420,30 +420,35 @@ def train(
             for path in list_of_model_locations
             if not path.split("/")[-1].startswith("checkpoint-")
         ]
-        print(f"Merging models from the following folders: {list_of_model_locations}")
+        try:
+            print(
+                f"Merging models from the following folders: {list_of_model_locations}"
+            )
 
-        new_state_dict = model_merger.average_state_dict_advanced(
-            list_of_model_locations, method="chordal"
-        )
-        model_config = AutoConfig.from_pretrained(
-            list_of_model_locations[0], trust_remote_code=True
-        )
-        model_averaged = AutoModelForTokenClassification.from_config(
-            config=model_config, trust_remote_code=True
-        )
-        missing, unexpected = model_averaged.load_state_dict(
-            new_state_dict, strict=False
-        )
-        if missing:
-            print("[load_state_dict] Missing keys:", missing)
-        if unexpected:
-            print("[load_state_dict] Unexpected keys:", unexpected)
+            new_state_dict = model_merger.average_state_dict_advanced(
+                list_of_model_locations, method="chordal"
+            )
+            model_config = AutoConfig.from_pretrained(
+                list_of_model_locations[0], trust_remote_code=True
+            )
+            model_averaged = AutoModelForTokenClassification.from_config(
+                config=model_config, trust_remote_code=True
+            )
+            missing, unexpected = model_averaged.load_state_dict(
+                new_state_dict, strict=False
+            )
+            if missing:
+                print("[load_state_dict] Missing keys:", missing)
+            if unexpected:
+                print("[load_state_dict] Unexpected keys:", unexpected)
 
-        model_averaged = model_averaged.to(bfloat16)
+            model_averaged = model_averaged.to(bfloat16)
 
-        merged_path = os.path.join(output_dir, "merged_model")
-        os.makedirs(merged_path, exist_ok=True)
-        model_averaged.save_pretrained(merged_path)
+            merged_path = os.path.join(output_dir, "merged_model")
+            os.makedirs(merged_path, exist_ok=True)
+            model_averaged.save_pretrained(merged_path)
+        except Exception as e:
+            print(f"An error occurred during model merging: {e}")
 
         # get performance aggregations
         #
