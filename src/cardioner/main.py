@@ -18,6 +18,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import evaluate
 from datasets import Dataset
 from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
+from multiclass.trainer import MultiHeadCRFTrainer
 from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from sklearn.model_selection import GroupKFold, train_test_split
 from sklearn.utils import shuffle
@@ -99,7 +100,29 @@ def prepare(
     use_iob: bool = True,
     hf_token: str | None = None,
     tags_to_keep: List[str] | None = None,
+    use_multihead_crf: bool = False,
+    entity_types: List[str] | None = None,
 ):
+    # Multi-head CRF preparation
+    if use_multihead_crf:
+        from multiclass.loader import (
+            annotate_corpus_multihead,
+            annotate_corpus_multihead_centered,
+            tokenize_and_align_labels_multihead,
+            get_entity_types_from_corpus,
+        )
+        return prepare_multihead(
+            Model=Model,
+            corpus_train=corpus_train,
+            corpus_validation=corpus_validation,
+            corpus_test=corpus_test,
+            chunk_size=chunk_size,
+            max_length=max_length,
+            chunk_type=chunk_type,
+            hf_token=hf_token,
+            entity_types=entity_types,
+        )
+
     if multi_class:
         from multiclass.loader import (
             annotate_corpus_centered,
@@ -237,6 +260,122 @@ def prepare(
     return iob_data_dataset_tokenized_with_labels, unique_tags
 
 
+def prepare_multihead(
+    Model: str = "CLTL/MedRoBERTa.nl",
+    corpus_train: List[Dict] | None = None,
+    corpus_validation: List[Dict] | None = None,
+    corpus_test: List[Dict] | None = None,
+    chunk_size: int = 256,
+    max_length: int = 514,
+    chunk_type: Literal["standard", "centered", "paragraph"] = "standard",
+    hf_token: str | None = None,
+    entity_types: List[str] | None = None,
+):
+    """
+    Prepare data for Multi-Head CRF training.
+
+    Each entity type gets its own BIO label sequence.
+    """
+    from multiclass.loader import (
+        annotate_corpus_multihead,
+        annotate_corpus_multihead_centered,
+        tokenize_and_align_labels_multihead,
+        get_entity_types_from_corpus,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        Model, add_prefix_space=True, token=hf_token
+    )
+    tokenizer.model_max_length = max_length
+
+    model_config = AutoConfig.from_pretrained(Model, token=hf_token)
+    max_model_length = model_config.max_position_embeddings
+    num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)
+    max_allowed_chunk_size = max_model_length - num_special_tokens
+
+    # Auto-detect entity types if not provided
+    if entity_types is None and corpus_train is not None:
+        entity_types = get_entity_types_from_corpus(corpus_train)
+        print(f"Auto-detected entity types: {entity_types}")
+
+    if not entity_types:
+        raise ValueError("entity_types must be provided or detectable from corpus")
+
+    # BIO labels for each head
+    bio_label2id = {"O": 0, "B": 1, "I": 2}
+    bio_id2label = {0: "O", 1: "B", 2: "I"}
+
+    datasets = {
+        "train": corpus_train,
+        "test": corpus_test,
+        "validation": corpus_validation,
+    }
+    datasets = {k: v for k, v in datasets.items() if v is not None}
+
+    iob_data_train = []
+    iob_data_test = []
+    iob_data_validation = []
+
+    # Select annotation function based on chunk type
+    if chunk_type == "centered":
+        annotate_func = annotate_corpus_multihead_centered
+        kwargs = {"chunk_size": chunk_size}
+    else:
+        annotate_func = annotate_corpus_multihead
+        kwargs = {"chunk_size": chunk_size, "max_allowed_chunk_size": max_allowed_chunk_size}
+
+    for batch_id, corpus in datasets.items():
+        iob_data, _ = annotate_func(
+            corpus,
+            entity_types=entity_types,
+            batch_id=batch_id,
+            **kwargs
+        )
+
+        if batch_id == "train":
+            iob_data_train = iob_data
+        elif batch_id == "test":
+            iob_data_test = iob_data
+        elif batch_id == "validation":
+            iob_data_validation = iob_data
+
+    print(f"Entity types for Multi-Head CRF: {entity_types}")
+    print(f"BIO labels per head: {bio_label2id}")
+
+    iob_data = iob_data_train + iob_data_test + iob_data_validation
+
+    partial_tokenize = partial(
+        tokenize_and_align_labels_multihead,
+        tokenizer=tokenizer,
+        entity_types=entity_types,
+        max_length=max_length,
+    )
+
+    iob_data_dataset = Dataset.from_list(iob_data)
+    iob_data_dataset_tokenized = iob_data_dataset.map(
+        partial_tokenize,
+        batched=True,
+    )
+
+    max_seq_length = max(
+        len(entry["input_ids"]) for entry in iob_data_dataset_tokenized
+    )
+    print(f"Maximum sequence length after tokenization: {max_seq_length}")
+
+    # Add metadata to each entry
+    iob_data_dataset_tokenized_with_labels = []
+    for entry in iob_data_dataset_tokenized:
+        entry.update({
+            "label2id": bio_label2id,
+            "id2label": bio_id2label,
+            "entity_types": entity_types,
+            "is_multihead": True,
+        })
+        iob_data_dataset_tokenized_with_labels.append(entry)
+
+    return iob_data_dataset_tokenized_with_labels, entity_types
+
+
 def train(
     tokenized_data_train: List[Dict],
     tokenized_data_test: List[Dict] | None,
@@ -259,7 +398,33 @@ def train(
     classifier_hidden_layers: tuple | None = None,
     classifier_dropout: float = 0.1,
     use_class_weights: bool = False,
+    use_multihead_crf: bool = False,
+    number_of_layers_per_head: int = 1,
+    crf_reduction: str = "mean",
 ):
+    # Check if this is multi-head CRF data
+    is_multihead = tokenized_data_train[0].get("is_multihead", False) if tokenized_data_train else False
+
+    if is_multihead or use_multihead_crf:
+        return train_multihead(
+            tokenized_data_train=tokenized_data_train,
+            tokenized_data_test=tokenized_data_test,
+            tokenized_data_validation=tokenized_data_validation,
+            Model=Model,
+            output_dir=output_dir,
+            max_length=max_length,
+            num_epochs=num_epochs,
+            batch_size=batch_size,
+            profile=profile,
+            weight_decay=weight_decay,
+            learning_rate=learning_rate,
+            accumulation_steps=accumulation_steps,
+            hf_token=hf_token,
+            freeze_backbone=freeze_backbone,
+            classifier_dropout=classifier_dropout,
+            number_of_layers_per_head=number_of_layers_per_head,
+            crf_reduction=crf_reduction,
+        )
     label2id = tokenized_data_train[0]["label2id"]
     id2label = tokenized_data_train[0]["id2label"]
 
@@ -528,6 +693,86 @@ def train(
         )
 
 
+def train_multihead(
+    tokenized_data_train: List[Dict],
+    tokenized_data_test: List[Dict] | None,
+    tokenized_data_validation: List[Dict],
+    Model: str = "CLTL/MedRoBERTa.nl",
+    output_dir: str = "../output",
+    max_length: int = 514,
+    num_epochs: int = 10,
+    batch_size: int = 20,
+    profile: bool = False,
+    weight_decay: float = 0.001,
+    learning_rate: float = 1e-4,
+    accumulation_steps: int = 1,
+    hf_token: str = None,
+    freeze_backbone: bool = False,
+    classifier_dropout: float = 0.1,
+    number_of_layers_per_head: int = 1,
+    crf_reduction: str = "mean",
+):
+    """
+    Train a Multi-Head CRF model for multiple entity types.
+
+    Each entity type gets its own classification head and CRF layer.
+    """
+    # Extract entity types and labels from data
+    entity_types = tokenized_data_train[0].get("entity_types", [])
+    label2id = tokenized_data_train[0]["label2id"]
+    id2label = tokenized_data_train[0]["id2label"]
+
+    if not entity_types:
+        raise ValueError("entity_types not found in tokenized data. Did you use prepare() with use_multihead_crf=True?")
+
+    print("=" * 60)
+    print("Training Multi-Head CRF Model")
+    print(f"Entity types: {entity_types}")
+    print(f"BIO labels: {label2id}")
+    print("=" * 60)
+
+    # Validate labels
+    label2id = {str(k): int(v) for k, v in label2id.items()}
+    id2label = {int(k): str(v) for k, v in id2label.items()}
+
+    # Create trainer
+    trainer = MultiHeadCRFTrainer(
+        entity_types=entity_types,
+        label2id=label2id,
+        id2label=id2label,
+        tokenizer=None,
+        model=Model,
+        batch_size=batch_size,
+        max_length=max_length,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        num_train_epochs=num_epochs,
+        output_dir=output_dir,
+        hf_token=hf_token,
+        freeze_backbone=freeze_backbone,
+        gradient_accumulation_steps=accumulation_steps,
+        number_of_layers_per_head=number_of_layers_per_head,
+        classifier_dropout=classifier_dropout,
+        crf_reduction=crf_reduction,
+    )
+
+    # Determine eval data
+    if tokenized_data_test and len(tokenized_data_test) > 0:
+        _eval_data = tokenized_data_test
+    else:
+        _eval_data = tokenized_data_validation
+
+    # Train
+    trainer.train(
+        train_data=tokenized_data_train,
+        test_data=tokenized_data_test if tokenized_data_test else [],
+        eval_data=_eval_data,
+        profile=profile,
+    )
+
+    print(f"Multi-Head CRF model saved to {output_dir}")
+
+
 if __name__ == "__main__":
     """
         take in .jsonl with:
@@ -585,6 +830,32 @@ if __name__ == "__main__":
     argparsers.add_argument("--tag_classes", type=str, nargs="+", default=None)
     argparsers.add_argument("--use_class_weights", action="store_true", default=False)
     argparsers.add_argument("--output_test_tsv", action="store_true", default=False)
+    argparsers.add_argument(
+        "--use_multihead_crf",
+        action="store_true",
+        default=False,
+        help="Use Multi-Head CRF model with separate heads per entity type",
+    )
+    argparsers.add_argument(
+        "--entity_types",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Entity types for Multi-Head CRF (e.g., DRUG DISEASE SYMPTOM). Auto-detected if not provided.",
+    )
+    argparsers.add_argument(
+        "--number_of_layers_per_head",
+        type=int,
+        default=1,
+        help="Number of dense layers per head in Multi-Head CRF",
+    )
+    argparsers.add_argument(
+        "--crf_reduction",
+        type=str,
+        default="mean",
+        choices=["mean", "sum", "token_mean", "none"],
+        help="CRF loss reduction mode for Multi-Head CRF",
+    )
 
     args = argparsers.parse_args()
 
@@ -746,6 +1017,10 @@ if __name__ == "__main__":
     learning_rate = args.learning_rate
     accumulation_steps = args.accumulation_steps
     tag_classes = args.tag_classes
+    use_multihead_crf = args.use_multihead_crf
+    entity_types = args.entity_types
+    number_of_layers_per_head = args.number_of_layers_per_head
+    crf_reduction = args.crf_reduction
 
     if not splits:
         splits = num_splits
@@ -768,6 +1043,8 @@ if __name__ == "__main__":
             use_iob=use_iob,
             hf_token=hf_token,
             tags_to_keep=tag_classes,
+            use_multihead_crf=use_multihead_crf,
+            entity_types=entity_types,
         )
 
     if train_model:
@@ -786,20 +1063,22 @@ if __name__ == "__main__":
             )
 
             # assert that all labels are within range, >=0 and < num_labels
-            for label in entry["labels"]:
-                if multi_class == False:
-                    assert all(
-                        [
-                            ((_label >= 0) and (_label < num_labels)) | (_label == -100)
-                            for _label in label
-                        ]
-                    ), (
-                        f"Label {label}, {type(label)} is not within range for entry {entry['id']}"
-                    )
-                else:
-                    assert label in [-100] + list(range(num_labels)), (
-                        f"Label {label} is not within range for entry {entry['id']}"
-                    )
+            # Skip label validation for multi-head CRF (labels are dicts)
+            if not use_multihead_crf:
+                for label in entry["labels"]:
+                    if multi_class == False:
+                        assert all(
+                            [
+                                ((_label >= 0) and (_label < num_labels)) | (_label == -100)
+                                for _label in label
+                            ]
+                        ), (
+                            f"Label {label}, {type(label)} is not within range for entry {entry['id']}"
+                        )
+                    else:
+                        assert label in [-100] + list(range(num_labels)), (
+                            f"Label {label} is not within range for entry {entry['id']}"
+                        )
 
         # TODO: this is extremely ugly and needs to be refactored
         tokenized_data_train = [
@@ -847,6 +1126,9 @@ if __name__ == "__main__":
             classifier_hidden_layers=classifier_hidden_layers,
             classifier_dropout=classifier_dropout,
             use_class_weights=args.use_class_weights,
+            use_multihead_crf=use_multihead_crf,
+            number_of_layers_per_head=number_of_layers_per_head,
+            crf_reduction=crf_reduction,
         )
 
         # Create output tsv for test
