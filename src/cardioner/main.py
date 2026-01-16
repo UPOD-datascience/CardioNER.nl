@@ -8,6 +8,7 @@ nlp = spacy.blank("nl")
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
 import json
@@ -28,10 +29,18 @@ from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokeni
 
 metric = evaluate.load("seqeval")
 
+# https://huggingface.co/learn/nlp-course/en/chapter7/2
+
+from torch import cuda
+
 from cardioner import model_merger, parse_performance_json
 from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
 
-# https://huggingface.co/learn/nlp-course/en/chapter7/2
+# Clear any existing CUDA context
+cuda.empty_cache()
+
+# Check if CUDA is available
+print(f"CUDA available: {cuda.is_available()}")
 
 
 def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
@@ -108,9 +117,10 @@ def prepare(
         from multiclass.loader import (
             annotate_corpus_multihead,
             annotate_corpus_multihead_centered,
-            tokenize_and_align_labels_multihead,
             get_entity_types_from_corpus,
+            tokenize_and_align_labels_multihead,
         )
+
         return prepare_multihead(
             Model=Model,
             corpus_train=corpus_train,
@@ -279,12 +289,14 @@ def prepare_multihead(
     from multiclass.loader import (
         annotate_corpus_multihead,
         annotate_corpus_multihead_centered,
-        tokenize_and_align_labels_multihead,
         get_entity_types_from_corpus,
+        tokenize_and_align_labels_multihead,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(
-        Model, add_prefix_space=True, token=hf_token
+        Model,
+        add_prefix_space=True,
+        token=hf_token,
     )
     tokenizer.model_max_length = max_length
 
@@ -322,14 +334,14 @@ def prepare_multihead(
         kwargs = {"chunk_size": chunk_size}
     else:
         annotate_func = annotate_corpus_multihead
-        kwargs = {"chunk_size": chunk_size, "max_allowed_chunk_size": max_allowed_chunk_size}
+        kwargs = {
+            "chunk_size": chunk_size,
+            "max_allowed_chunk_size": max_allowed_chunk_size,
+        }
 
     for batch_id, corpus in datasets.items():
         iob_data, _ = annotate_func(
-            corpus,
-            entity_types=entity_types,
-            batch_id=batch_id,
-            **kwargs
+            corpus, entity_types=entity_types, batch_id=batch_id, **kwargs
         )
 
         if batch_id == "train":
@@ -365,12 +377,14 @@ def prepare_multihead(
     # Add metadata to each entry
     iob_data_dataset_tokenized_with_labels = []
     for entry in iob_data_dataset_tokenized:
-        entry.update({
-            "label2id": bio_label2id,
-            "id2label": bio_id2label,
-            "entity_types": entity_types,
-            "is_multihead": True,
-        })
+        entry.update(
+            {
+                "label2id": bio_label2id,
+                "id2label": bio_id2label,
+                "entity_types": entity_types,
+                "is_multihead": True,
+            }
+        )
         iob_data_dataset_tokenized_with_labels.append(entry)
 
     return iob_data_dataset_tokenized_with_labels, entity_types
@@ -403,7 +417,11 @@ def train(
     crf_reduction: str = "mean",
 ):
     # Check if this is multi-head CRF data
-    is_multihead = tokenized_data_train[0].get("is_multihead", False) if tokenized_data_train else False
+    is_multihead = (
+        tokenized_data_train[0].get("is_multihead", False)
+        if tokenized_data_train
+        else False
+    )
 
     if is_multihead or use_multihead_crf:
         return train_multihead(
@@ -723,7 +741,9 @@ def train_multihead(
     id2label = tokenized_data_train[0]["id2label"]
 
     if not entity_types:
-        raise ValueError("entity_types not found in tokenized data. Did you use prepare() with use_multihead_crf=True?")
+        raise ValueError(
+            "entity_types not found in tokenized data. Did you use prepare() with use_multihead_crf=True?"
+        )
 
     print("=" * 60)
     print("Training Multi-Head CRF Model")
@@ -1069,7 +1089,8 @@ if __name__ == "__main__":
                     if multi_class == False:
                         assert all(
                             [
-                                ((_label >= 0) and (_label < num_labels)) | (_label == -100)
+                                ((_label >= 0) and (_label < num_labels))
+                                | (_label == -100)
                                 for _label in label
                             ]
                         ), (

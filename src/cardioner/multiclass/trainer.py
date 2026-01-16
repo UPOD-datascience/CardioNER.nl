@@ -1,39 +1,48 @@
-from os import environ
-import spacy
 import shutil
+from os import environ
+
+import spacy
 
 # Load a spaCy model for tokenization
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
-from typing import List, Dict, Optional, Union
 from collections import defaultdict
-from transformers import AutoTokenizer, DataCollatorForTokenClassification
-from transformers import AutoModelForTokenClassification, TrainingArguments, Trainer
-from transformers import RobertaModel, RobertaForTokenClassification
-from transformers import AutoConfig, PreTrainedModel
-from transformers.modeling_outputs import TokenClassifierOutput
+from typing import Dict, List, Optional, Union
+
 import numpy as np
 import torch
-from transformers.utils import logging
 from torchcrf import CRF
+from transformers import (
+    AutoConfig,
+    AutoModelForTokenClassification,
+    AutoTokenizer,
+    DataCollatorForTokenClassification,
+    PreTrainedModel,
+    RobertaForTokenClassification,
+    RobertaModel,
+    Trainer,
+    TrainingArguments,
+)
+from transformers.modeling_outputs import TokenClassifierOutput
+from transformers.utils import logging
 from utils import pretty_print_classifier
 
 # Import custom model classes
 try:
     from .modeling import (
-        TokenClassificationModelCRF,
+        MultiHeadCRFConfig,
         TokenClassificationModel,
+        TokenClassificationModelCRF,
         TokenClassificationModelMultiHeadCRF,
-        MultiHeadCRFConfig
     )
 except ImportError:
     try:
         from modeling import (
-            TokenClassificationModelCRF,
+            MultiHeadCRFConfig,
             TokenClassificationModel,
+            TokenClassificationModelCRF,
             TokenClassificationModelMultiHeadCRF,
-            MultiHeadCRFConfig
         )
     except ImportError:
         print("Warning: Could not import custom model classes from modeling.py")
@@ -44,12 +53,10 @@ except ImportError:
 
 logging.set_verbosity_debug()
 
+import evaluate
 from torch import nn
 
-import evaluate
 metric = evaluate.load("seqeval")
-
-
 
 
 class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassification):
@@ -57,113 +64,146 @@ class CustomDataCollatorForTokenClassification(DataCollatorForTokenClassificatio
         # Call the superclass method to process the batch
         #
         for feature in features:
-            if 'labels' in feature:
-                lbls = feature['labels']
+            if "labels" in feature:
+                lbls = feature["labels"]
                 # If lbls is one-hot encoded (e.g. [seq_length, num_labels] per example),
                 # first convert to a tensor and then argmax:
                 if torch.Tensor(lbls).ndim == 2:
                     lbls_tensor = torch.tensor(lbls, dtype=torch.float)
                     lbls = lbls_tensor.argmax(dim=-1).tolist()
-                    lbls = [label if label != -100 else self.label_pad_token_id for label in lbls]
-                    if len(lbls) < len(feature['input_ids']):
-                        lbls = lbls + [self.label_pad_token_id] * (len(feature['input_ids']) - len(lbls))
+                    lbls = [
+                        label if label != -100 else self.label_pad_token_id
+                        for label in lbls
+                    ]
+                    if len(lbls) < len(feature["input_ids"]):
+                        lbls = lbls + [self.label_pad_token_id] * (
+                            len(feature["input_ids"]) - len(lbls)
+                        )
                     # Now lbls is a simple list of integers
                 else:
-                    lbls = [label if label != -100 else self.label_pad_token_id for label in lbls]
-                    lbls = lbls + [self.label_pad_token_id] * (len(feature['input_ids']) - len(lbls))
+                    lbls = [
+                        label if label != -100 else self.label_pad_token_id
+                        for label in lbls
+                    ]
+                    lbls = lbls + [self.label_pad_token_id] * (
+                        len(feature["input_ids"]) - len(lbls)
+                    )
 
-                if (-100 in lbls) & (self.label_pad_token_id!=-100):
+                if (-100 in lbls) & (self.label_pad_token_id != -100):
                     print("Warning: -100 found in labels after replacement!")
 
-                feature['labels'] = lbls
+                feature["labels"] = lbls
 
         # Now call the superclass, which will handle converting everything to tensors
         batch = super().__call__(features)
         return batch
 
 
-class ModelTrainer():
-    def __init__(self,
-                 label2id: Dict[str, int],
-                 id2label: Dict[int, str],
-                 tokenizer=None,
-                 model: str='CLTL/MedRoBERTa.nl',
-                 use_crf: bool=False,
-                 batch_size: int=48,
-                 max_length: int=514,
-                 learning_rate: float=1e-4,
-                 weight_decay: float=0.001,
-                 num_train_epochs: int=3,
-                 output_dir: str="../../output",
-                 hf_token: str=None,
-                 freeze_backbone: bool=False,
-                 gradient_accumulation_steps: int=1,
-                 classifier_hidden_layers: tuple|None=None,
-                 classifier_dropout: float=0.1,
-                 class_weights: List[float]|None = None
+class ModelTrainer:
+    def __init__(
+        self,
+        label2id: Dict[str, int],
+        id2label: Dict[int, str],
+        tokenizer=None,
+        model: str = "CLTL/MedRoBERTa.nl",
+        use_crf: bool = False,
+        batch_size: int = 48,
+        max_length: int = 514,
+        learning_rate: float = 1e-4,
+        weight_decay: float = 0.001,
+        num_train_epochs: int = 3,
+        output_dir: str = "../../output",
+        hf_token: str = None,
+        freeze_backbone: bool = False,
+        gradient_accumulation_steps: int = 1,
+        classifier_hidden_layers: tuple | None = None,
+        classifier_dropout: float = 0.1,
+        class_weights: List[float] | None = None,
     ):
         self.label2id = label2id
         self.id2label = id2label
         self.output_dir = output_dir
 
         self.train_kwargs = {
-            'run_name': 'CardioNER',
-            'per_device_train_batch_size': batch_size,
-            'per_device_eval_batch_size': batch_size,
-            'gradient_accumulation_steps': gradient_accumulation_steps,
-            'learning_rate': learning_rate,
-            'num_train_epochs': num_train_epochs,
-            'weight_decay': weight_decay,
-            'eval_strategy':'epoch',
-            'save_strategy': 'epoch',
-            'save_total_limit': 1,
-            'report_to': 'tensorboard',
-            'use_cpu': False,
-            'logging_dir': f"{output_dir}/logs",
-            'logging_strategy': 'steps',
-            'logging_steps': 256,
+            "run_name": "CardioNER",
+            "per_device_train_batch_size": batch_size,
+            "per_device_eval_batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "learning_rate": learning_rate,
+            "num_train_epochs": num_train_epochs,
+            "weight_decay": weight_decay,
+            "eval_strategy": "epoch",
+            "save_strategy": "epoch",
+            "save_total_limit": 1,
+            "report_to": "tensorboard",
+            "use_cpu": False,
+            "logging_dir": f"{output_dir}/logs",
+            "logging_strategy": "steps",
+            "logging_steps": 256,
         }
-        self.crf=use_crf
+        self.crf = use_crf
 
         if use_crf:
             self.pad_token_id = len(label2id) + 1
             num_labels = len(label2id) + 1
-            id2label[self.pad_token_id]='PADDING'
-            label2id['PADDING'] = self.pad_token_id
+            id2label[self.pad_token_id] = "PADDING"
+            label2id["PADDING"] = self.pad_token_id
         else:
-            self.pad_token_id  = -100
+            self.pad_token_id = -100
             # num_labels = len(label2id)  # unused variable
 
         if tokenizer is None:
             print("LOADING TOKENIZER")
-            self.tokenizer = AutoTokenizer.from_pretrained(model,
-                add_prefix_space=True, model_max_length=max_length, padding="max_length", truncation=True, token=hf_token)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model,
+                add_prefix_space=True,
+                model_max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                token=hf_token,
+            )
         else:
             self.tokenizer = tokenizer
 
         self.tokenizer.model_max_length = max_length
-        self.data_collator = CustomDataCollatorForTokenClassification(tokenizer=self.tokenizer, max_length=max_length,
-                                                                padding="max_length", label_pad_token_id=self.pad_token_id )
+        self.data_collator = CustomDataCollatorForTokenClassification(
+            tokenizer=self.tokenizer,
+            max_length=max_length,
+            padding="max_length",
+            label_pad_token_id=self.pad_token_id,
+        )
 
-        or_config = AutoConfig.from_pretrained(model, hf_token=hf_token, return_unused_kwargs=False)
-        or_config.num_labels=len(self.label2id)
-        or_config.id2label=self.id2label
-        or_config.label2id=self.label2id
-        or_config.hidden_dropout_prob=0.1
+        or_config = AutoConfig.from_pretrained(
+            model, hf_token=hf_token, return_unused_kwargs=False
+        )
+        or_config.num_labels = len(self.label2id)
+        or_config.id2label = self.id2label
+        or_config.label2id = self.label2id
+        or_config.hidden_dropout_prob = 0.1
         or_config.classifier_hidden_layers = classifier_hidden_layers
         or_config.classifier_dropout = classifier_dropout
         or_config.class_weights = class_weights
 
-        self.classifier_hidden_layers= classifier_hidden_layers
+        self.classifier_hidden_layers = classifier_hidden_layers
         self.classifier_dropout = classifier_dropout
         self.class_weights = class_weights
 
         if use_crf:
             if TokenClassificationModelCRF is None:
-                raise ImportError("TokenClassificationModelCRF could not be imported. Please ensure modeling.py is available.")
+                raise ImportError(
+                    "TokenClassificationModelCRF could not be imported. Please ensure modeling.py is available."
+                )
             print("USING CRF:", self.crf)
-            base_model = RobertaForTokenClassification.from_pretrained(model, config=or_config)
-            self.model = TokenClassificationModelCRF(or_config, base_model, freeze_backbone, classifier_hidden_layers, classifier_dropout)
+            base_model = RobertaForTokenClassification.from_pretrained(
+                model, config=or_config, ignore_mismatched_sizes=True
+            )
+            self.model = TokenClassificationModelCRF(
+                or_config,
+                base_model,
+                freeze_backbone,
+                classifier_hidden_layers,
+                classifier_dropout,
+            )
 
             # Set up auto_map for trust_remote_code loading
             self.model.config.auto_map = {
@@ -171,8 +211,12 @@ class ModelTrainer():
             }
         else:
             if TokenClassificationModel is None:
-                raise ImportError("TokenClassificationModel could not be imported. Please ensure modeling.py is available.")
-            self.model = TokenClassificationModel.from_pretrained(model, config=or_config)
+                raise ImportError(
+                    "TokenClassificationModel could not be imported. Please ensure modeling.py is available."
+                )
+            self.model = TokenClassificationModel.from_pretrained(
+                model, config=or_config, ignore_mismatched_sizes=True
+            )
 
             # Set up auto_map for trust_remote_code loading
             self.model.config.auto_map = {
@@ -180,7 +224,9 @@ class ModelTrainer():
             }
 
         # Mark that this is a custom model requiring trust_remote_code
-        self.model.config.custom_model_type = "TokenClassificationModelCRF" if use_crf else "TokenClassificationModel"
+        self.model.config.custom_model_type = (
+            "TokenClassificationModelCRF" if use_crf else "TokenClassificationModel"
+        )
         self.model.config.requires_trust_remote_code = True
 
         # optionally freeze the backbone
@@ -194,17 +240,18 @@ class ModelTrainer():
         print("Model:", type(self.model))
         print("Device:", self.device)
         print("Tokenizer max length:", self.tokenizer.model_max_length)
-        print("Model max position embeddings:", self.model.config.max_position_embeddings)
+        print(
+            "Model max position embeddings:", self.model.config.max_position_embeddings
+        )
         print("Number of labels:", len(self.label2id))
         print("Labels:", self.label2id)
         print("id2label:", self.id2label)
         print("Model config:", self.model.config)
-        print("Classifier architecture:", pretty_print_classifier(self.model.classifier))
-
-        self.args = TrainingArguments(
-            output_dir=output_dir,
-            **self.train_kwargs
+        print(
+            "Classifier architecture:", pretty_print_classifier(self.model.classifier)
         )
+
+        self.args = TrainingArguments(output_dir=output_dir, **self.train_kwargs)
 
     def compute_metrics(self, eval_preds):
         logits, labels = eval_preds
@@ -218,7 +265,9 @@ class ModelTrainer():
             emissions_torch = torch.from_numpy(logits).float().to(crf_device)
             mask_torch = torch.from_numpy(mask).bool().to(crf_device)
 
-            predictions = self.model.crf.decode(emissions=emissions_torch, mask=mask_torch)
+            predictions = self.model.crf.decode(
+                emissions=emissions_torch, mask=mask_torch
+            )
         else:
             predictions = np.argmax(logits, -1)
 
@@ -227,23 +276,26 @@ class ModelTrainer():
 
         # Remove ignored index (special tokens) and convert to label names
         true_labels = [
-            [id2label[l] for l in label if l != self.pad_token_id]
-            for label in labels
+            [id2label[l] for l in label if l != self.pad_token_id] for label in labels
         ]
 
         try:
             true_predictions = [
-                [id2label[p] for (p, l) in zip(prediction, label) if l != self.pad_token_id]
+                [
+                    id2label[p]
+                    for (p, l) in zip(prediction, label)
+                    if l != self.pad_token_id
+                ]
                 for prediction, label in zip(predictions, labels)
             ]
         except Exception as e:
             print(f"Predictions: {predictions}")
             print(f"Labels: {labels}")
 
-        all_metrics = metric.compute(predictions=true_predictions,
-                        references=true_labels)
+        all_metrics = metric.compute(
+            predictions=true_predictions, references=true_labels
+        )
         return all_metrics
-
 
     def save_model(self, output_dir=None):
         """Custom method to save both the model architecture and state dict properly"""
@@ -251,9 +303,10 @@ class ModelTrainer():
 
         # Copy the modeling.py file to output_dir for trust_remote_code compatibility
         import os
+
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        modeling_src = os.path.join(current_dir, 'modeling.py')
-        modeling_dst = os.path.join(save_dir, 'modeling.py')
+        modeling_src = os.path.join(current_dir, "modeling.py")
+        modeling_dst = os.path.join(save_dir, "modeling.py")
 
         # Ensure output directory exists
         os.makedirs(save_dir, exist_ok=True)
@@ -266,7 +319,9 @@ class ModelTrainer():
             if not os.path.exists(modeling_dst):
                 raise ValueError(f"Failed to copy modeling.py to {modeling_dst}")
         else:
-            raise ValueError(f"modeling.py not found at {modeling_src}. This file is required for custom models with trust_remote_code=True.")
+            raise ValueError(
+                f"modeling.py not found at {modeling_src}. This file is required for custom models with trust_remote_code=True."
+            )
 
         # Set model configuration
         self.model.config.architectures = [self.model.__class__.__name__]
@@ -280,17 +335,19 @@ class ModelTrainer():
             self.tokenizer.save_pretrained(save_dir)
 
         print(f"Custom model saved successfully! To load this model, use:")
-        print(f"AutoModelForTokenClassification.from_pretrained('{save_dir}', trust_remote_code=True)")
+        print(
+            f"AutoModelForTokenClassification.from_pretrained('{save_dir}', trust_remote_code=True)"
+        )
         print(f"Model saved to {save_dir}")
 
-
-    def train(self,
+    def train(
+        self,
         train_data: List[Dict],
         test_data: List[Dict],
         eval_data: List[Dict],
-        profile: bool=False):
-
-        if len(test_data)>0:
+        profile: bool = False,
+    ):
+        if len(test_data) > 0:
             _eval_data = test_data
         else:
             _eval_data = eval_data
@@ -318,10 +375,10 @@ class ModelTrainer():
         if profile:
             with torch.profiler.profile(
                 schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler("./log"),
                 record_shapes=False,
                 profile_memory=True,
-                with_stack=True
+                with_stack=True,
             ) as prof:
                 trainer.train()
         else:
@@ -335,8 +392,8 @@ class ModelTrainer():
             trainer.save_metrics(self.output_dir, metrics=metrics)
         except Exception as e:
             try:
-                trainer.save_model('output')
-                trainer.save_metrics('output', metrics=metrics)
+                trainer.save_model("output")
+                trainer.save_metrics("output", metrics=metrics)
                 print(f"Saved to fallback directory 'output' due to error: {str(e)}")
             except Exception as e2:
                 raise ValueError(f"Failed to save model and metrics: {str(e2)}")
@@ -349,10 +406,21 @@ class MultiHeadDataCollatorForTokenClassification(DataCollatorForTokenClassifica
     Data collator for Multi-Head CRF that handles labels as dictionaries
     mapping entity types to their respective label sequences.
     """
-    def __init__(self, tokenizer, entity_types: List[str], max_length: int = 512,
-                 padding: str = "max_length", label_pad_token_id: int = -100):
-        super().__init__(tokenizer=tokenizer, max_length=max_length,
-                        padding=padding, label_pad_token_id=label_pad_token_id)
+
+    def __init__(
+        self,
+        tokenizer,
+        entity_types: List[str],
+        max_length: int = 512,
+        padding: str = "max_length",
+        label_pad_token_id: int = -100,
+    ):
+        super().__init__(
+            tokenizer=tokenizer,
+            max_length=max_length,
+            padding=padding,
+            label_pad_token_id=label_pad_token_id,
+        )
         self.entity_types = entity_types
 
     def __call__(self, features, *args, **kwargs):
@@ -360,32 +428,38 @@ class MultiHeadDataCollatorForTokenClassification(DataCollatorForTokenClassifica
         entity_labels = {ent: [] for ent in self.entity_types}
 
         for feature in features:
-            if 'labels' in feature and isinstance(feature['labels'], dict):
+            if "labels" in feature and isinstance(feature["labels"], dict):
                 for ent in self.entity_types:
-                    if ent in feature['labels']:
-                        lbls = feature['labels'][ent]
+                    if ent in feature["labels"]:
+                        lbls = feature["labels"][ent]
                         # Handle one-hot encoded labels
                         if torch.Tensor(lbls).ndim == 2:
                             lbls_tensor = torch.tensor(lbls, dtype=torch.float)
                             lbls = lbls_tensor.argmax(dim=-1).tolist()
 
                         # Pad labels to max_length
-                        lbls = [l if l != -100 else self.label_pad_token_id for l in lbls]
-                        if len(lbls) < len(feature['input_ids']):
-                            lbls = lbls + [self.label_pad_token_id] * (len(feature['input_ids']) - len(lbls))
+                        lbls = [
+                            l if l != -100 else self.label_pad_token_id for l in lbls
+                        ]
+                        if len(lbls) < len(feature["input_ids"]):
+                            lbls = lbls + [self.label_pad_token_id] * (
+                                len(feature["input_ids"]) - len(lbls)
+                            )
                         entity_labels[ent].append(lbls)
                     else:
                         # Default to all padding if entity type not present
-                        entity_labels[ent].append([self.label_pad_token_id] * len(feature['input_ids']))
+                        entity_labels[ent].append(
+                            [self.label_pad_token_id] * len(feature["input_ids"])
+                        )
 
                 # Remove the dict labels so standard collation can proceed
-                del feature['labels']
+                del feature["labels"]
 
         # Standard collation for non-label fields
         batch = super().__call__(features)
 
         # Add back the entity-specific labels as tensors
-        batch['labels'] = {
+        batch["labels"] = {
             ent: torch.tensor(entity_labels[ent], dtype=torch.long)
             for ent in self.entity_types
         }
@@ -393,7 +467,7 @@ class MultiHeadDataCollatorForTokenClassification(DataCollatorForTokenClassifica
         return batch
 
 
-class MultiHeadCRFTrainer():
+class MultiHeadCRFTrainer:
     """
     Trainer for Multi-Head CRF models that handle multiple entity types simultaneously.
 
@@ -407,7 +481,7 @@ class MultiHeadCRFTrainer():
         label2id: Dict[str, int],  # BIO labels: {"O": 0, "B": 1, "I": 2}
         id2label: Dict[int, str],
         tokenizer=None,
-        model: str = 'CLTL/MedRoBERTa.nl',
+        model: str = "CLTL/MedRoBERTa.nl",
         batch_size: int = 48,
         max_length: int = 514,
         learning_rate: float = 1e-4,
@@ -430,33 +504,37 @@ class MultiHeadCRFTrainer():
         # Pad token ID for CRF (must be a valid label index, not -100)
         self.pad_token_id = len(label2id)
         num_labels = len(label2id) + 1  # +1 for padding label
-        id2label[self.pad_token_id] = 'PADDING'
-        label2id['PADDING'] = self.pad_token_id
+        id2label[self.pad_token_id] = "PADDING"
+        label2id["PADDING"] = self.pad_token_id
 
         self.train_kwargs = {
-            'run_name': 'CardioNER-MultiHeadCRF',
-            'per_device_train_batch_size': batch_size,
-            'per_device_eval_batch_size': batch_size,
-            'gradient_accumulation_steps': gradient_accumulation_steps,
-            'learning_rate': learning_rate,
-            'num_train_epochs': num_train_epochs,
-            'weight_decay': weight_decay,
-            'eval_strategy': 'epoch',
-            'save_strategy': 'epoch',
-            'save_total_limit': 1,
-            'report_to': 'tensorboard',
-            'use_cpu': False,
-            'logging_dir': f"{output_dir}/logs",
-            'logging_strategy': 'steps',
-            'logging_steps': 256,
+            "run_name": "CardioNER-MultiHeadCRF",
+            "per_device_train_batch_size": batch_size,
+            "per_device_eval_batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "learning_rate": learning_rate,
+            "num_train_epochs": num_train_epochs,
+            "weight_decay": weight_decay,
+            "eval_strategy": "epoch",
+            "save_strategy": "epoch",
+            "save_total_limit": 1,
+            "report_to": "tensorboard",
+            "use_cpu": False,
+            "logging_dir": f"{output_dir}/logs",
+            "logging_strategy": "steps",
+            "logging_steps": 256,
         }
 
         # Load tokenizer
         if tokenizer is None:
             print("LOADING TOKENIZER")
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model, add_prefix_space=True, model_max_length=max_length,
-                padding="max_length", truncation=True, token=hf_token
+                model,
+                add_prefix_space=True,
+                model_max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                token=hf_token,
             )
         else:
             self.tokenizer = tokenizer
@@ -469,7 +547,7 @@ class MultiHeadCRFTrainer():
             entity_types=self.entity_types,
             max_length=max_length,
             padding="max_length",
-            label_pad_token_id=self.pad_token_id
+            label_pad_token_id=self.pad_token_id,
         )
 
         # Create MultiHeadCRF config
@@ -489,7 +567,7 @@ class MultiHeadCRFTrainer():
             hidden_dropout_prob=base_config.hidden_dropout_prob,
             vocab_size=base_config.vocab_size,
             max_position_embeddings=base_config.max_position_embeddings,
-            type_vocab_size=getattr(base_config, 'type_vocab_size', 1),
+            type_vocab_size=getattr(base_config, "type_vocab_size", 1),
             num_attention_heads=base_config.num_attention_heads,
             num_hidden_layers=base_config.num_hidden_layers,
             intermediate_size=base_config.intermediate_size,
@@ -497,15 +575,21 @@ class MultiHeadCRFTrainer():
 
         # Load base model and create MultiHeadCRF model
         if TokenClassificationModelMultiHeadCRF is None:
-            raise ImportError("TokenClassificationModelMultiHeadCRF could not be imported.")
+            raise ImportError(
+                "TokenClassificationModelMultiHeadCRF could not be imported."
+            )
 
-        base_model = RobertaForTokenClassification.from_pretrained(model, config=base_config, token=hf_token)
-        self.model = TokenClassificationModelMultiHeadCRF(config, base_model, freeze_backbone)
+        base_model = RobertaForTokenClassification.from_pretrained(
+            model, config=base_config, token=hf_token, ignore_mismatched_sizes=True
+        )
+        self.model = TokenClassificationModelMultiHeadCRF(
+            config, base_model, freeze_backbone
+        )
 
         # Set up auto_map for trust_remote_code loading
         self.model.config.auto_map = {
             "AutoModel": "modeling.TokenClassificationModelMultiHeadCRF",
-            "AutoModelForTokenClassification": "modeling.TokenClassificationModelMultiHeadCRF"
+            "AutoModelForTokenClassification": "modeling.TokenClassificationModelMultiHeadCRF",
         }
         self.model.config.architectures = ["TokenClassificationModelMultiHeadCRF"]
 
@@ -558,14 +642,17 @@ class MultiHeadCRFTrainer():
             ]
 
             true_predictions = [
-                [self.id2label[p] for (p, l) in zip(prediction, label) if l != self.pad_token_id]
+                [
+                    self.id2label[p]
+                    for (p, l) in zip(prediction, label)
+                    if l != self.pad_token_id
+                ]
                 for prediction, label in zip(predictions, labels)
             ]
 
             # Compute metrics for this entity type
             entity_metrics = metric.compute(
-                predictions=true_predictions,
-                references=true_labels
+                predictions=true_predictions, references=true_labels
             )
 
             # Prefix metrics with entity type
@@ -577,6 +664,7 @@ class MultiHeadCRFTrainer():
     def save_model(self, output_dir=None):
         """Save the multi-head CRF model with all necessary files."""
         import os
+
         save_dir = output_dir or self.output_dir
 
         # Ensure output directory exists
@@ -584,8 +672,8 @@ class MultiHeadCRFTrainer():
 
         # Copy modeling.py for trust_remote_code compatibility
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        modeling_src = os.path.join(current_dir, 'modeling.py')
-        modeling_dst = os.path.join(save_dir, 'modeling.py')
+        modeling_src = os.path.join(current_dir, "modeling.py")
+        modeling_dst = os.path.join(save_dir, "modeling.py")
 
         if os.path.exists(modeling_src):
             shutil.copyfile(modeling_src, modeling_dst)
@@ -599,14 +687,16 @@ class MultiHeadCRFTrainer():
             self.tokenizer.save_pretrained(save_dir)
 
         print(f"Multi-Head CRF model saved to {save_dir}")
-        print(f"To load: TokenClassificationModelMultiHeadCRF.from_pretrained('{save_dir}', trust_remote_code=True)")
+        print(
+            f"To load: TokenClassificationModelMultiHeadCRF.from_pretrained('{save_dir}', trust_remote_code=True)"
+        )
 
     def train(
         self,
         train_data: List[Dict],
         test_data: List[Dict],
         eval_data: List[Dict],
-        profile: bool = False
+        profile: bool = False,
     ):
         """
         Train the multi-head CRF model.
@@ -649,10 +739,10 @@ class MultiHeadCRFTrainer():
         if profile:
             with torch.profiler.profile(
                 schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler("./log"),
                 record_shapes=False,
                 profile_memory=True,
-                with_stack=True
+                with_stack=True,
             ) as prof:
                 trainer.train()
         else:
@@ -665,7 +755,7 @@ class MultiHeadCRFTrainer():
         except Exception as e:
             print(f"Error saving model: {e}")
             try:
-                trainer.save_model('output')
+                trainer.save_model("output")
             except Exception as e2:
                 raise ValueError(f"Failed to save model: {e2}")
 
