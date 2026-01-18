@@ -182,3 +182,66 @@ To push a model to Huggingface, e.g.
 ```
 python3 push_to_huggingface.py --data_organization=DT4H-IE --repo_id=DT4H-IE/CardioBERTa.nl_clinical_NL_MED --path_to_file=/path/to/model --name="CardioNER model --medication" --description="Finetuned CardioBERTa.nl model for detection of medication spans. This model is a mulilabel model using BCE loss." --data_description="50/50 Train/validation split on CardioCCC, a manually labeled cardiology corpus" --mod_type=multilabel --mod_target=ner --base_model="UMCU/CardioBERTa.nl_clinical" --ner_classes medication --branch=2025-05-14_0001 --license=mit --language=nl
 ```
+
+
+Training:
+
+**Multilabel**
+```
+python main.py \
+    --lang nl \
+    --corpus_train /path/to/train \
+    --entity_types DRUG DISEASE SYMPTOM \
+    --train_model \
+    --parse_annotations \
+    --output_dir ./output_multihead
+```
+
+**Multiclass** (*assumes no over span overlap!*)
+```
+python main.py \
+    --lang nl \
+    --corpus_train /path/to/train \
+    --multiclass \
+    --entity_types DRUG DISEASE SYMPTOM \
+    --train_model \
+    --parse_annotations \
+    --output_dir ./output_multihead
+```
+
+**Multiclass CRF** (*assumes no over span overlap!*)
+```
+python main.py \
+    --lang nl \
+    --corpus_train /path/to/train \
+    --multiclass \
+    --use_crf \
+    --entity_types DRUG DISEASE SYMPTOM \
+    --train_model \
+    --parse_annotations \
+    --output_dir ./output_multihead
+```
+
+**Multiclass multihead**
+```
+python main.py \
+    --lang nl \
+    --corpus_train /path/to/train \
+    --use_multihead \
+    --entity_types DRUG DISEASE SYMPTOM \
+    --train_model \
+    --parse_annotations \
+    --output_dir ./output_multihead
+```
+
+**Multiclass multihead CRF**
+```
+python main.py \
+    --lang nl \
+    --corpus_train /path/to/train \
+    --use_multihead_crf \
+    --entity_types DRUG DISEASE SYMPTOM \
+    --train_model \
+    --parse_annotations \
+    --output_dir ./output_multihead
+```

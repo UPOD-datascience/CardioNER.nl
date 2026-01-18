@@ -555,17 +555,17 @@ def inference_multihead(
     return results
 
 
-def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
+def filter_tags(iob_data, tags, entity_types, multi_class) -> tuple | None:
     print(
-        f"Tag classes provided: {tags_to_keep},\nuse these as a filter for the tokenized data/tags"
+        f"Entity types provided: {entity_types},\nuse these as a filter for the tokenized data/tags"
     )
-    assert tags is not None, "Tag classes provided, but no tags found."
+    assert tags is not None, "Entity types provided, but no tags found."
     # filter tags list
-    tags_to_keep = [tag_class.upper() for tag_class in tags_to_keep]
+    entity_types = [entity_type.upper() for entity_type in entity_types]
     tags = [tag.upper() for tag in tags]
-    print(f"Extracted tags are {tags}, checking against {tags_to_keep}")
+    print(f"Extracted tags are {tags}, checking against {entity_types}")
     tags = ["O"] + [
-        tag for tag in tags if any([tag_class in tag for tag_class in tags_to_keep])
+        tag for tag in tags if any([entity_type in tag for entity_type in entity_types])
     ]
 
     if len(tags) == 1:
@@ -584,7 +584,7 @@ def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
         if multi_class:
             temp_tags = []
             for chindex, _tag in enumerate(doc["tags"]):
-                if any([tag_class in _tag for tag_class in tags_to_keep]):
+                if any([entity_type in _tag for entity_type in entity_types]):
                     temp_tokens.append(doc["tokens"][chindex])
                     temp_tags.append(_tag)
         else:
@@ -592,7 +592,7 @@ def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
             for chindex, _tags in enumerate(doc["tags"]):
                 _temp_tags = []
                 for _tag in tags:
-                    if any([tag_class in _tag for tag_class in tags_to_keep]):
+                    if any([entity_type in _tag for entity_type in entity_types]):
                         _temp_tags.append(_tag)
                 if len(_temp_tags) > 0:
                     temp_tags.append(_temp_tags)
@@ -620,7 +620,6 @@ def prepare(
     multi_class: bool = False,
     use_iob: bool = True,
     hf_token: str | None = None,
-    tags_to_keep: List[str] | None = None,
     use_multihead_crf: bool = False,
     entity_types: List[str] | None = None,
 ):
@@ -712,11 +711,11 @@ def prepare(
     for k, (batch_id, corpus) in enumerate(datasets.items()):
         iob_data, _unique_tags = annotate_func(corpus, batch_id=batch_id, **kwargs)
 
-        if isinstance(tags_to_keep, list):
-            assert all([isinstance(s, str) for s in tags_to_keep]), (
-                f"Not all tags are strings {tags_to_keep}"
+        if isinstance(entity_types, list):
+            assert all([isinstance(s, str) for s in entity_types]), (
+                f"Not all entity_types are strings {entity_types}"
             )
-            res = filter_tags(iob_data, _unique_tags, tags_to_keep, multi_class)
+            res = filter_tags(iob_data, _unique_tags, entity_types, multi_class)
             if not res:
                 skipped_count += 1
                 continue
@@ -1510,7 +1509,6 @@ if __name__ == "__main__":
         "--classifier_hidden_layers", type=int, nargs="+", default=None
     )
     argparsers.add_argument("--classifier_dropout", type=float, default=0.1)
-    argparsers.add_argument("--tag_classes", type=str, nargs="+", default=None)
     argparsers.add_argument("--use_class_weights", action="store_true", default=False)
     argparsers.add_argument("--word_level", action="store_true", default=False)
     argparsers.add_argument("--output_test_tsv", action="store_true", default=False)
@@ -1531,7 +1529,7 @@ if __name__ == "__main__":
         type=str,
         nargs="+",
         default=None,
-        help="Entity types for Multi-Head CRF (e.g., DRUG DISEASE SYMPTOM). Auto-detected if not provided.",
+        help="Entity types to use (e.g., DRUG DISEASE SYMPTOM). Used for filtering tags and for Multi-Head models. Auto-detected if not provided.",
     )
     argparsers.add_argument(
         "--number_of_layers_per_head",
@@ -1839,7 +1837,6 @@ if __name__ == "__main__":
     weight_decay = args.weight_decay
     learning_rate = args.learning_rate
     accumulation_steps = args.accumulation_steps
-    tag_classes = args.tag_classes
     use_multihead_crf = args.use_multihead_crf
     use_multihead = args.use_multihead
     entity_types = args.entity_types
@@ -1866,7 +1863,6 @@ if __name__ == "__main__":
             multi_class=multi_class,
             use_iob=use_iob,
             hf_token=hf_token,
-            tags_to_keep=tag_classes,
             use_multihead_crf=use_multihead_crf or use_multihead,
             entity_types=entity_types,
         )
