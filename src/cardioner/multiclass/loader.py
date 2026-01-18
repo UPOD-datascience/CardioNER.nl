@@ -1,4 +1,3 @@
-
 """
 Incoming format is :
 [
@@ -10,37 +9,185 @@ Incoming format is :
 
 For Multi-Head CRF, each entity type gets its own BIO label sequence.
 """
+
 from ast import parse
-from os import truncate
-from os import environ
+from os import environ, truncate
+
 import spacy
 
 # Load a spaCy model for tokenization
 environ["WANDB_MODE"] = "disabled"
 environ["WANDB_DISABLED"] = "true"
 
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Union, Tuple, Literal
-from collections import defaultdict
-import json
-from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoConfig, DataCollatorForTokenClassification, AutoModelForTokenClassification, TrainingArguments, Trainer
-from torch.utils.data import DataLoader
 import argparse
-import numpy as np
+import json
+import re
+from collections import defaultdict
 from functools import partial
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
+import numpy as np
+from datasets import Dataset, DatasetDict
+from pydantic import BaseModel
+from torch.utils.data import DataLoader
 from tqdm import tqdm
+from transformers import (
+    AutoConfig,
+    AutoModelForTokenClassification,
+    AutoTokenizer,
+    DataCollatorForTokenClassification,
+    Trainer,
+    TrainingArguments,
+)
 
 
-def annotate_corpus_paragraph(corpus,
-                    batch_id: str="b1",
-                    lang: str="nl",
-                    chunk_size: int = 256,
-                    max_allowed_chunk_size: int = 300,
-                    paragraph_boundary: str = "\n\n",
-                    min_token_len: int = 8,
-                    IOB: bool=True):
+def flatten_token_list(l: list) -> List[List[str]]:
+    """
+    Recursively flatten a nested list of tokens into a list of token sequences.
+    Stops when it reaches a list of strings (a single split).
+    """
+    if isinstance(l, list):
+        if l and isinstance(l[0], str):
+            return [l]
+    return [item for sublist in l for item in flatten_token_list(sublist)]
+
+
+def split_tokens_hierarchical(
+    tokens: List[str],
+    max_chunk_size: int,
+) -> List[List[str]]:
+    """
+    Hierarchically split tokens into smaller units based on:
+    1. Paragraphs (double newlines)
+    2. Lines (single newlines)
+    3. Sentences (., !, ?)
+    4. Individual words (as last resort)
+
+    This mirrors the logic in light_ner_word_level.py's split_tokens function.
+    """
+    # Split by paragraphs (double newlines)
+    paragraph_breaks = (
+        [0]
+        + [i + 1 for i in range(len(tokens)) if re.match(r".*\n\n+.*", tokens[i])]
+        + [len(tokens)]
+    )
+    paragraphs = [
+        tokens[paragraph_breaks[i] : paragraph_breaks[i + 1]]
+        for i in range(len(paragraph_breaks) - 1)
+    ]
+
+    for p_idx, para_tokens in enumerate(paragraphs):
+        if len(para_tokens) > max_chunk_size:
+            # Split by lines (single newlines, excluding double newlines)
+            line_breaks = (
+                [0]
+                + [
+                    i + 1
+                    for i in range(len(para_tokens))
+                    if re.sub(r"\n\n+", "", para_tokens[i]).count("\n") == 1
+                ]
+                + [len(para_tokens)]
+            )
+            lines = [
+                para_tokens[line_breaks[i] : line_breaks[i + 1]]
+                for i in range(len(line_breaks) - 1)
+            ]
+
+            for l_idx, line_tokens in enumerate(lines):
+                if len(line_tokens) > max_chunk_size:
+                    # Split by sentences (., !, ?)
+                    sentence_breaks = (
+                        [0]
+                        + [
+                            i + 1
+                            for i in range(len(line_tokens))
+                            if re.match(r"[\.!\?]", line_tokens[i])
+                        ]
+                        + [len(line_tokens)]
+                    )
+                    sentences = [
+                        line_tokens[sentence_breaks[i] : sentence_breaks[i + 1]]
+                        for i in range(len(sentence_breaks) - 1)
+                    ]
+
+                    for s_idx, sentence_tokens in enumerate(sentences):
+                        if len(sentence_tokens) > max_chunk_size:
+                            # Split by individual words as last resort
+                            words = [[token] for token in sentence_tokens]
+                            sentences[s_idx] = words
+
+                    lines[l_idx] = sentences
+
+            paragraphs[p_idx] = lines
+
+    splits = flatten_token_list(paragraphs)
+    return splits
+
+
+def merge_splits_into_chunks_multiclass(
+    tokens: List[str],
+    token_tags: List[str],
+    splits: List[List[str]],
+    max_chunk_size: int,
+) -> List[Tuple[List[str], List[str]]]:
+    """
+    Merge the hierarchical splits back into chunks that fit within max_chunk_size,
+    while keeping token_tags aligned.
+
+    Returns a list of (chunk_tokens, chunk_tags) tuples.
+    """
+    chunks = []
+    current_chunk_tokens = []
+    current_chunk_tags = []
+    current_token_idx = 0
+
+    for split in splits:
+        split_len = len(split)
+
+        # Check if adding this split would exceed the limit
+        if (
+            len(current_chunk_tokens) + split_len > max_chunk_size
+            and current_chunk_tokens
+        ):
+            # Save current chunk and start a new one
+            chunks.append((current_chunk_tokens, current_chunk_tags))
+            current_chunk_tokens = []
+            current_chunk_tags = []
+
+        # Add the split to current chunk
+        current_chunk_tokens.extend(split)
+        current_chunk_tags.extend(
+            token_tags[current_token_idx : current_token_idx + split_len]
+        )
+        current_token_idx += split_len
+
+    # Don't forget the last chunk
+    if current_chunk_tokens:
+        chunks.append((current_chunk_tokens, current_chunk_tags))
+
+    return chunks
+
+
+def annotate_corpus_paragraph(
+    corpus,
+    batch_id: str = "b1",
+    lang: str = "nl",
+    chunk_size: int = 256,
+    max_allowed_chunk_size: int = 300,
+    paragraph_boundary: str = "\n\n",
+    min_token_len: int = 8,
+    IOB: bool = True,
+):
+    """
+    Annotate corpus using hierarchical chunking strategy:
+    1. First try to split by paragraphs (double newlines)
+    2. If a paragraph is too long, split by lines (single newlines)
+    3. If a line is still too long, split by sentences (., !, ?)
+    4. If a sentence is still too long, split by individual words
+    5. Then greedily merge splits back into chunks up to max_allowed_chunk_size
+
+    This approach mirrors the logic in light_ner_word_level.py.
+    """
     annotated_data = []
     unique_tags = set()
 
@@ -70,9 +217,11 @@ def annotate_corpus_paragraph(corpus,
                     continue  # Token is before the entity
                 if token_start >= end:
                     break  # Token is after the entity
-                if (token_start >= start and token_end <= end) or \
-                   (token_start < start and token_end > start) or \
-                   (token_start < end and token_end > end):
+                if (
+                    (token_start >= start and token_end <= end)
+                    or (token_start < start and token_end > start)
+                    or (token_start < end and token_end > end)
+                ):
                     # Token overlaps with entity boundary
                     if is_first_token and IOB:
                         token_tags[i] = f"B-{tag_type}"
@@ -82,54 +231,54 @@ def annotate_corpus_paragraph(corpus,
                     else:
                         token_tags[i] = tag_type
 
-        # Split tokens and tags into chunks of max_tokens without splitting entities
-        i = 0
-        end_index = 0
-        while i < len(tokens):
-            ## TODO: make chunker respect paragraph boundaries: paragraph_boundary
-            # go to nearest paragraph_boundary < max_allowed_chunk_size
+        # Skip empty documents
+        if not tokens:
+            continue
 
-            # Adjust end_index to avoid splitting entities
-            while end_index < len(tokens) \
-                        and (end_index-i) < max_allowed_chunk_size :
+        # Hierarchically split tokens into manageable units
+        splits = split_tokens_hierarchical(tokens, max_allowed_chunk_size)
 
-                end_index += 1
+        # Merge splits back into chunks that fit within max_allowed_chunk_size
+        chunks = merge_splits_into_chunks_multiclass(
+            tokens, token_tags, splits, max_allowed_chunk_size
+        )
 
-                if end_index >= 2 and tokens[end_index-2] == paragraph_boundary:
-                    break
+        # Create annotated data entries for each chunk
+        for chunk_idx, (chunk_tokens, chunk_tags) in enumerate(chunks):
+            # Skip chunks that are too small
+            if len(chunk_tokens) < min_token_len:
+                continue
 
-            # Ensure end_index is valid
-            end_index = min(end_index, len(tokens))
-
-            if end_index > i:
-                chunk_tokens = tokens[i:end_index-2 if end_index >= 2 else end_index]
-                chunk_tags = token_tags[i:end_index-2 if end_index >= 2 else end_index]
-
-                annotated_data.append({
+            annotated_data.append(
+                {
                     "gid": entry["id"],
-                    "id": entry["id"] + f"_{i//chunk_size}",  # Modify ID to reflect chunk
+                    "id": entry["id"] + f"_{chunk_idx}",
                     "batch": batch_id,
                     "tokens": chunk_tokens,
                     "tags": chunk_tags,
-                })
-
-            i = end_index
+                }
+            )
 
     if IOB:
-        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+        # tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in sorted(unique_tags)]
+        # tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+        tag_list = ["O"] + [
+            x for tag in sorted(unique_tags) for x in (f"B-{tag}", f"I-{tag}")
+        ]
     else:
-        tag_list = ['O'] + [tag for tag in unique_tags]
+        tag_list = ["O"] + [tag for tag in unique_tags]
 
     return annotated_data, tag_list
 
 
-def annotate_corpus_standard(corpus,
-                    batch_id: str="b1",
-                    lang: str="nl",
-                    chunk_size: int = 256,
-                    max_allowed_chunk_size: int = 450,
-                    IOB: bool=True):
+def annotate_corpus_standard(
+    corpus,
+    batch_id: str = "b1",
+    lang: str = "nl",
+    chunk_size: int = 256,
+    max_allowed_chunk_size: int = 450,
+    IOB: bool = True,
+):
     annotated_data = []
     unique_tags = set()
 
@@ -171,7 +320,9 @@ def annotate_corpus_standard(corpus,
                         else:
                             token_tags[i] = tag_type
 
-                elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
+                elif (token_start < start and token_end > start) or (
+                    token_start < end and token_end > end
+                ):
                     # Token overlaps with entity boundary
                     if IOB:
                         token_tags[i] = f"I-{tag_type}"
@@ -183,7 +334,11 @@ def annotate_corpus_standard(corpus,
         while i < len(tokens):
             end_index = min(i + chunk_size, len(tokens))
             # Adjust end_index to avoid splitting entities
-            while end_index < len(tokens) and token_tags[end_index].startswith('I-') and (end_index - i) < max_allowed_chunk_size:
+            while (
+                end_index < len(tokens)
+                and token_tags[end_index].startswith("I-")
+                and (end_index - i) < max_allowed_chunk_size
+            ):
                 end_index += 1
             # Ensure the chunk does not exceed max_allowed_chunk_size
             if (end_index - i) > max_allowed_chunk_size:
@@ -191,27 +346,33 @@ def annotate_corpus_standard(corpus,
             chunk_tokens = tokens[i:end_index]
             chunk_tags = token_tags[i:end_index]
 
-            annotated_data.append({
-                "gid": entry["id"],
-                "id": entry["id"] + f"_{i//chunk_size}",  # Modify ID to reflect chunk
-                "batch": batch_id,
-                "tokens": chunk_tokens,
-                "tags": chunk_tags,
-            })
+            annotated_data.append(
+                {
+                    "gid": entry["id"],
+                    "id": entry["id"]
+                    + f"_{i // chunk_size}",  # Modify ID to reflect chunk
+                    "batch": batch_id,
+                    "tokens": chunk_tokens,
+                    "tags": chunk_tags,
+                }
+            )
 
             i = end_index
     if IOB:
-        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+        tag_list = ["O"] + [f"B-{tag},I-{tag}" for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(",")]
     else:
-        tag_list = ['O'] + [tag for tag in unique_tags]
+        tag_list = ["O"] + [tag for tag in unique_tags]
     return annotated_data, tag_list
 
-def annotate_corpus_centered(corpus,
-                         lang: str='nl',
-                         batch_id: str="b1",
-                         chunk_size: int=512,
-                         IOB: bool=True):
+
+def annotate_corpus_centered(
+    corpus,
+    lang: str = "nl",
+    batch_id: str = "b1",
+    chunk_size: int = 512,
+    IOB: bool = True,
+):
     annotated_data = []
     unique_tags = set()
 
@@ -252,7 +413,9 @@ def annotate_corpus_centered(corpus,
                             token_tags[i] = f"I-{tag_type}"
                         else:
                             token_tags[i] = tag_type
-                elif (token_start < start and token_end > start) or (token_start < end and token_end > end):
+                elif (token_start < start and token_end > start) or (
+                    token_start < end and token_end > end
+                ):
                     # Token overlaps with entity boundary
                     if IOB:
                         token_tags[i] = f"I-{tag_type}"
@@ -274,9 +437,11 @@ def annotate_corpus_centered(corpus,
                     break
 
             if span_start_idx is None:
-                print(f"Warning: Could not find token indices for span in document ID {entry['id']}")
+                print(
+                    f"Warning: Could not find token indices for span in document ID {entry['id']}"
+                )
                 print(f"Span start: {start}, Span end: {end}")
-                #print(f"Token offsets: {token_offsets}")
+                # print(f"Token offsets: {token_offsets}")
                 continue
 
             if span_end_idx is None:
@@ -296,20 +461,23 @@ def annotate_corpus_centered(corpus,
             chunk_tokens = tokens[left_context:right_context]
             chunk_tags = token_tags[left_context:right_context]
 
-            annotated_data.append({
-                "gid": entry["id"],
-                "id": entry["id"] + f"_span_{start}_{end}",
-                "batch": batch_id,
-                "tokens": chunk_tokens,
-                "tags": chunk_tags,
-            })
+            annotated_data.append(
+                {
+                    "gid": entry["id"],
+                    "id": entry["id"] + f"_span_{start}_{end}",
+                    "batch": batch_id,
+                    "tokens": chunk_tokens,
+                    "tags": chunk_tags,
+                }
+            )
 
     if IOB:
-        tag_list = ['O'] + [f'B-{tag},I-{tag}' for tag in unique_tags]
-        tag_list = [tag for sublist in tag_list for tag in sublist.split(',')]
+        tag_list = ["O"] + [f"B-{tag},I-{tag}" for tag in unique_tags]
+        tag_list = [tag for sublist in tag_list for tag in sublist.split(",")]
     else:
-        tag_list = ['O'] + [tag for tag in unique_tags]
+        tag_list = ["O"] + [tag for tag in unique_tags]
     return annotated_data, tag_list
+
 
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
@@ -341,19 +509,22 @@ def align_labels_with_tokens(labels, word_ids):
     return new_labels
 
 
-def tokenize_and_align_labels(docs,
-                              tokenizer, label2id: Optional[Dict[str, int]]=None,
-                              max_length: Optional[int]=None):
-    '''
+def tokenize_and_align_labels(
+    docs,
+    tokenizer,
+    label2id: Optional[Dict[str, int]] = None,
+    max_length: Optional[int] = None,
+):
+    """
     Tokenizes and aligns labels with tokens.
-    '''
+    """
     tokenized_inputs = tokenizer(
         docs["tokens"],
         is_split_into_words=True,
         max_length=tokenizer.model_max_length if max_length is None else max_length,
-        padding='max_length',      # Pad sequences to max_length
-        truncation=True,           # Truncate sequences longer than max_length
-        return_offsets_mapping=True
+        padding="max_length",  # Pad sequences to max_length
+        truncation=True,  # Truncate sequences longer than max_length
+        return_offsets_mapping=True,
     )
     if label2id is not None:
         # Corrected this line to handle lists of lists
@@ -372,6 +543,7 @@ def tokenize_and_align_labels(docs,
 # =============================================================================
 # Multi-Head CRF Support Functions
 # =============================================================================
+
 
 def annotate_corpus_multihead(
     corpus,
@@ -435,9 +607,11 @@ def annotate_corpus_multihead(
                     break  # Token is after the entity
 
                 # Token overlaps with entity
-                if (token_start >= start and token_end <= end) or \
-                   (token_start < start and token_end > start) or \
-                   (token_start < end and token_end > end):
+                if (
+                    (token_start >= start and token_end <= end)
+                    or (token_start < start and token_end > start)
+                    or (token_start < end and token_end > end)
+                ):
                     if is_first_token:
                         entity_token_tags[tag_type][i] = "B"
                         is_first_token = False
@@ -453,8 +627,7 @@ def annotate_corpus_multihead(
             while end_index < len(tokens) and (end_index - i) < max_allowed_chunk_size:
                 # Check if any entity type has an I tag at end_index
                 any_inside = any(
-                    entity_token_tags[ent][end_index] == "I"
-                    for ent in entity_types
+                    entity_token_tags[ent][end_index] == "I" for ent in entity_types
                 )
                 if not any_inside:
                     break
@@ -468,17 +641,18 @@ def annotate_corpus_multihead(
 
             # Create chunk tags for each entity type
             chunk_tags = {
-                ent: entity_token_tags[ent][i:end_index]
-                for ent in entity_types
+                ent: entity_token_tags[ent][i:end_index] for ent in entity_types
             }
 
-            annotated_data.append({
-                "gid": entry["id"],
-                "id": entry["id"] + f"_{i // chunk_size}",
-                "batch": batch_id,
-                "tokens": chunk_tokens,
-                "tags": chunk_tags,  # Dict[entity_type, List[BIO_tag]]
-            })
+            annotated_data.append(
+                {
+                    "gid": entry["id"],
+                    "id": entry["id"] + f"_{i // chunk_size}",
+                    "batch": batch_id,
+                    "tokens": chunk_tokens,
+                    "tags": chunk_tags,  # Dict[entity_type, List[BIO_tag]]
+                }
+            )
 
             i = end_index
 
@@ -533,9 +707,11 @@ def annotate_corpus_multihead_centered(
                     continue
                 if token_start >= end:
                     break
-                if (token_start >= start and token_end <= end) or \
-                   (token_start < start and token_end > start) or \
-                   (token_start < end and token_end > end):
+                if (
+                    (token_start >= start and token_end <= end)
+                    or (token_start < start and token_end > start)
+                    or (token_start < end and token_end > end)
+                ):
                     if is_first_token:
                         entity_token_tags[tag_type][i] = "B"
                         is_first_token = False
@@ -579,18 +755,22 @@ def annotate_corpus_multihead_centered(
                 for ent in entity_types
             }
 
-            annotated_data.append({
-                "gid": entry["id"],
-                "id": entry["id"] + f"_span_{start}_{end}",
-                "batch": batch_id,
-                "tokens": chunk_tokens,
-                "tags": chunk_tags,
-            })
+            annotated_data.append(
+                {
+                    "gid": entry["id"],
+                    "id": entry["id"] + f"_span_{start}_{end}",
+                    "batch": batch_id,
+                    "tokens": chunk_tokens,
+                    "tags": chunk_tags,
+                }
+            )
 
     return annotated_data, entity_types
 
 
-def align_labels_with_tokens_multihead(labels_dict: Dict[str, List[str]], word_ids, bio_label2id: Dict[str, int]):
+def align_labels_with_tokens_multihead(
+    labels_dict: Dict[str, List[str]], word_ids, bio_label2id: Dict[str, int]
+):
     """
     Align multi-head labels with subword tokens.
 
@@ -639,10 +819,7 @@ def align_labels_with_tokens_multihead(labels_dict: Dict[str, List[str]], word_i
 
 
 def tokenize_and_align_labels_multihead(
-    docs,
-    tokenizer,
-    entity_types: List[str],
-    max_length: Optional[int] = None
+    docs, tokenizer, entity_types: List[str], max_length: Optional[int] = None
 ):
     """
     Tokenize documents and align multi-head labels with subword tokens.
@@ -662,9 +839,9 @@ def tokenize_and_align_labels_multihead(
         docs["tokens"],
         is_split_into_words=True,
         max_length=tokenizer.model_max_length if max_length is None else max_length,
-        padding='max_length',
+        padding="max_length",
         truncation=True,
-        return_offsets_mapping=True
+        return_offsets_mapping=True,
     )
 
     # Process labels for each document

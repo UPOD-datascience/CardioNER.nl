@@ -98,6 +98,75 @@ class MultiLabelDataCollatorForTokenClassification:
         return batch
 
 
+@dataclass
+class MultiLabelDataCollatorWordLevel:
+    """Data collator that also passes word_ids for word-level loss computation."""
+
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str] = "max_length"
+    max_length: Optional[int] = None
+    label_pad_token_id: int = -100
+
+    def __call__(self, features, *args, **kwargs):
+        labels = [feature.pop("labels") for feature in features]
+        word_ids_list = [feature.pop("word_ids", None) for feature in features]
+
+        # Pad the inputs using the tokenizer's pad method
+        batch = self.tokenizer.pad(
+            features,
+            padding=self.padding,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+
+        # Convert labels to tensors
+        labels_tensors = [torch.tensor(label, dtype=torch.float) for label in labels]
+        padded_labels = torch.nn.utils.rnn.pad_sequence(
+            labels_tensors, batch_first=True, padding_value=self.label_pad_token_id
+        )
+
+        # Ensure labels are padded to max_seq_length
+        max_seq_length = batch["input_ids"].shape[1]
+        if padded_labels.shape[1] < max_seq_length:
+            padding_size = max_seq_length - padded_labels.shape[1]
+            padding = torch.full(
+                (len(labels), padding_size, padded_labels.shape[2]),
+                fill_value=self.label_pad_token_id,
+                dtype=torch.float,
+            )
+            padded_labels = torch.cat([padded_labels, padding], dim=1)
+        elif padded_labels.shape[1] > max_seq_length:
+            padded_labels = padded_labels[:, :max_seq_length, :]
+
+        batch["labels"] = padded_labels
+
+        # Process word_ids: convert None to -1 for special tokens, pad to max_seq_length
+        if word_ids_list[0] is not None:
+            padded_word_ids = []
+            for wids in word_ids_list:
+                # Convert None to -1 for special tokens
+                wids_converted = [w if w is not None else -1 for w in wids]
+                padded_word_ids.append(torch.tensor(wids_converted, dtype=torch.long))
+
+            padded_word_ids = torch.nn.utils.rnn.pad_sequence(
+                padded_word_ids, batch_first=True, padding_value=-1
+            )
+
+            if padded_word_ids.shape[1] < max_seq_length:
+                padding = torch.full(
+                    (len(word_ids_list), max_seq_length - padded_word_ids.shape[1]),
+                    fill_value=-1,
+                    dtype=torch.long,
+                )
+                padded_word_ids = torch.cat([padded_word_ids, padding], dim=1)
+            elif padded_word_ids.shape[1] > max_seq_length:
+                padded_word_ids = padded_word_ids[:, :max_seq_length]
+
+            batch["word_ids"] = padded_word_ids
+
+        return batch
+
+
 class MultiLabelTokenClassificationModelHF(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -179,6 +248,124 @@ class MultiLabelTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+class MultiLabelTrainerWordLevel(Trainer):
+    """
+    Trainer that computes loss at the word level instead of token level.
+
+    This ensures training is aligned with word-level evaluation by aggregating
+    subword token predictions before computing the loss.
+    """
+
+    def __init__(
+        self,
+        *args,
+        class_weights: Optional[torch.FloatTensor] = None,
+        word_aggregation: str = "first",  # "first", "last", "mean"
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if class_weights is not None:
+            class_weights = class_weights.to(self.args.device)
+            print(
+                f"Using multi-label classification with class weights: {class_weights}"
+            )
+        self.loss_fct = nn.BCEWithLogitsLoss(weight=class_weights, reduction="none")
+        self.word_aggregation = word_aggregation
+        print(
+            f"Word-level training enabled with aggregation strategy: {word_aggregation}"
+        )
+
+    def aggregate_to_word_level(self, logits, word_ids, labels):
+        """
+        Aggregate token-level logits to word-level before computing loss.
+
+        Args:
+            logits: (batch_size, seq_len, num_labels)
+            word_ids: (batch_size, seq_len) - word index for each token, -1 for special/padding
+            labels: (batch_size, seq_len, num_labels) - token-level labels
+
+        Returns:
+            word_logits, word_labels: aggregated at word level
+        """
+        batch_size, seq_len, num_labels = logits.shape
+        device = logits.device
+
+        all_word_logits = []
+        all_word_labels = []
+
+        for b in range(batch_size):
+            # Get unique word indices (excluding -1 for special tokens/padding)
+            unique_words = word_ids[b].unique()
+            unique_words = unique_words[unique_words >= 0]  # exclude -1
+
+            for word_idx in unique_words:
+                # Find all tokens belonging to this word
+                token_mask = word_ids[b] == word_idx
+                token_indices = token_mask.nonzero(as_tuple=True)[0]
+
+                if len(token_indices) == 0:
+                    continue
+
+                # Aggregate logits based on strategy
+                word_token_logits = logits[b, token_indices]  # (num_tokens, num_labels)
+
+                if self.word_aggregation == "first":
+                    word_logit = word_token_logits[0]
+                elif self.word_aggregation == "last":
+                    word_logit = word_token_logits[-1]
+                elif self.word_aggregation == "mean":
+                    word_logit = word_token_logits.mean(dim=0)
+                else:
+                    raise ValueError(f"Unknown aggregation: {self.word_aggregation}")
+
+                # Get word-level label (use first token's label - they should all be same at word level)
+                word_label = labels[b, token_indices[0]]
+
+                # Skip if this is a padding label
+                if (word_label == -100).any():
+                    continue
+
+                all_word_logits.append(word_logit)
+                all_word_labels.append(word_label)
+
+        if len(all_word_logits) == 0:
+            return None, None
+
+        word_logits = torch.stack(all_word_logits)  # (total_words, num_labels)
+        word_labels = torch.stack(all_word_labels)  # (total_words, num_labels)
+
+        return word_logits, word_labels
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        word_ids = inputs.pop("word_ids", None)
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        if word_ids is not None:
+            # Word-level loss
+            word_logits, word_labels = self.aggregate_to_word_level(
+                logits, word_ids, labels
+            )
+
+            if word_logits is None:
+                # Fallback to zero loss if aggregation produces nothing
+                loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
+            else:
+                loss_tensor = self.loss_fct(word_logits, word_labels.float())
+                loss = loss_tensor.mean()
+        else:
+            # Fallback: token-level loss (original behavior)
+            loss_tensor = self.loss_fct(
+                logits.view(-1, model.num_labels), labels.view(-1, model.num_labels)
+            )
+            mask = (labels.view(-1, model.num_labels) != -100).float()
+            loss_tensor = loss_tensor * mask
+            loss = loss_tensor.sum() / mask.sum()
+
+        return (loss, outputs) if return_outputs else loss
+
+
 class ModelTrainer:
     def __init__(
         self,
@@ -198,6 +385,8 @@ class ModelTrainer:
         classifier_hidden_layers: tuple | None = None,
         classifier_dropout: float = 0.1,
         class_weights: List[float] | None = None,
+        word_level: bool = False,
+        word_aggregation: str = "mean",  # "first", "last", "mean"
     ):
         self.model_name_or_path = model
         self.hf_token = hf_token
@@ -213,6 +402,14 @@ class ModelTrainer:
         self.label2id = label2id
         self.id2label = id2label
         self.output_dir = output_dir
+
+        # Word-level training configuration
+        self.word_level = word_level
+        self.word_aggregation = word_aggregation
+        if word_level:
+            print(
+                f"Word-level training enabled with '{word_aggregation}' aggregation strategy"
+            )
 
         self.train_kwargs = {
             "run_name": "CardioNER",
@@ -249,12 +446,21 @@ class ModelTrainer:
             self.tokenizer = tokenizer
 
         self.tokenizer.model_max_length = max_length
-        self.data_collator = MultiLabelDataCollatorForTokenClassification(
-            tokenizer=self.tokenizer,
-            padding="max_length",
-            max_length=max_length,
-            label_pad_token_id=-100,
-        )
+        # Select data collator based on word_level setting
+        if self.word_level:
+            self.data_collator = MultiLabelDataCollatorWordLevel(
+                tokenizer=self.tokenizer,
+                padding="max_length",
+                max_length=max_length,
+                label_pad_token_id=-100,
+            )
+        else:
+            self.data_collator = MultiLabelDataCollatorForTokenClassification(
+                tokenizer=self.tokenizer,
+                padding="max_length",
+                max_length=max_length,
+                label_pad_token_id=-100,
+            )
         or_config = AutoConfig.from_pretrained(
             model, hf_token=self.hf_token, return_unused_kwargs=False
         )
@@ -320,6 +526,9 @@ class ModelTrainer:
         print(
             "Classifier architecture:", pretty_print_classifier(self.model.classifier)
         )
+        print("Word-level training:", self.word_level)
+        if self.word_level:
+            print("Word aggregation strategy:", self.word_aggregation)
 
         self.args = TrainingArguments(output_dir=output_dir, **self.train_kwargs)
 
@@ -464,16 +673,30 @@ class ModelTrainer:
         else:
             _eval_data = eval_data
 
-        trainer = MultiLabelTrainer(
-            args=self.args,
-            class_weights=self.class_weights,
-            train_dataset=train_data,
-            eval_dataset=_eval_data,
-            data_collator=self.data_collator,
-            compute_metrics=self.compute_metrics,
-            processing_class=self.tokenizer,
-            model_init=model_init,
-        )
+        # Select trainer based on word_level setting
+        if self.word_level:
+            trainer = MultiLabelTrainerWordLevel(
+                args=self.args,
+                class_weights=self.class_weights,
+                word_aggregation=self.word_aggregation,
+                train_dataset=train_data,
+                eval_dataset=_eval_data,
+                data_collator=self.data_collator,
+                compute_metrics=self.compute_metrics,
+                processing_class=self.tokenizer,
+                model_init=model_init,
+            )
+        else:
+            trainer = MultiLabelTrainer(
+                args=self.args,
+                class_weights=self.class_weights,
+                train_dataset=train_data,
+                eval_dataset=_eval_data,
+                data_collator=self.data_collator,
+                compute_metrics=self.compute_metrics,
+                processing_class=self.tokenizer,
+                model_init=model_init,
+            )
         trainer.add_callback(WhoAmI())
 
         if profile:

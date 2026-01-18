@@ -19,7 +19,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import evaluate
 from datasets import Dataset
 from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
-from multiclass.trainer import MultiHeadCRFTrainer
+from multiclass.trainer import MultiHeadCRFTrainer, MultiHeadTrainer
 from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from sklearn.model_selection import GroupKFold, train_test_split
 from sklearn.utils import shuffle
@@ -41,6 +41,518 @@ cuda.empty_cache()
 
 # Check if CUDA is available
 print(f"CUDA available: {cuda.is_available()}")
+
+
+def inference(
+    corpus_data: List[Dict],
+    model_path: str,
+    output_dir: str,
+    lang: str = "nl",
+    max_word_per_chunk: int | None = None,
+    trust_remote_code: bool = False,
+):
+    """
+    Run inference on a corpus using a pre-trained model.
+
+    Args:
+        corpus_data: List of documents with 'id' and 'text' fields
+        model_path: Path to the trained model directory
+        output_dir: Directory to save output TSV
+        lang: Language code for tokenization
+        max_word_per_chunk: Maximum words per chunk for processing. If None,
+            automatically calculated as tokenizer.model_max_length // 2
+        trust_remote_code: Whether to trust remote code when loading model
+
+    Returns:
+        List of prediction results
+    """
+    import pandas as pd
+    from transformers import pipeline
+
+    # Create output tsv path
+    output_tsv_path = os.path.join(output_dir, "predictions.tsv")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Auto-detect max_word_per_chunk from tokenizer if not provided
+    if max_word_per_chunk is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code
+        )
+        max_word_per_chunk = tokenizer.model_max_length // 2
+        assert max_word_per_chunk < 10000, (
+            f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
+            f"This seems too large. Please specify --max_word_per_chunk explicitly."
+        )
+        print(
+            f"Auto-detected max_word_per_chunk: {max_word_per_chunk} (from tokenizer max_length: {tokenizer.model_max_length})"
+        )
+
+    print(f"Loading model from {model_path}...")
+    print(f"Processing {len(corpus_data)} samples with NER pipeline...")
+    print(f"Output will be saved to {output_tsv_path}")
+
+    # Load the model for NER
+    ner_pipeline = pipeline(
+        "ner",
+        stride=max_word_per_chunk,
+        model=model_path,
+        tokenizer=model_path,
+        aggregation_strategy="simple",
+        trust_remote_code=trust_remote_code,
+    )
+
+    results = []
+
+    for doc in tqdm(corpus_data, desc="Running inference"):
+        doc_id = doc.get("id", "unknown")
+        text = doc.get("text", "")
+
+        if not text:
+            continue
+
+        # Get predictions
+        entities = process_pipe(
+            text, ner_pipeline, max_word_per_chunk=max_word_per_chunk, lang=lang
+        )
+
+        for entity in entities:
+            # Extract needed information
+            tag = entity.get("entity_group", "").replace("B-", "").replace("I-", "")
+            start_span = entity.get("start", 0)
+            end_span = entity.get("end", 0)
+            entity_text = entity.get("word", text[start_span:end_span])
+
+            # Add to results
+            results.append(
+                {
+                    "filename": doc_id,
+                    "label": tag,
+                    "start_span": start_span,
+                    "end_span": end_span,
+                    "text": entity_text,
+                }
+            )
+
+    # Create DataFrame and save to TSV
+    if results:
+        df = pd.DataFrame(results)
+        df.to_csv(output_tsv_path, sep="\t", index=False)
+        print(f"Predictions saved to {output_tsv_path}")
+        print(f"Total entities found: {len(results)}")
+    else:
+        print("No entities found in the corpus")
+
+    return results
+
+
+def inference_multihead_crf(
+    corpus_data: List[Dict],
+    model_path: str,
+    output_dir: str,
+    lang: str = "nl",
+    max_word_per_chunk: int | None = None,
+    trust_remote_code: bool = True,
+):
+    """
+    Run inference on a corpus using a pre-trained MultiHead CRF model.
+
+    Args:
+        corpus_data: List of documents with 'id' and 'text' fields
+        model_path: Path to the trained model directory
+        output_dir: Directory to save output TSV
+        lang: Language code for tokenization
+        max_word_per_chunk: Maximum words per chunk for processing. If None,
+            automatically calculated as tokenizer.model_max_length // 2
+        trust_remote_code: Whether to trust remote code when loading model
+
+    Returns:
+        List of prediction results
+    """
+    import pandas as pd
+    import torch
+    from multiclass.modeling import TokenClassificationModelMultiHeadCRF
+
+    # Create output tsv path
+    output_tsv_path = os.path.join(output_dir, "predictions.tsv")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=trust_remote_code
+    )
+
+    # Auto-detect max_word_per_chunk from tokenizer if not provided
+    if max_word_per_chunk is None:
+        max_word_per_chunk = tokenizer.model_max_length // 2
+        assert max_word_per_chunk < 10000, (
+            f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
+            f"This seems too large. Please specify --max_word_per_chunk explicitly."
+        )
+        print(
+            f"Auto-detected max_word_per_chunk: {max_word_per_chunk} (from tokenizer max_length: {tokenizer.model_max_length})"
+        )
+
+    print(f"Loading MultiHead CRF model from {model_path}...")
+    model = TokenClassificationModelMultiHeadCRF.from_pretrained(
+        model_path, trust_remote_code=trust_remote_code
+    )
+
+    # Move model to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
+
+    # Get entity types and id2label from model config
+    entity_types = model.config.entity_types
+    id2label = model.config.id2label
+    print(f"Entity types: {entity_types}")
+    print(f"Processing {len(corpus_data)} samples...")
+    print(f"Output will be saved to {output_tsv_path}")
+
+    results = []
+
+    for doc in tqdm(corpus_data, desc="Running inference"):
+        doc_id = doc.get("id", "unknown")
+        text = doc.get("text", "")
+
+        if not text:
+            continue
+
+        # Tokenize with offset mapping
+        # Process in chunks if text is too long
+        words = text.split()
+        chunks = []
+        current_chunk_words = []
+        current_start = 0
+
+        for i, word in enumerate(words):
+            current_chunk_words.append(word)
+            if len(current_chunk_words) >= max_word_per_chunk:
+                chunk_text = " ".join(current_chunk_words)
+                chunk_start = text.find(chunk_text, current_start)
+                chunks.append((chunk_text, chunk_start))
+                current_start = chunk_start + len(chunk_text)
+                current_chunk_words = []
+
+        if current_chunk_words:
+            chunk_text = " ".join(current_chunk_words)
+            chunk_start = text.find(chunk_text, current_start)
+            chunks.append((chunk_text, chunk_start))
+
+        if not chunks:
+            chunks = [(text, 0)]
+
+        for chunk_text, chunk_offset in chunks:
+            # Tokenize
+            inputs = tokenizer(
+                chunk_text,
+                return_tensors="pt",
+                return_offsets_mapping=True,
+                truncation=True,
+                max_length=tokenizer.model_max_length,
+            )
+
+            offset_mapping = inputs.pop("offset_mapping")[0]
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+
+            # Run inference
+            with torch.no_grad():
+                outputs = model(**inputs)
+
+            # outputs is a list of predictions per entity type (sorted by entity type)
+            sorted_entity_types = sorted(entity_types)
+
+            for ent_idx, entity_type in enumerate(sorted_entity_types):
+                predictions = outputs[ent_idx][0]  # Get first batch item
+
+                # Convert predictions to entities
+                current_entity = None
+                current_start = None
+                current_end = None
+
+                for token_idx, (pred_id, (start, end)) in enumerate(
+                    zip(predictions, offset_mapping)
+                ):
+                    if start == end:  # Skip special tokens
+                        continue
+
+                    pred_id = int(pred_id)
+                    label = id2label.get(str(pred_id), id2label.get(pred_id, "O"))
+
+                    if label.startswith("B-"):
+                        # Save previous entity if exists
+                        if current_entity is not None:
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                        # Start new entity
+                        current_entity = label[2:]  # Remove B- prefix
+                        current_start = int(start)
+                        current_end = int(end)
+
+                    elif label.startswith("I-") and current_entity is not None:
+                        tag = label[2:]  # Remove I- prefix
+                        if tag == current_entity:
+                            current_end = int(end)
+                        else:
+                            # Different entity type, save previous and start new
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                            current_entity = tag
+                            current_start = int(start)
+                            current_end = int(end)
+
+                    else:  # O tag or I- without B-
+                        if current_entity is not None:
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                            current_entity = None
+                            current_start = None
+                            current_end = None
+
+                # Don't forget the last entity
+                if current_entity is not None:
+                    entity_text = chunk_text[current_start:current_end]
+                    results.append(
+                        {
+                            "filename": doc_id,
+                            "label": current_entity,
+                            "start_span": chunk_offset + current_start,
+                            "end_span": chunk_offset + current_end,
+                            "text": entity_text,
+                        }
+                    )
+
+    # Create DataFrame and save to TSV
+    if results:
+        df = pd.DataFrame(results)
+        df.to_csv(output_tsv_path, sep="\t", index=False)
+        print(f"Predictions saved to {output_tsv_path}")
+        print(f"Total entities found: {len(results)}")
+    else:
+        print("No entities found in the corpus")
+
+    return results
+
+
+def inference_multihead(
+    corpus_data: List[Dict],
+    model_path: str,
+    output_dir: str,
+    lang: str = "nl",
+    max_word_per_chunk: int | None = None,
+    trust_remote_code: bool = True,
+):
+    """
+    Run inference on a corpus using a pre-trained MultiHead model (no CRF).
+
+    Args:
+        corpus_data: List of documents with 'id' and 'text' fields
+        model_path: Path to the trained model directory
+        output_dir: Directory to save output TSV
+        lang: Language code for tokenization
+        max_word_per_chunk: Maximum words per chunk for processing. If None,
+            automatically calculated as tokenizer.model_max_length // 2
+        trust_remote_code: Whether to trust remote code when loading model
+
+    Returns:
+        List of prediction results
+    """
+    import pandas as pd
+    import torch
+    from multiclass.modeling import TokenClassificationModelMultiHead
+
+    # Create output tsv path
+    output_tsv_path = os.path.join(output_dir, "predictions.tsv")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=trust_remote_code
+    )
+
+    # Auto-detect max_word_per_chunk from tokenizer if not provided
+    if max_word_per_chunk is None:
+        max_word_per_chunk = tokenizer.model_max_length // 2
+        assert max_word_per_chunk < 10000, (
+            f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
+            f"This seems too large. Please specify --max_word_per_chunk explicitly."
+        )
+        print(
+            f"Auto-detected max_word_per_chunk: {max_word_per_chunk} (from tokenizer max_length: {tokenizer.model_max_length})"
+        )
+
+    print(f"Loading MultiHead model (no CRF) from {model_path}...")
+    model = TokenClassificationModelMultiHead.from_pretrained(
+        model_path, trust_remote_code=trust_remote_code
+    )
+
+    # Move model to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
+
+    # Get entity types and id2label from model config
+    entity_types = sorted(model.config.entity_types)
+    id2label = model.config.id2label
+    if isinstance(id2label, dict):
+        id2label = {int(k): v for k, v in id2label.items()}
+
+    print(f"Entity types: {entity_types}")
+    print(f"ID to label mapping: {id2label}")
+
+    # Load spacy for tokenization
+    nlp_lang = spacy.blank(lang)
+
+    results = []
+
+    for doc in tqdm(corpus_data, desc="Processing documents"):
+        doc_id = doc["id"]
+        text = doc["text"]
+
+        # Chunk the document
+        chunks = process_pipe(nlp_lang, [text], max_word_per_chunk)
+
+        chunk_offset = 0
+        for chunk_text in chunks:
+            if not chunk_text.strip():
+                chunk_offset += len(chunk_text)
+                continue
+
+            # Tokenize
+            encoding = tokenizer(
+                chunk_text,
+                return_offsets_mapping=True,
+                truncation=True,
+                max_length=tokenizer.model_max_length,
+                padding="max_length",
+                return_tensors="pt",
+            )
+
+            offset_mapping = encoding.pop("offset_mapping")[0].tolist()
+
+            # Move to device
+            encoding = {k: v.to(device) for k, v in encoding.items()}
+
+            # Get predictions (argmax decoding)
+            with torch.no_grad():
+                predictions = model(**encoding)
+
+            # Process predictions for each entity type
+            for ent_idx, entity_type in enumerate(entity_types):
+                preds = predictions[ent_idx][0].cpu().tolist()
+
+                # Extract entities using BIO tags
+                current_entity = None
+                current_start = None
+                current_end = None
+
+                for token_idx, (pred, (start, end)) in enumerate(
+                    zip(preds, offset_mapping)
+                ):
+                    if start == 0 and end == 0:
+                        continue
+
+                    tag = id2label.get(pred, "O")
+
+                    if tag.startswith("B"):
+                        if current_entity is not None:
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                        current_entity = entity_type
+                        current_start = int(start)
+                        current_end = int(end)
+
+                    elif tag.startswith("I"):
+                        if current_entity == entity_type:
+                            current_end = int(end)
+                        elif current_entity is not None:
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                            current_entity = entity_type
+                            current_start = int(start)
+                            current_end = int(end)
+
+                    else:  # O tag
+                        if current_entity is not None:
+                            entity_text = chunk_text[current_start:current_end]
+                            results.append(
+                                {
+                                    "filename": doc_id,
+                                    "label": current_entity,
+                                    "start_span": chunk_offset + current_start,
+                                    "end_span": chunk_offset + current_end,
+                                    "text": entity_text,
+                                }
+                            )
+                            current_entity = None
+                            current_start = None
+                            current_end = None
+
+                # Don't forget the last entity
+                if current_entity is not None:
+                    entity_text = chunk_text[current_start:current_end]
+                    results.append(
+                        {
+                            "filename": doc_id,
+                            "label": current_entity,
+                            "start_span": chunk_offset + current_start,
+                            "end_span": chunk_offset + current_end,
+                            "text": entity_text,
+                        }
+                    )
+
+            chunk_offset += len(chunk_text)
+
+    # Create DataFrame and save to TSV
+    if results:
+        df = pd.DataFrame(results)
+        df.to_csv(output_tsv_path, sep="\t", index=False)
+        print(f"Predictions saved to {output_tsv_path}")
+        print(f"Total entities found: {len(results)}")
+    else:
+        print("No entities found in the corpus")
+
+    return results
 
 
 def filter_tags(iob_data, tags, tags_to_keep, multi_class) -> tuple | None:
@@ -413,22 +925,26 @@ def train(
     classifier_dropout: float = 0.1,
     use_class_weights: bool = False,
     use_multihead_crf: bool = False,
+    use_multihead: bool = False,
     number_of_layers_per_head: int = 1,
     crf_reduction: str = "mean",
+    word_level: bool = False,
 ):
-    # Check if this is multi-head CRF data
+    # Check if this is multi-head data
     is_multihead = (
         tokenized_data_train[0].get("is_multihead", False)
         if tokenized_data_train
         else False
     )
 
-    if is_multihead or use_multihead_crf:
+    if is_multihead or use_multihead_crf or use_multihead:
         return train_multihead(
             tokenized_data_train=tokenized_data_train,
             tokenized_data_test=tokenized_data_test,
             tokenized_data_validation=tokenized_data_validation,
+            force_splitter=force_splitter,
             Model=Model,
+            Splits=Splits,
             output_dir=output_dir,
             max_length=max_length,
             num_epochs=num_epochs,
@@ -442,6 +958,8 @@ def train(
             classifier_dropout=classifier_dropout,
             number_of_layers_per_head=number_of_layers_per_head,
             crf_reduction=crf_reduction,
+            use_crf=use_multihead_crf and not use_multihead,
+            use_class_weights=use_class_weights,
         )
     label2id = tokenized_data_train[0]["label2id"]
     id2label = tokenized_data_train[0]["id2label"]
@@ -569,6 +1087,7 @@ def train(
                     classifier_hidden_layers=classifier_hidden_layers,
                     classifier_dropout=classifier_dropout,
                     class_weights=class_weights,
+                    word_level=word_level,
                 )
 
             print(f"Training on split {k}")
@@ -715,7 +1234,9 @@ def train_multihead(
     tokenized_data_train: List[Dict],
     tokenized_data_test: List[Dict] | None,
     tokenized_data_validation: List[Dict],
+    force_splitter: bool = False,
     Model: str = "CLTL/MedRoBERTa.nl",
+    Splits: List[Tuple[List[str], List[str]]] | int | None = 5,
     output_dir: str = "../output",
     max_length: int = 514,
     num_epochs: int = 10,
@@ -729,11 +1250,14 @@ def train_multihead(
     classifier_dropout: float = 0.1,
     number_of_layers_per_head: int = 1,
     crf_reduction: str = "mean",
+    use_crf: bool = True,
+    use_class_weights: bool = False,
 ):
     """
-    Train a Multi-Head CRF model for multiple entity types.
+    Train a Multi-Head model for multiple entity types.
 
-    Each entity type gets its own classification head and CRF layer.
+    Each entity type gets its own classification head.
+    If use_crf=True, also adds a CRF layer per head.
     """
     # Extract entity types and labels from data
     entity_types = tokenized_data_train[0].get("entity_types", [])
@@ -746,51 +1270,190 @@ def train_multihead(
         )
 
     print("=" * 60)
-    print("Training Multi-Head CRF Model")
+    print(f"Training Multi-Head {'CRF ' if use_crf else ''}Model")
     print(f"Entity types: {entity_types}")
     print(f"BIO labels: {label2id}")
+    print(f"Use CRF: {use_crf}")
     print("=" * 60)
 
     # Validate labels
     label2id = {str(k): int(v) for k, v in label2id.items()}
     id2label = {int(k): str(v) for k, v in id2label.items()}
 
-    # Create trainer
-    trainer = MultiHeadCRFTrainer(
-        entity_types=entity_types,
-        label2id=label2id,
-        id2label=id2label,
-        tokenizer=None,
-        model=Model,
-        batch_size=batch_size,
-        max_length=max_length,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        num_train_epochs=num_epochs,
-        output_dir=output_dir,
-        hf_token=hf_token,
-        freeze_backbone=freeze_backbone,
-        gradient_accumulation_steps=accumulation_steps,
-        number_of_layers_per_head=number_of_layers_per_head,
-        classifier_dropout=classifier_dropout,
-        crf_reduction=crf_reduction,
-    )
+    if (
+        (tokenized_data_validation is None)
+        | (isinstance(Splits, list))
+        | ((tokenized_data_validation is not None) & (force_splitter == True))
+    ):
+        print(
+            "Using cross-validation for multi-head CRF model training and validation.."
+        )
+        groups = [entry["gid"] for entry in tokenized_data_train]
+        shuffled_data, shuffled_groups = shuffle(
+            tokenized_data_train, groups, random_state=42
+        )
+        if isinstance(Splits, int):
+            splitter = GroupKFold(n_splits=Splits)
+            SplitList = list(splitter.split(shuffled_data, groups=shuffled_groups))
+        elif Splits is not None:
+            # we have to turn the List[Tuple[List['id'], List['id']]] into List[Tuple[List[int], List[int]]] based on shuffled_data which is a list of {'gid':.. }
+            # where gid=id
+            gid_id = defaultdict(list)
+            for k, d in enumerate(shuffled_data):
+                gid_id[d["gid"]].append(k)
+            SplitList = [
+                tuple(
+                    [
+                        [idx for ind in T[0] for idx in gid_id[ind]],
+                        [jdx for jind in T[1] for jdx in gid_id[jind]],
+                    ],
+                )
+                for T in Splits
+            ]
 
-    # Determine eval data
-    if tokenized_data_test and len(tokenized_data_test) > 0:
-        _eval_data = tokenized_data_test
+        print(f"Splitting data into {len(SplitList)} folds")
+        for k, (train_idx, test_idx) in enumerate(SplitList):
+            if use_crf:
+                trainer = MultiHeadCRFTrainer(
+                    entity_types=entity_types,
+                    label2id=label2id,
+                    id2label=id2label,
+                    tokenizer=None,
+                    model=Model,
+                    batch_size=batch_size,
+                    max_length=max_length,
+                    learning_rate=learning_rate,
+                    weight_decay=weight_decay,
+                    num_train_epochs=num_epochs,
+                    output_dir=f"{output_dir}/fold_{k}",
+                    hf_token=hf_token,
+                    freeze_backbone=freeze_backbone,
+                    gradient_accumulation_steps=accumulation_steps,
+                    number_of_layers_per_head=number_of_layers_per_head,
+                    classifier_dropout=classifier_dropout,
+                    crf_reduction=crf_reduction,
+                )
+            else:
+                trainer = MultiHeadTrainer(
+                    entity_types=entity_types,
+                    label2id=label2id,
+                    id2label=id2label,
+                    tokenizer=None,
+                    model=Model,
+                    batch_size=batch_size,
+                    max_length=max_length,
+                    learning_rate=learning_rate,
+                    weight_decay=weight_decay,
+                    num_train_epochs=num_epochs,
+                    output_dir=f"{output_dir}/fold_{k}",
+                    hf_token=hf_token,
+                    freeze_backbone=freeze_backbone,
+                    gradient_accumulation_steps=accumulation_steps,
+                    number_of_layers_per_head=number_of_layers_per_head,
+                    classifier_dropout=classifier_dropout,
+                    use_class_weights=use_class_weights,
+                )
+
+            print(f"Training on split {k}")
+            train_data = [shuffled_data[i] for i in train_idx]
+            test_data = [shuffled_data[i] for i in test_idx]
+
+            if (tokenized_data_validation is not None) & (force_splitter == True):
+                trainer.train(
+                    train_data=train_data,
+                    test_data=test_data,
+                    eval_data=tokenized_data_validation,
+                    profile=profile,
+                )
+            else:
+                trainer.train(
+                    train_data=train_data,
+                    test_data=[],
+                    eval_data=test_data,
+                    profile=profile,
+                )
+
+        # get performance aggregations
+        #
+        collected_dict = parse_performance_json.parse_dir(output_dir)
+        json.dump(
+            collected_dict,
+            open(
+                os.path.join(output_dir, "collected_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+        aggregated_dict = parse_performance_json.get_aggregates(collected_dict)
+        json.dump(
+            aggregated_dict,
+            open(
+                os.path.join(output_dir, "aggregated_results.json"),
+                "w",
+                encoding="latin1",
+            ),
+        )
+
+    elif (tokenized_data_validation is not None) and (tokenized_data_test is not None):
+        print(
+            f"Using preset train/test/validation split for multi-head {'CRF ' if use_crf else ''}model training and validation.."
+        )
+        # Create trainer
+        if use_crf:
+            trainer = MultiHeadCRFTrainer(
+                entity_types=entity_types,
+                label2id=label2id,
+                id2label=id2label,
+                tokenizer=None,
+                model=Model,
+                batch_size=batch_size,
+                max_length=max_length,
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                num_train_epochs=num_epochs,
+                output_dir=output_dir,
+                hf_token=hf_token,
+                freeze_backbone=freeze_backbone,
+                gradient_accumulation_steps=accumulation_steps,
+                number_of_layers_per_head=number_of_layers_per_head,
+                classifier_dropout=classifier_dropout,
+                crf_reduction=crf_reduction,
+            )
+        else:
+            trainer = MultiHeadTrainer(
+                entity_types=entity_types,
+                label2id=label2id,
+                id2label=id2label,
+                tokenizer=None,
+                model=Model,
+                batch_size=batch_size,
+                max_length=max_length,
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                num_train_epochs=num_epochs,
+                output_dir=output_dir,
+                hf_token=hf_token,
+                freeze_backbone=freeze_backbone,
+                gradient_accumulation_steps=accumulation_steps,
+                number_of_layers_per_head=number_of_layers_per_head,
+                classifier_dropout=classifier_dropout,
+                use_class_weights=use_class_weights,
+            )
+
+        # Train
+        print("Training on full dataset")
+        trainer.train(
+            train_data=tokenized_data_train,
+            test_data=tokenized_data_test,
+            eval_data=tokenized_data_validation,
+            profile=profile,
+        )
+
+        print(f"Multi-Head {'CRF ' if use_crf else ''}model saved to {output_dir}")
     else:
-        _eval_data = tokenized_data_validation
-
-    # Train
-    trainer.train(
-        train_data=tokenized_data_train,
-        test_data=tokenized_data_test if tokenized_data_test else [],
-        eval_data=_eval_data,
-        profile=profile,
-    )
-
-    print(f"Multi-Head CRF model saved to {output_dir}")
+        raise ValueError(
+            "No validation data provided, and no cross-validation splits provided. Please provide either a validation set or a split file."
+        )
 
 
 if __name__ == "__main__":
@@ -849,12 +1512,19 @@ if __name__ == "__main__":
     argparsers.add_argument("--classifier_dropout", type=float, default=0.1)
     argparsers.add_argument("--tag_classes", type=str, nargs="+", default=None)
     argparsers.add_argument("--use_class_weights", action="store_true", default=False)
+    argparsers.add_argument("--word_level", action="store_true", default=False)
     argparsers.add_argument("--output_test_tsv", action="store_true", default=False)
     argparsers.add_argument(
         "--use_multihead_crf",
         action="store_true",
         default=False,
         help="Use Multi-Head CRF model with separate heads per entity type",
+    )
+    argparsers.add_argument(
+        "--use_multihead",
+        action="store_true",
+        default=False,
+        help="Use Multi-Head model (no CRF) with separate heads per entity type",
     )
     argparsers.add_argument(
         "--entity_types",
@@ -875,6 +1545,30 @@ if __name__ == "__main__":
         default="mean",
         choices=["mean", "sum", "token_mean", "none"],
         help="CRF loss reduction mode for Multi-Head CRF",
+    )
+    argparsers.add_argument(
+        "--inference_only",
+        action="store_true",
+        default=False,
+        help="Run inference only using a pre-trained model (no training)",
+    )
+    argparsers.add_argument(
+        "--model_path",
+        type=str,
+        default=None,
+        help="Path to a pre-trained model for inference (required if --inference_only is set)",
+    )
+    argparsers.add_argument(
+        "--corpus_inference",
+        type=str,
+        default=None,
+        help="Path to corpus file/directory for inference (uses corpus_validation if not set)",
+    )
+    argparsers.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        default=False,
+        help="Trust remote code when loading custom models",
     )
 
     args = argparsers.parse_args()
@@ -908,6 +1602,115 @@ if __name__ == "__main__":
 
     if not args.split_file:
         print("WARNING: you are training without a split file. Ensure this is correct.")
+
+    if (args.word_level) and (args.multiclass):
+        print("WARNING: word_level on works for multilabel, ignoring..")
+
+    # Handle inference-only mode
+    if args.inference_only:
+        assert args.model_path is not None, (
+            "Model path (--model_path) is required for inference-only mode"
+        )
+        assert os.path.isdir(args.model_path), (
+            f"Model path {args.model_path} does not exist or is not a directory"
+        )
+
+        # Determine corpus for inference
+        corpus_inference = args.corpus_inference or corpus_validation or corpus_train
+        assert corpus_inference is not None, (
+            "Corpus for inference is required (--corpus_inference, --corpus_validation, or --corpus_train)"
+        )
+
+        # Load corpus
+        if os.path.isdir(corpus_inference):
+            corpus_inference_list = merge_annotations(corpus_inference)
+        else:
+            assert os.path.isfile(corpus_inference), (
+                f"Corpus file {corpus_inference} does not exist."
+            )
+            corpus_inference_list = []
+            with open(corpus_inference, "r", encoding="utf-8") as fr:
+                for line in fr:
+                    corpus_inference_list.append(json.loads(line))
+
+        # If split_file is provided, filter to only test_files
+        if split_file is not None:
+            assert os.path.isfile(split_file), (
+                f"Split file {split_file} does not exist."
+            )
+            with open(split_file, "r", encoding="utf-8") as fr:
+                split_data = json.load(fr)
+
+            test_file_ids = [entry.strip(".txt") for entry in split_data["test_files"]]
+
+            original_count = len(corpus_inference_list)
+            corpus_inference_list = [
+                entry for entry in corpus_inference_list if entry["id"] in test_file_ids
+            ]
+
+            print(
+                f"Filtered corpus using split_file test_files: {original_count} -> {len(corpus_inference_list)} documents"
+            )
+
+            if len(corpus_inference_list) == 0:
+                print(
+                    f"WARNING: No documents matched test_files from split_file. "
+                    f"Expected IDs (first 5): {test_file_ids[:5]}"
+                )
+
+        print(
+            f"Running inference-only mode with {len(corpus_inference_list)} documents"
+        )
+
+        # Detect if model is MultiHead CRF by checking config
+        config_path = os.path.join(args.model_path, "config.json")
+        is_multihead_crf = False
+        is_multihead = False
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                # Check for multihead CRF indicators in config
+                is_multihead_crf = "TokenClassificationModelMultiHeadCRF" in config.get(
+                    "architectures", []
+                )
+                # Check for multihead (no CRF) indicators in config
+                is_multihead = "TokenClassificationModelMultiHead" in config.get(
+                    "architectures", []
+                )
+
+        if is_multihead_crf:
+            print("Detected MultiHead CRF model, using specialized inference...")
+            inference_multihead_crf(
+                corpus_data=corpus_inference_list,
+                model_path=args.model_path,
+                output_dir=args.output_dir,
+                lang=lang,
+                max_word_per_chunk=None,  # Auto-detect from tokenizer
+                trust_remote_code=True,  # Always true for multihead CRF
+            )
+        elif is_multihead:
+            print("Detected MultiHead model (no CRF), using specialized inference...")
+            inference_multihead(
+                corpus_data=corpus_inference_list,
+                model_path=args.model_path,
+                output_dir=args.output_dir,
+                lang=lang,
+                max_word_per_chunk=None,  # Auto-detect from tokenizer
+                trust_remote_code=True,  # Always true for multihead
+            )
+        else:
+            # Run standard inference
+            inference(
+                corpus_data=corpus_inference_list,
+                model_path=args.model_path,
+                output_dir=args.output_dir,
+                lang=lang,
+                max_word_per_chunk=None,  # Auto-detect from tokenizer
+                trust_remote_code=args.trust_remote_code,
+            )
+
+        print("Inference completed!")
+        exit(0)
 
     assert (
         ((corpus_train is not None) and (corpus_validation is not None))
@@ -1038,6 +1841,7 @@ if __name__ == "__main__":
     accumulation_steps = args.accumulation_steps
     tag_classes = args.tag_classes
     use_multihead_crf = args.use_multihead_crf
+    use_multihead = args.use_multihead
     entity_types = args.entity_types
     number_of_layers_per_head = args.number_of_layers_per_head
     crf_reduction = args.crf_reduction
@@ -1063,7 +1867,7 @@ if __name__ == "__main__":
             use_iob=use_iob,
             hf_token=hf_token,
             tags_to_keep=tag_classes,
-            use_multihead_crf=use_multihead_crf,
+            use_multihead_crf=use_multihead_crf or use_multihead,
             entity_types=entity_types,
         )
 
@@ -1075,16 +1879,23 @@ if __name__ == "__main__":
 
         # check if input_ids and labels have the same length, are smaller than max_length and if the labels are within range
         for entry in tokenized_data:
-            assert len(entry["input_ids"]) == len(entry["labels"]), (
-                f"Input_ids and labels have different lengths for entry {entry['id']}"
-            )
+            if not (use_multihead_crf or use_multihead):
+                assert len(entry["input_ids"]) == len(entry["labels"]), (
+                    f"Input_ids and labels have different lengths for entry {entry['id']}. {len(entry['input_ids'])}/{len(entry['labels'])}"
+                )
+            else:
+                for entry_labels in entry["labels"].values():
+                    assert len(entry["input_ids"]) == len(entry_labels), (
+                        f"Input_ids and labels have different lengths for entry {entry['id']}. {len(entry['input_ids'])}/{len(entry_labels)}"
+                    )
+
             assert len(entry["input_ids"]) <= max_length, (
                 f"Input_ids are longer than max_length for entry {entry['id']}"
             )
 
             # assert that all labels are within range, >=0 and < num_labels
-            # Skip label validation for multi-head CRF (labels are dicts)
-            if not use_multihead_crf:
+            # Skip label validation for multi-head models (labels are dicts)
+            if not (use_multihead_crf or use_multihead):
                 for label in entry["labels"]:
                     if multi_class == False:
                         assert all(
@@ -1148,8 +1959,10 @@ if __name__ == "__main__":
             classifier_dropout=classifier_dropout,
             use_class_weights=args.use_class_weights,
             use_multihead_crf=use_multihead_crf,
+            use_multihead=use_multihead,
             number_of_layers_per_head=number_of_layers_per_head,
             crf_reduction=crf_reduction,
+            word_level=args.word_level,
         )
 
         # Create output tsv for test
@@ -1159,69 +1972,15 @@ if __name__ == "__main__":
         # casos_clinicos_cardiologia286	MEDICATION	905	914	warfarine
         # ...
         if args.output_test_tsv:
-            import pandas as pd
-            from transformers import pipeline
-
-            # load model from output_dir, load in transformer pipeline for NER classification
-            # Create output tsv path
-            output_tsv_path = os.path.join(OutputDir, "test_predictions.tsv")
-
-            print(
-                f"Processing {len(corpus_validation_list)}validation samples with NER pipeline...storing to {output_tsv_path}"
-            )
-
-            # Load the model for NER
-            ner_pipeline = pipeline(
-                "ner",
-                stride=256,
-                model=OutputDir,
-                tokenizer=_model,
-                aggregation_strategy="simple",
-            )
-
-            results = []
-
-            # Apply to validation corpus
-            corpus_to_process = corpus_validation_list
-            if corpus_to_process is not None:
-                for doc in tqdm(corpus_to_process):
-                    doc_id = doc.get("id", "unknown")
-                    text = doc.get("text", "")
-
-                    if not text:
-                        continue
-
-                    # Get predictions
-                    entities = process_pipe(
-                        text, ner_pipeline, max_word_per_chunk=256, lang=lang
-                    )
-
-                    for entity in entities:
-                        # Extract needed information
-                        tag = (
-                            entity.get("entity_group", "")
-                            .replace("B-", "")
-                            .replace("I-", "")
-                        )
-                        start_span = entity.get("start", 0)
-                        end_span = entity.get("end", 0)
-                        entity_text = entity.get("word", text[start_span:end_span])
-
-                        # Add to results
-                        results.append(
-                            {
-                                "filename": doc_id,
-                                "label": tag,
-                                "start_span": start_span,
-                                "end_span": end_span,
-                                "text": entity_text,
-                            }
-                        )
-
-                # Create DataFrame and save to TSV
-                if results:
-                    df = pd.DataFrame(results)
-                    df.to_csv(output_tsv_path, sep="\t", index=False)
-                    print(f"Test predictions saved to {output_tsv_path}")
-                else:
-                    print("No entities found in the test corpus")
+            # Run inference on validation corpus using the trained model
+            if corpus_validation_list is not None:
+                inference(
+                    corpus_data=corpus_validation_list,
+                    model_path=OutputDir,
+                    output_dir=OutputDir,
+                    lang=lang,
+                    max_word_per_chunk=None,  # Auto-detect from tokenizer
+                    trust_remote_code=args.trust_remote_code,
+                )
+            else:
+                print("No validation corpus available for test TSV output")
