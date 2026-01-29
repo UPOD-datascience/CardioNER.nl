@@ -219,7 +219,11 @@ class MultiLabelTokenClassificationModelHF(PreTrainedModel):
 
 class MultiLabelTrainer(Trainer):
     def __init__(
-        self, *args, class_weights: Optional[torch.FloatTensor] = None, **kwargs
+        self,
+        *args,
+        class_weights: Optional[torch.FloatTensor] = None,
+        id2label: Dict[int, str] = None,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         if class_weights is not None:
@@ -229,11 +233,48 @@ class MultiLabelTrainer(Trainer):
             )
         self.loss_fct = nn.BCEWithLogitsLoss(weight=class_weights, reduction="none")
 
+        # Class counting for debugging
+        self.id2label = id2label or {}
+        self.class_counts = None
+        self.total_tokens = 0
+        self.batch_count = 0
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         outputs = model(**inputs)
         logits = outputs.logits
 
+        # === COUNT CLASSES IN THIS BATCH ===
+        # Flatten labels: (batch, seq_len, num_labels) -> (batch*seq_len, num_labels)
+        labels_flat = labels.view(-1, labels.shape[-1])
+
+        # Mask out padding tokens (where all values are -100)
+        valid_mask = ~(labels_flat == -100).all(dim=-1)
+        valid_labels = labels_flat[valid_mask]
+
+        # Count positives for each class
+        batch_counts = (valid_labels == 1).sum(dim=0).cpu()
+
+        if self.class_counts is None:
+            self.class_counts = batch_counts
+        else:
+            self.class_counts += batch_counts
+
+        self.total_tokens += valid_mask.sum().item()
+        self.batch_count += 1
+
+        # Print every 100 batches
+        if self.batch_count % 100 == 0:
+            print(
+                f"\n=== Class counts after {self.batch_count} batches ({self.total_tokens} tokens) ==="
+            )
+            for i, count in enumerate(self.class_counts.tolist()):
+                label_name = self.id2label.get(i, f"class_{i}")
+                pct = 100 * count / self.total_tokens if self.total_tokens > 0 else 0
+                print(f"  {label_name}: {count} ({pct:.2f}%)")
+            print("=" * 50 + "\n")
+        # === END COUNTING ===
+        #
         # # Compute the loss tensor with reduction='none'
         loss_tensor = self.loss_fct(
             logits.view(-1, model.num_labels), labels.view(-1, model.num_labels)
@@ -577,8 +618,19 @@ class ModelTrainer:
         # Exclude padded tokens
         # mask = (labels.sum(axis=1) != -100 * labels.shape[1])
         mask = ~np.all(labels == -100, axis=1)
+        probs_flat = probs.reshape(-1, probs.shape[-1]).numpy()
+        probs_masked = probs_flat[mask]
+
         labels = labels[mask]
         preds = preds[mask]
+
+        # DEBUG OUTPUT
+        print("\n=== O-class debugging ===")
+        print(f"Mean probability for O (column 0): {probs_masked[:, 0].mean():.4f}")
+        print(f"O predictions sum (how many 1s): {preds[:, 0].sum()}")
+        print(f"O labels sum (how many 1s expected): {labels[:, 0].sum()}")
+        print(f"All-zeros predictions count: {(preds.sum(axis=1) == 0).sum()}")
+        print("========================\n")
 
         from sklearn.metrics import (
             f1_score,
@@ -696,6 +748,7 @@ class ModelTrainer:
                 compute_metrics=self.compute_metrics,
                 processing_class=self.tokenizer,
                 model_init=model_init,
+                id2label=self.id2label,
             )
         trainer.add_callback(WhoAmI())
 

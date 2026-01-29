@@ -18,20 +18,17 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 import evaluate
 from datasets import Dataset
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 from multiclass.trainer import MultiHeadCRFTrainer, MultiHeadTrainer
 from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from sklearn.model_selection import GroupKFold, train_test_split
 from sklearn.utils import shuffle
-from torch import bfloat16
-from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
-
-metric = evaluate.load("seqeval")
 
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
-
-from torch import cuda
+from torch import bfloat16, cuda
+from tqdm import tqdm
+from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 
 from cardioner import model_merger, parse_performance_json
 from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
@@ -424,8 +421,14 @@ def inference_multihead(
     print(f"Entity types: {entity_types}")
     print(f"ID to label mapping: {id2label}")
 
-    # Load spacy for tokenization
-    nlp_lang = spacy.blank(lang)
+    # Create text splitter for chunking documents
+    text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        encoding_name="o200k_base",
+        separators=["\n\n\n", "\n\n", "\n", " .", " !", " ?", " ،", " ,", " ", ""],
+        keep_separator=True,
+        chunk_size=max_word_per_chunk,
+        chunk_overlap=0,
+    )
 
     results = []
 
@@ -434,7 +437,7 @@ def inference_multihead(
         text = doc["text"]
 
         # Chunk the document
-        chunks = process_pipe(nlp_lang, [text], max_word_per_chunk)
+        chunks = text_splitter.split_text(text)
 
         chunk_offset = 0
         for chunk_text in chunks:
@@ -590,13 +593,17 @@ def filter_tags(iob_data, tags, entity_types, multi_class) -> tuple | None:
         else:
             temp_tags = []
             for chindex, _tags in enumerate(doc["tags"]):
-                _temp_tags = []
-                for _tag in tags:
-                    if any([entity_type in _tag for entity_type in entity_types]):
-                        _temp_tags.append(_tag)
-                if len(_temp_tags) > 0:
-                    temp_tags.append(_temp_tags)
-                    temp_tokens.append(doc["tokens"][chindex])
+                # Filter the token's actual tags to only include matching entity types
+                _temp_tags = [
+                    t
+                    for t in _tags
+                    if any(entity_type in t.upper() for entity_type in entity_types)
+                ]
+                # Always keep the token, even if it has no entity tags (it will get O label)
+                temp_tokens.append(doc["tokens"][chindex])
+                temp_tags.append(
+                    _temp_tags
+                )  # Empty list will become O in tokenize_and_align_labels
 
         if len(temp_tags) > 0:
             temp_dict["tokens"] = temp_tokens
