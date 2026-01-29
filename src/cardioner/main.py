@@ -587,9 +587,12 @@ def filter_tags(iob_data, tags, entity_types, multi_class) -> tuple | None:
         if multi_class:
             temp_tags = []
             for chindex, _tag in enumerate(doc["tags"]):
+                temp_tokens.append(doc["tokens"][chindex])
                 if any([entity_type in _tag for entity_type in entity_types]):
-                    temp_tokens.append(doc["tokens"][chindex])
                     temp_tags.append(_tag)
+                else:
+                    # Token doesn't match entity filter, assign O
+                    temp_tags.append("O")
         else:
             temp_tags = []
             for chindex, _tags in enumerate(doc["tags"]):
