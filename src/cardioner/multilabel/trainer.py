@@ -1,3 +1,5 @@
+import glob
+import os
 import shutil
 from os import environ
 
@@ -458,6 +460,7 @@ class ModelTrainer:
             "per_device_train_batch_size": batch_size,
             "per_device_eval_batch_size": batch_size,
             "learning_rate": learning_rate,
+            "warmup_steps": 0,
             "num_train_epochs": num_train_epochs,
             "weight_decay": weight_decay,
             "eval_strategy": "epoch",
@@ -786,7 +789,6 @@ class ModelTrainer:
         try:
             if self.custom_model:
                 # Copy the modeling.py file to output_dir for trust_remote_code compatibility
-                import os
 
                 current_dir = os.path.dirname(os.path.abspath(__file__))
                 modeling_src = os.path.join(current_dir, "modeling.py")
@@ -823,6 +825,20 @@ class ModelTrainer:
                 print(
                     f"AutoModelForTokenClassification.from_pretrained('{self.output_dir}', trust_remote_code=True)"
                 )
+
+            checkpoint_dirs = glob.glob(os.path.join(self.output_dir, "checkpoint-*"))
+            for checkpoint_dir in checkpoint_dirs:
+                trainer_state_src = os.path.join(checkpoint_dir, "trainer_state.json")
+                trainer_state_dst = os.path.join(self.output_dir, "trainer_state.json")
+
+                # Move trainer_state.json if it exists
+                if os.path.exists(trainer_state_src):
+                    shutil.move(trainer_state_src, trainer_state_dst)
+                    print(f"Moved trainer_state.json to {trainer_state_dst}")
+
+                # Remove the checkpoint directory
+                shutil.rmtree(checkpoint_dir)
+                print(f"Removed checkpoint directory: {checkpoint_dir}")
 
         except Exception as e:
             raise ValueError(f"Failed to save model and metrics: {str(e)}")
