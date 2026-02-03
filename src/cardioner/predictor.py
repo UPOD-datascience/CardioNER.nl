@@ -90,9 +90,9 @@ def load_tsv_to_dataframe(file_path: str) -> pd.DataFrame:
 
 
 class PredictionNER:
-    def __init__(self, model_checkpoint: str, revision: Optional[str]) -> None:
-        MAX_TOKENS_IOB_SENT = 256
-        OVERLAPPING_LEN = 0
+    def __init__(self, model_checkpoint: str, revision: Optional[str], stride: int=256, overlap: int=0) -> None:
+        MAX_TOKENS_IOB_SENT = stride
+        OVERLAPPING_LEN = overlap
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_checkpoint,

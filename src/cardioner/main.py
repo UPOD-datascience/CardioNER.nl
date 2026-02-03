@@ -17,6 +17,7 @@ from functools import partial
 from typing import Dict, List, Literal, Optional, Tuple
 
 import evaluate
+import pandas as pd
 from datasets import Dataset
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
@@ -28,9 +29,14 @@ from sklearn.utils import shuffle
 # https://huggingface.co/learn/nlp-course/en/chapter7/2
 from torch import bfloat16, cuda
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
+from transformers import (
+    AutoConfig,
+    AutoModelForTokenClassification,
+    AutoTokenizer,
+    pipeline,
+)
 
-from cardioner import model_merger, parse_performance_json
+from cardioner import evaluation, model_merger, parse_performance_json, predictor
 from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
 
 # Clear any existing CUDA context
@@ -47,9 +53,14 @@ def inference(
     lang: str = "nl",
     max_word_per_chunk: int | None = None,
     trust_remote_code: bool = False,
+    strategy: Literal["simple", "average", "first", "max"] = "simple",
+    pipe: Literal["custom", "hf"] = "hf",
+    dt4h_post_hoc_cleaning=True,
+    dt4h_min_confidence=0.5,
 ):
     """
     Run inference on a corpus using a pre-trained model.
+    Uses the simple aggregation from the huggingface tokenclassification pipeline
 
     Args:
         corpus_data: List of documents with 'id' and 'text' fields
@@ -63,83 +74,178 @@ def inference(
     Returns:
         List of prediction results
     """
-    import pandas as pd
-    from transformers import pipeline
 
     # Create output tsv path
     output_tsv_path = os.path.join(output_dir, "predictions.tsv")
+    ref_tsv_path = os.path.join(output_dir, "reference.tsv")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Auto-detect max_word_per_chunk from tokenizer if not provided
-    if max_word_per_chunk is None:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=trust_remote_code
-        )
-        max_word_per_chunk = tokenizer.model_max_length // 2
-        assert max_word_per_chunk < 10000, (
-            f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
-            f"This seems too large. Please specify --max_word_per_chunk explicitly."
-        )
-        print(
-            f"Auto-detected max_word_per_chunk: {max_word_per_chunk} (from tokenizer max_length: {tokenizer.model_max_length})"
-        )
-
-    print(f"Loading model from {model_path}...")
-    print(f"Processing {len(corpus_data)} samples with NER pipeline...")
-    print(f"Output will be saved to {output_tsv_path}")
-
-    # Load the model for NER
-    ner_pipeline = pipeline(
-        "ner",
-        stride=max_word_per_chunk,
-        model=model_path,
-        tokenizer=model_path,
-        aggregation_strategy="simple",
-        trust_remote_code=trust_remote_code,
-    )
-
-    results = []
-
-    for doc in tqdm(corpus_data, desc="Running inference"):
-        doc_id = doc.get("id", "unknown")
-        text = doc.get("text", "")
-
-        if not text:
-            continue
-
-        # Get predictions
-        entities = process_pipe(
-            text, ner_pipeline, max_word_per_chunk=max_word_per_chunk, lang=lang
-        )
-
-        for entity in entities:
-            # Extract needed information
-            tag = entity.get("entity_group", "").replace("B-", "").replace("I-", "")
-            start_span = entity.get("start", 0)
-            end_span = entity.get("end", 0)
-            entity_text = entity.get("word", text[start_span:end_span])
-
-            # Add to results
-            results.append(
-                {
-                    "filename": doc_id,
-                    "label": tag,
-                    "start_span": start_span,
-                    "end_span": end_span,
-                    "text": entity_text,
-                }
+    if pipe == "hf":
+        # Auto-detect max_word_per_chunk from tokenizer if not provided
+        if max_word_per_chunk is None:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=trust_remote_code
+            )
+            max_word_per_chunk = tokenizer.model_max_length // 2
+            assert max_word_per_chunk < 10000, (
+                f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
+                f"This seems too large. Please specify --max_word_per_chunk explicitly."
+            )
+            print(
+                f"Auto-detected max_word_per_chunk: {max_word_per_chunk} (from tokenizer max_length: {tokenizer.model_max_length})"
             )
 
+        print(f"Loading model from {model_path}...")
+        print(f"Processing {len(corpus_data)} samples with NER pipeline...")
+        print(f"Output will be saved to {output_tsv_path}")
+
+        # Load the model for NER
+        ner_pipeline = pipeline(
+            "token-classification",
+            stride=max_word_per_chunk,
+            model=model_path,
+            tokenizer=model_path,
+            aggregation_strategy=strategy,
+            trust_remote_code=trust_remote_code,
+        )
+
+        pred_results = []
+        ref_results = []
+        for doc in tqdm(corpus_data, desc="Running inference"):
+            doc_id = doc.get("id", "unknown")
+            text = doc.get("text", "")
+
+            # if doc.get("tags", None) is not None add ref_results
+            ref_tags = doc.get("tags", None)
+            if isinstance(ref_tags, list):
+                for _tag in ref_tags:
+                    entity_text = text[_tag["start"] : _tag["end"]]
+                    ref_results.append(
+                        {
+                            "filename": doc_id,
+                            "label": _tag["tag"],
+                            "start_span": _tag["start"],
+                            "end_span": _tag["end"],
+                            "text": entity_text,
+                        }
+                    )
+
+            if not text:
+                continue
+
+            # Get predictions
+            entities = process_pipe(
+                text, ner_pipeline, max_word_per_chunk=max_word_per_chunk, lang=lang
+            )
+
+            for entity in entities:
+                # Extract needed information
+                tag = entity.get("entity_group", "").replace("B-", "").replace("I-", "")
+                start_span = entity.get("start", 0)
+                end_span = entity.get("end", 0)
+                entity_text = entity.get("word", text[start_span:end_span])
+
+                # Add to results
+                pred_results.append(
+                    {
+                        "filename": doc_id,
+                        "label": tag,
+                        "start_span": start_span,
+                        "end_span": end_span,
+                        "text": entity_text,
+                    }
+                )
+    else:
+        ner_pipe = predictor.PredictionNER(model_checkpoint=model_path, revision=None)
+        pred_results = []
+        ref_results = []
+        for doc in tqdm(corpus_data, desc="Running inference"):
+            doc_id = doc.get("id", "unknown")
+            text = doc.get("text", "")
+            # text = text.replace("\n", " ").replace("\t", " ")
+
+            # if doc.get("tags", None) is not None add ref_results
+            ref_tags = doc.get("tags", None)
+            if isinstance(ref_tags, list):
+                for _tag in ref_tags:
+                    entity_text = text[_tag["start"] : _tag["end"]]
+                    ref_results.append(
+                        {
+                            "filename": doc_id,
+                            "label": _tag["tag"],
+                            "start_span": _tag["start"],
+                            "end_span": _tag["end"],
+                            "text": entity_text,
+                        }
+                    )
+
+            if not text:
+                continue
+
+            res = ner_pipe.do_prediction(
+                text,
+                confidence_threshold=dt4h_min_confidence,
+                post_hoc_cleaning=dt4h_post_hoc_cleaning,
+            )
+            if len(res) > 0:
+                for _res in res:
+                    pred_results.append(
+                        {
+                            "filename": doc_id,
+                            "label": _res["tag"],
+                            "start_span": _res["start"],
+                            "end_span": _res["end"],
+                            "text": _res["text"],
+                        }
+                    )
+
     # Create DataFrame and save to TSV
-    if results:
-        df = pd.DataFrame(results)
+    if isinstance(pred_results, list) and len(pred_results) > 0:
+        df = pd.DataFrame(pred_results)
         df.to_csv(output_tsv_path, sep="\t", index=False)
         print(f"Predictions saved to {output_tsv_path}")
-        print(f"Total entities found: {len(results)}")
+        print(f"Total entities predicted: {len(pred_results)}")
     else:
         print("No entities found in the corpus")
 
-    return results
+    if isinstance(ref_results, list) and len(ref_results) > 0:
+        df_ref = pd.DataFrame(ref_results)
+        df_ref.to_csv(ref_tsv_path, sep="\t", index=False)
+
+        # remove entity classes that are not present in the prediction df
+        df_ref = df_ref.loc[df_ref.label.isin(df.label.unique())]
+
+        print(f"Reference results saved to {ref_tsv_path}")
+        print(f"Total entities in reference data: {len(df_ref)}")
+    else:
+        print("No entities found in the corpus")
+
+    # scoring, if possible
+    if len(ref_results) > 0:
+        print(
+            f"Performing sequence scoring and writing to {output_dir}/sequence_result.json"
+        )
+        res_by_cat_strict, micro_summ_strict, macro_summ_strict = (
+            evaluation.calculate_metrics_strict(df_ref, df)
+        )
+        res_by_cat_relaxed, micro_summ_relaxed, macro_summ_relaxed = (
+            evaluation.calculate_metrics_relaxed(df_ref, df)
+        )
+        final_dict = {
+            "strict": {
+                "per_category": res_by_cat_strict,
+                "micro": micro_summ_strict,
+                "macro": macro_summ_strict,
+            },
+            "relaxed": {
+                "per_category": res_by_cat_relaxed,
+                "micro": micro_summ_relaxed,
+                "macro": macro_summ_relaxed,
+            },
+        }
+        json.dump(final_dict, open(f"{output_dir}/sequence_result.json", "w"))
+
+    return pred_results
 
 
 def inference_multihead_crf(
@@ -152,6 +258,7 @@ def inference_multihead_crf(
 ):
     """
     Run inference on a corpus using a pre-trained MultiHead CRF model.
+    Uses the simple aggregation from the huggingface tokenclassification pipeline
 
     Args:
         corpus_data: List of documents with 'id' and 'text' fields
@@ -1578,6 +1685,18 @@ if __name__ == "__main__":
         default=False,
         help="Trust remote code when loading custom models",
     )
+    argparsers.add_argument(
+        "--inference_strategy",
+        choices=["simple", "average", "first", "max"],
+        default="simple",
+        help="Inference strategy for the model",
+    )
+    argparsers.add_argument(
+        "--inference_pipe",
+        choices=["hf", "dt4h"],
+        default="hf",
+        help="Use the standard pipeline [hf] for token classification or our custom inference class [dt4h], not that in the latter case the inference strategy is moot. For now [dt4h] only works for multilabel/multiclass, not CRF",
+    )
 
     args = argparsers.parse_args()
 
@@ -1715,6 +1834,8 @@ if __name__ == "__main__":
                 lang=lang,
                 max_word_per_chunk=None,  # Auto-detect from tokenizer
                 trust_remote_code=args.trust_remote_code,
+                strategy=args.inference_strategy,
+                pipe=args.inference_pipe,
             )
 
         print("Inference completed!")

@@ -76,8 +76,8 @@ def calculate_metrics_strict(gs: pd.DataFrame, pred: pd.DataFrame) -> Tuple[Dict
             - Dict[str, float]: Macro-averaged precision, recall, and F1-score.
     """
 
-    gs = gs.drop_duplicates(subset=[FILE_NAME, "offset", LABEL_TAG])
-    pred = pred.drop_duplicates(subset=[FILE_NAME, "offset", LABEL_TAG])
+    #gs = gs.drop_duplicates(subset=[FILE_NAME, "offset", LABEL_TAG])
+    #pred = pred.drop_duplicates(subset=[FILE_NAME, "offset", LABEL_TAG])
 
     labels = sorted(set(gs[LABEL_TAG].unique()) | set(pred[LABEL_TAG].unique()))
     result_by_cat = {}
@@ -94,7 +94,7 @@ def calculate_metrics_strict(gs: pd.DataFrame, pred: pd.DataFrame) -> Tuple[Dict
         GS_Pos = gs_label.shape[0]
         Pred_Pos = pred_label.shape[0]
 
-        merged = pd.merge(pred_label, gs_label, how="inner", on=[FILE_NAME, "offset", LABEL_TAG])
+        merged = pd.merge(pred_label, gs_label, how="inner", on=[FILE_NAME, START_SPAN_TAG, END_SPAN_TAG, LABEL_TAG])
         TP = merged.shape[0]
         FP = Pred_Pos - TP
         FN = GS_Pos - TP
