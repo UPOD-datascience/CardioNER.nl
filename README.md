@@ -184,7 +184,7 @@ python3 push_to_huggingface.py --data_organization=DT4H-IE --repo_id=DT4H-IE/Car
 ```
 
 
-Training:
+# Training:
 
 **Multilabel**
 ```
@@ -245,3 +245,16 @@ python main.py \
     --parse_annotations \
     --output_dir ./output_multihead
 ```
+
+
+# Inference:
+
+To run the inference on a validation split with the standard Huggingface pipeline, with simple aggregation, run
+
+```bash
+python main.py
+ --lang=nl --inference_only --model_path=/path/to/model --corpus_train=/path/to/train.json --output_dir=folder/for/results --split_file=/path/to/splits.json
+```
+
+Alternatively you can change the aggregation to "average", "first", "max" with the ```--inference_strategy``` flag.
+You can change inference method to the dth4 inference method with ```--inference_pipe=dt4h```. This works with standard multilabel and multiclass, multiclass multihead and multiclass (multihead) crf are WIP.
