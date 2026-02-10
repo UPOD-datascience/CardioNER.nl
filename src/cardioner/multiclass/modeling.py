@@ -1226,10 +1226,14 @@ class TokenClassificationModel(PreTrainedModel):
         self.config = config
         self.num_labels = config.num_labels
 
-        # Initialize the roberta backbone
-        from transformers import RobertaModel
+        # Initialize the roberta backbone - load pretrained weights
+        from transformers import AutoModel
 
-        self.roberta = RobertaModel(config, add_pooling_layer=False)
+        # Load pretrained weights like multilabel model does
+        # config.name_or_path contains the model name/path
+        self.roberta = AutoModel.from_pretrained(
+            config.name_or_path, config=config, add_pooling_layer=False
+        )
         self.dropout = nn.Dropout(
             config.hidden_dropout_prob
             if hasattr(config, "hidden_dropout_prob")

@@ -249,7 +249,7 @@ python main.py \
 
 # Inference:
 
-To run the inference on a validation split with the standard Huggingface pipeline, with simple aggregation, run
+To run the end2end (with span detection) inference on a validation split with the standard Huggingface pipeline, with simple aggregation, run
 
 ```bash
 python main.py
@@ -257,4 +257,58 @@ python main.py
 ```
 
 Alternatively you can change the aggregation to "average", "first", "max" with the ```--inference_strategy``` flag.
-You can change inference method to the dth4 inference method with ```--inference_pipe=dt4h```. This works with standard multilabel and multiclass, multiclass multihead and multiclass (multihead) crf are WIP.
+You can change inference method to the dth4 inference method with ```--inference_pipe=dt4h```. This works with standard multilabel and multiclass. Multiclass multihead and multiclass (multihead) CRF are WIP.
+
+There will be 3 outputs in the output_dir; ```predictions.tsv```, ```reference.tsv```and ```sequence_result.json``` with the latter containing the sequence scores as follows;
+```json
+{
+  "strict": {
+    "per_category": {
+      "DISEASE": { "Precision": 0.69, "Recall": 0.64, "F1": 0.67 },
+      "MEDICATION": { "Precision": 0.83, "Recall": 0.84, "F1": 0.83 },
+      "PROCEDURE": { "Precision": 0.73, "Recall": 0.63, "F1": 0.68 },
+      "SYMPTOM": { "Precision": 0.66, "Recall": 0.61, "F1": 0.63 }
+    },
+    "micro": { "Precision": 0.7, "Recall": 0.65, "F1": 0.67 },
+    "macro": { "Precision": 0.73, "Recall": 0.68, "F1": 0.7 }
+  },
+  "relaxed": {
+    "per_category": {
+      "DISEASE": { "Precision": 0.86, "Recall": 0.81, "F1": 0.83 },
+      "MEDICATION": { "Precision": 0.87, "Recall": 0.88, "F1": 0.88 },
+      "PROCEDURE": { "Precision": 0.89, "Recall": 0.77, "F1": 0.83 },
+      "SYMPTOM": { "Precision": 0.81, "Recall": 0.76, "F1": 0.78 }
+    },
+    "micro": { "Precision": 0.85, "Recall": 0.79, "F1": 0.82 },
+    "macro": { "Precision": 0.86, "Recall": 0.8, "F1": 0.83 }
+  }
+}
+```
+
+
+We also provide options to process an annotated set structured as follows:
+```bash
+assets/
+    annotated/
+        id1.jsonl
+        id2.jsonl
+        ..
+```
+
+with, in each ```.jsonl```
+
+```json 
+{
+  "entity_group": "MEDICATION",
+  "span_text": "omeprazol",
+  "start": 1462,
+  "end": 1471 
+}
+{
+  "entity_group": "MEDICATION",
+  "span_text": "prednison",
+  "start": 1501,
+  "end": 1510 
+}
+...
+```

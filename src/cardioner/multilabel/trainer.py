@@ -441,6 +441,9 @@ class ModelTrainer:
         if self.class_weights is not None:
             # Ensure all weights are positive
             self.class_weights = torch.abs(self.class_weights)
+            print("Class weights are positive")
+            print(f"Weight: {self.class_weights}")
+            print("#" * 100)
 
         self.label2id = label2id
         self.id2label = id2label

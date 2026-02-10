@@ -193,7 +193,18 @@ class ModelTrainer:
 
         self.classifier_hidden_layers = classifier_hidden_layers
         self.classifier_dropout = classifier_dropout
-        self.class_weights = class_weights
+
+        self.class_weights = (
+            torch.tensor(class_weights, dtype=torch.float)
+            if class_weights is not None
+            else None
+        )
+        if self.class_weights is not None:
+            # Ensure all weights are positive
+            self.class_weights = torch.abs(self.class_weights)
+            print("Class weights are positive")
+            print(f"Weight: {self.class_weights}")
+            print("#" * 100)
 
         if use_crf:
             if TokenClassificationModelCRF is None:
@@ -271,6 +282,19 @@ class ModelTrainer:
         else:
             predictions = np.argmax(logits, -1)
 
+        # === DEBUG: Check prediction distribution ===
+        pred_flat = np.array(predictions).flatten()
+        label_flat = np.array(labels).flatten()
+        valid_mask = label_flat != -100
+
+        print("\n=== Evaluation prediction distribution ===")
+        for label_id, label_name in self.id2label.items():
+            pred_count = (pred_flat[valid_mask] == label_id).sum()
+            true_count = (label_flat[valid_mask] == label_id).sum()
+            print(f"  {label_name}: pred={pred_count}, true={true_count}")
+        print("=" * 50 + "\n")
+        # === END DEBUG ===
+        #
         # Access the id2label mapping
         id2label = self.id2label  # Dictionary mapping IDs to labels
 
@@ -327,7 +351,10 @@ class ModelTrainer:
         self.model.config.architectures = [self.model.__class__.__name__]
         self.model.config.classifier_hidden_layers = self.classifier_hidden_layers
         self.model.config.classifier_dropout = self.classifier_dropout
-        self.model.config.class_weights = self.class_weights
+        # Convert tensor to list for JSON serialization
+        self.model.config.class_weights = (
+            self.class_weights.tolist() if self.class_weights is not None else None
+        )
 
         # Save model and tokenizer
         self.model.save_pretrained(save_dir)
@@ -351,18 +378,74 @@ class ModelTrainer:
             _eval_data = test_data
         else:
             _eval_data = eval_data
+        # Print initial class distribution from training data
+        print("\n=== Initial class distribution in training data ===")
+        initial_counts = torch.zeros(len(self.label2id), dtype=torch.long)
+        total_initial_tokens = 0
+        for sample in train_data:
+            if "labels" in sample:
+                labels = sample["labels"]
+                if isinstance(labels, list):
+                    labels = torch.tensor(labels)
+                elif not isinstance(labels, torch.Tensor):
+                    labels = torch.tensor(labels)
+                for label_id in range(len(self.label2id)):
+                    count = (labels == label_id).sum().item()
+                    initial_counts[label_id] += count
+                valid_count = (labels != -100).sum().item()
+                total_initial_tokens += valid_count
+
+        for i, count in enumerate(initial_counts.tolist()):
+            label_name = self.id2label.get(i, f"class_{i}")
+            pct = 100 * count / total_initial_tokens if total_initial_tokens > 0 else 0
+            print(f"  {label_name}: {count} ({pct:.2f}%)")
+        print(f"Total tokens: {total_initial_tokens}")
+        print("=" * 50 + "\n")
 
         # Custom save function to properly handle non-PreTrainedModel models
         class CustomTrainer(Trainer):
-            def __init__(self, parent_trainer, **kwargs):
+            def __init__(
+                self, parent_trainer, class_weights=None, max_weight=50.0, **kwargs
+            ):
                 super().__init__(**kwargs)
                 self.parent_trainer = parent_trainer
+                self.class_weights = class_weights
+                if class_weights is not None:
+                    # Cap weights to prevent numerical instability
+                    capped_weights = [min(w, max_weight) for w in class_weights]
+                    self.loss_fct = nn.CrossEntropyLoss(
+                        weight=torch.tensor(capped_weights, dtype=torch.float).to(
+                            self.args.device
+                        ),
+                        ignore_index=-100,
+                    )
+                else:
+                    self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+
+            def compute_loss(
+                self,
+                model,
+                inputs,
+                return_outputs=False,
+                num_items_in_batch=None,
+                **kwargs,
+            ):
+                labels = inputs.pop("labels")
+                outputs = model(**inputs)
+                logits = outputs.logits
+
+                # logits: (batch, seq_len, num_labels)
+                # labels: (batch, seq_len)
+                loss = self.loss_fct(logits.view(-1, logits.shape[-1]), labels.view(-1))
+
+                return (loss, outputs) if return_outputs else loss
 
             def save_model(self, output_dir=None, _internal_call=False):
                 self.parent_trainer.save_model(output_dir)
 
         trainer = CustomTrainer(
             parent_trainer=self,
+            class_weights=self.class_weights,  # pass the weights
             model=self.model,
             args=self.args,
             train_dataset=train_data,

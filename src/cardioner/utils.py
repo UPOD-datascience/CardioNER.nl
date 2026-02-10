@@ -1,91 +1,108 @@
+import hashlib
+import json
+import os
 import pprint
+import warnings
+from collections import defaultdict
+from typing import Dict, List, Literal, Optional
+
+import pandas as pd
 import torch
 import torch.nn as nn
-from collections import defaultdict
-from tqdm import tqdm
-from typing import Dict, List, Literal, Optional
-import hashlib
-import warnings
-import os
-import json
-import pandas as pd
-from transformers import pipeline
 from datasets import Dataset
-
+from spacy.lang.cs import Czech
 from spacy.lang.en import English
 from spacy.lang.es import Spanish
-from spacy.lang.nl import Dutch
 from spacy.lang.it import Italian
+from spacy.lang.nl import Dutch
 from spacy.lang.ro import Romanian
 from spacy.lang.sv import Swedish
-from spacy.lang.cs import Czech
+from tqdm import tqdm
+from transformers import pipeline
 
 lang_dict = {
-    'es': Spanish,
-    'nl': Dutch,
-    'en': English,
-    'it': Italian,
-    'ro': Romanian,
-    'sv': Swedish,
-    'cz': Czech
+    "es": Spanish,
+    "nl": Dutch,
+    "en": English,
+    "it": Italian,
+    "ro": Romanian,
+    "sv": Swedish,
+    "cz": Czech,
 }
+
 
 def _offset_tags(tags, offset):
     replacement = []
     for _tags in tags:
-        _tags['start'] += offset
-        _tags['end'] += offset
+        _tags["start"] += offset
+        _tags["end"] += offset
         replacement.append(_tags)
     return replacement
+
 
 def pipe_with_progress(pipe, texts, batch_size=16, **kwargs):
     results = []
     for i in tqdm(range(0, len(texts), batch_size), desc="Running pipeline"):
-        batch = texts[i:i+batch_size]
+        batch = texts[i : i + batch_size]
         batch_results = pipe(batch, **kwargs)
         results.extend(batch_results)
     return results
 
-def process_pipe(text: str|Dataset|List[str],
-                 pipe: pipeline,
-                 max_word_per_chunk: int=256,
-                 hf_stride: bool=True,
-                 batch_size: int=16,
-                 lang: Literal['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']='en') -> List[Dict[str, str]]|List[List[Dict[str,str]]]:
-    '''
-      text: The text to process
-      pipe: The transformers pipeline to use
-      max_word_per_chunk: The maximum number of words per chunk,
-        we need this to avoid exceeding the maximum input size of the model
-      lang: The language of the text
-      batch_size: batch_size in case the input is a Dataset
-      hf_stride: use stride that is part of the huggingface pipe
-    '''
-    assert(lang in ['es', 'nl', 'en', 'it', 'ro', 'sv', 'cz']), f"Language {lang} not supported"
-    assert isinstance(text, str) or isinstance(text, Dataset) or isinstance(text, List), f"Text must be of type str or Dataset, got {type(text)}"
+
+def process_pipe(
+    text: str | Dataset | List[str],
+    pipe: pipeline,
+    max_word_per_chunk: int = 256,
+    hf_stride: bool = True,
+    batch_size: int = 16,
+    lang: Literal["es", "nl", "en", "it", "ro", "sv", "cz"] = "en",
+) -> List[Dict[str, str]] | List[List[Dict[str, str]]]:
+    """
+    text: The text to process
+    pipe: The transformers pipeline to use
+    max_word_per_chunk: The maximum number of words per chunk,
+      we need this to avoid exceeding the maximum input size of the model
+    lang: The language of the text
+    batch_size: batch_size in case the input is a Dataset
+    hf_stride: use stride that is part of the huggingface pipe
+    """
+    assert lang in ["es", "nl", "en", "it", "ro", "sv", "cz"], (
+        f"Language {lang} not supported"
+    )
+    assert (
+        isinstance(text, str) or isinstance(text, Dataset) or isinstance(text, List)
+    ), f"Text must be of type str or Dataset, got {type(text)}"
 
     if not hf_stride and isinstance(text, Dataset):
         hf_stride = True
-        warnings.warn("The dataset loader only works with hf_stride==True, continuing with HF stride")
+        warnings.warn(
+            "The dataset loader only works with hf_stride==True, continuing with HF stride"
+        )
 
     if hf_stride:
         if isinstance(text, Dataset):
             # Extract texts from the Dataset
-            texts = text['text']
-            named_ents = pipe_with_progress(pipe, texts, batch_size, stride=max_word_per_chunk)
+            texts = text["text"]
+            named_ents = pipe_with_progress(
+                pipe, texts, batch_size, stride=max_word_per_chunk
+            )
         else:
             if isinstance(text, list):
                 named_ents = []
                 for _text in text:
-                    assert(isinstance(_text, str)), f"_text should be a string here but instead is {type(_text)}"
+                    assert isinstance(_text, str), (
+                        f"_text should be a string here but instead is {type(_text)}"
+                    )
                     _ents = pipe(_text)
                     named_ents.extend(_ents)
             else:
                 named_ents = pipe(text, stride=max_word_per_chunk)
     else:
-        raise NotImplementedError("..Use hf_stride=True for now..and probably forever :D")
+        raise NotImplementedError(
+            "..Use hf_stride=True for now..and probably forever :D"
+        )
         nlp = lang_dict[lang]()
-        nlp.add_pipe('sentencizer')
+        nlp.add_pipe("sentencizer")
         doc = nlp(text)
         # only necessary if no FastTokenizer is available or aggregation_strategy is None
         sentence_bag = []
@@ -98,8 +115,8 @@ def process_pipe(text: str|Dataset|List[str],
                 txt = " ".join(sentence_bag)
                 _named_ents = pipe(txt)
                 # add offsets
-                if offset>0:
-                    _named_ents =_offset_tags(_named_ents, offset)
+                if offset > 0:
+                    _named_ents = _offset_tags(_named_ents, offset)
                 named_ents.extend(_named_ents)
                 sentence_bag = []
                 word_count = len(sent)
@@ -108,13 +125,15 @@ def process_pipe(text: str|Dataset|List[str],
         if len(sentence_bag) > 0:
             _named_ents = pipe(".".join(sentence_bag))
             named_ents.extend(_named_ents)
-            if offset>0:
+            if offset > 0:
                 _named_ents = _offset_tags(_named_ents, offset)
     return named_ents
+
 
 def pretty_print_classifier(classifier):
     """Pretty print a PyTorch module with indentation and structure details."""
     import pprint
+
     import torch.nn as nn
 
     pp = pprint.PrettyPrinter(indent=4, width=100)
@@ -126,23 +145,21 @@ def pretty_print_classifier(classifier):
         # Create a structured representation as a dictionary
         layers_info = {}
         for i, layer in enumerate(classifier):
-            layer_info = {
-                'type': layer.__class__.__name__
-            }
+            layer_info = {"type": layer.__class__.__name__}
 
             # Add details based on layer type
             if isinstance(layer, nn.Linear):
-                layer_info['in_features'] = layer.in_features
-                layer_info['out_features'] = layer.out_features
+                layer_info["in_features"] = layer.in_features
+                layer_info["out_features"] = layer.out_features
             elif isinstance(layer, nn.Dropout):
-                layer_info['p'] = layer.p
+                layer_info["p"] = layer.p
             elif isinstance(layer, nn.BatchNorm1d):
-                layer_info['num_features'] = layer.num_features
-            elif hasattr(layer, 'in_channels') and hasattr(layer, 'out_channels'):
-                layer_info['in_channels'] = layer.in_channels
-                layer_info['out_channels'] = layer.out_channels
+                layer_info["num_features"] = layer.num_features
+            elif hasattr(layer, "in_channels") and hasattr(layer, "out_channels"):
+                layer_info["in_channels"] = layer.in_channels
+                layer_info["out_channels"] = layer.out_channels
 
-            layers_info[f'layer_{i}'] = layer_info
+            layers_info[f"layer_{i}"] = layer_info
 
         # Use pprint to format the dictionary
         return f"Sequential with {len(classifier)} layers:\n{pp.pformat(layers_info)}"
@@ -151,15 +168,20 @@ def pretty_print_classifier(classifier):
     try:
         # Try to extract meaningful attributes
         module_info = {
-            'type': classifier.__class__.__name__,
-            'parameters': {name: param.size() for name, param in classifier.named_parameters()}
+            "type": classifier.__class__.__name__,
+            "parameters": {
+                name: param.size() for name, param in classifier.named_parameters()
+            },
         }
         return pp.pformat(module_info)
     except:
         # Fallback
         return str(classifier)
 
-def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_factor=0.05):
+
+def calculate_class_weights(
+    dataset, label2id, multiclass=False, smoothing_factor=0.001, max_weight=50.0
+):
     """
     Calculate class weights based on label frequency in the dataset.
 
@@ -167,7 +189,8 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
         dataset: Training dataset containing token labels
         label2id: Dictionary mapping label names to ids
         multilabel: Whether labels are multilabel (one-hot encoded)
-        smoothing_factor: Smoothing factor to avoid extreme weights
+        smoothing_factor: Smoothing factor to avoid extreme weights (unused, kept for compatibility)
+        max_weight: Maximum weight to prevent numerical instability (default: 50.0)
 
     Returns:
         List of class weights
@@ -178,15 +201,21 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
     print("Extracting class weights from training set...")
     # Count label occurrences
     for example in tqdm(dataset):
-        labels = example['labels']
+        labels = example["labels"]
 
-        if multiclass==False:
+        if multiclass == False:
             # For multilabel: labels are one-hot encoded [seq_length, num_labels]
             # Convert to tensor if it's a list
-            labels_tensor = torch.tensor(labels) if not isinstance(labels, torch.Tensor) else labels
+            labels_tensor = (
+                torch.tensor(labels) if not isinstance(labels, torch.Tensor) else labels
+            )
 
             # Skip padding tokens (assuming padding tokens have all zeros or special value)
-            valid_tokens = (labels_tensor.sum(dim=-1) > 0) if labels_tensor.ndim > 1 else (labels_tensor != -100)
+            valid_tokens = (
+                (labels_tensor.sum(dim=-1) > 0)
+                if labels_tensor.ndim > 1
+                else (labels_tensor != -100)
+            )
 
             # Count each class occurrence
             if labels_tensor.ndim > 1:  # One-hot encoded
@@ -211,20 +240,35 @@ def calculate_class_weights(dataset, label2id, multiclass=False, smoothing_facto
     num_classes = len(label2id)
 
     for i in range(num_classes):
-        count = label_counts.get(i, 0)
-        # Apply smoothing to avoid division by zero and extreme values
-        weight = (total_tokens / (count + smoothing_factor * total_tokens))
+        count = label_counts.get(i, 1)  # Use 1 instead of 0 to avoid div by zero
+        # Simple inverse frequency: total / (num_classes * count)
+        weight = total_tokens / (num_classes * count)
         weights.append(weight)
 
-    # Normalize weights to have an average of 1
-    weights = [w / sum(weights) * len(weights) for w in weights]
+    # Normalize relative to O (class 0) - keeps O at 1.0, scales others proportionally
+    # This avoids numerical instability from very small O weights
+    o_weight = weights[0] if weights[0] > 0 else 1.0
+    weights = [w / o_weight for w in weights]
+
+    # Cap weights to prevent numerical instability (gradient explosion -> nan loss)
+    original_weights = weights.copy()
+    weights = [min(w, max_weight) for w in weights]
 
     id2label = {i: label for i, label in enumerate(label2id)}
-    print(f'Extracted class weights: {[f"{id2label[i]}_{str(w)}" for i,w in enumerate(weights)]}')
+    print(
+        f"Extracted class weights (before cap): {[f'{id2label[i]}_{w:.2f}' for i, w in enumerate(original_weights)]}"
+    )
+    print(
+        f"Extracted class weights (capped at {max_weight}): {[f'{id2label[i]}_{w:.2f}' for i, w in enumerate(weights)]}"
+    )
     return weights
 
-def fix_misdecoded_string(s, incorrect_encoding: Literal['latin-1', 'cp1252']='cp1252',
-    correct_encoding='utf-8'):
+
+def fix_misdecoded_string(
+    s,
+    incorrect_encoding: Literal["latin-1", "cp1252"] = "cp1252",
+    correct_encoding="utf-8",
+):
     """Attempts to fix a string that was likely misdecoded."""
     try:
         # Encode the string using the assumed incorrect encoding
@@ -236,7 +280,12 @@ def fix_misdecoded_string(s, incorrect_encoding: Literal['latin-1', 'cp1252']='c
         # If encoding/decoding fails, return the original string
         return s
 
-def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252']='cp1252', prefix='Ġ'):
+
+def fix_tokenizer(
+    vocab_file: str,
+    initial_encoding: Literal["latin-1", "cp1252"] = "cp1252",
+    prefix="Ġ",
+):
     """
     Given a vocab.json we go through the tokens and correct the encoding garbling with fix_misdecoded_string
     We save the original vocab.json as vocab_bak.json and write the corrected one to vocab.json
@@ -249,17 +298,17 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
     if not os.path.exists(vocab_file):
         raise FileNotFoundError(f"Vocabulary file not found: {vocab_file}")
 
-    if not vocab_file.endswith('.json'):
+    if not vocab_file.endswith(".json"):
         raise ValueError(f"Expected a JSON file, got: {vocab_file}")
 
     try:
-        with open(vocab_file, 'r', encoding='utf-8') as f:
+        with open(vocab_file, "r", encoding="utf-8") as f:
             vocab = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON file: {vocab_file}. Error: {e}")
 
     # Create backup of original vocab file
-    backup_file = vocab_file.replace('.json', '_bak.json')
+    backup_file = vocab_file.replace(".json", "_bak.json")
     shutil.copy2(vocab_file, backup_file)
     print(f"Created backup: {backup_file}")
 
@@ -290,24 +339,24 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
             fixed_token = fix_misdecoded_string(_token)
 
         # Check if the token was actually changed
-        if (fixed_token != _token) and (ignore==False):
+        if (fixed_token != _token) and (ignore == False):
             fixed_count += 1
             broken_tokens.append(token)
             print(f"Fixed token: '{token}' -> '{fixed_token}'")
 
-        if token == 'ĠĠ':
+        if token == "ĠĠ":
             print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
 
         if add_prefix:
             fixed_token = prefix + fixed_token
 
-        if token == 'ĠĠ':
+        if token == "ĠĠ":
             print(fixed_token, "|", token, "|", ignore, "|", add_prefix, "|", token_id)
         vocab_map[token] = fixed_token
         fixed_vocab[fixed_token] = token_id
 
     # Write the corrected vocabulary back to the original file
-    with open(f"{vocab_file}.fix", 'w', encoding='utf-8') as f:
+    with open(f"{vocab_file}.fix", "w", encoding="utf-8") as f:
         json.dump(fixed_vocab, f, ensure_ascii=False, indent=2)
 
     print(f"Fixed {fixed_count} tokens in vocabulary")
@@ -319,88 +368,101 @@ def fix_tokenizer(vocab_file: str, initial_encoding: Literal['latin-1', 'cp1252'
     vocab_folder = os.path.dirname(vocab_file)
     merges_new = []
     # go through lines, split by " ", check if [0] is in fixed_vocab and replace with that term
-    with open(f"{vocab_folder}/merges.txt", 'r', encoding='utf-8') as fr:
+    with open(f"{vocab_folder}/merges.txt", "r", encoding="utf-8") as fr:
         fr.readline()
         for line in fr:
-            token, merge = line.strip().split(' ')
+            token, merge = line.strip().split(" ")
 
             new_token = vocab_map.get(token, token)
             new_merge = vocab_map.get(merge, merge)
             merges_new.append((new_token, new_merge))
 
     # write to new merges.txt file
-    with open(f"{vocab_folder}/merges.txt.fix", 'w', encoding='utf-8') as fw:
+    with open(f"{vocab_folder}/merges.txt.fix", "w", encoding="utf-8") as fw:
         for token, merge in merges_new:
             fw.write(f"{token} {merge}\n")
 
-def merge_annotations(annotation_directory: str, merge_key: str='id', tag_key: str='tags',
-                      text_key: str='text', annotation_tsv: str|None=None)->List[Dict]:
+
+def merge_annotations(
+    annotation_directory: str,
+    merge_key: str = "id",
+    tag_key: str = "tags",
+    text_key: str = "text",
+    annotation_tsv: str | None = None,
+) -> List[Dict]:
     # go through .jsonl's/.txts in directory
     #
 
     if isinstance(annotation_tsv, str):
-        annotation_df = pd.read_csv(annotation_tsv, sep='\t')
+        annotation_df = pd.read_csv(annotation_tsv, sep="\t")
     else:
         annotation_df = None
     annotations = []
     for _file in tqdm(os.listdir(annotation_directory)):
-        if _file.endswith('.jsonl'):
+        if _file.endswith(".jsonl"):
             file = os.path.join(annotation_directory, _file)
-            with open(file, 'r', encoding='utf-8') as fr:
+            with open(file, "r", encoding="utf-8") as fr:
                 for line in fr:
                     annotations.append(json.loads(line))
-        elif _file.endswith('.txt'):
+        elif _file.endswith(".txt"):
             if annotation_df is None:
-                UserWarning("The annotation tsv needs to be provided if you parse a list of .txts")
+                UserWarning(
+                    "The annotation tsv needs to be provided if you parse a list of .txts"
+                )
             file = os.path.join(annotation_directory, _file)
-            with open(file, 'r', encoding='utf-') as fr:
+            with open(file, "r", encoding="utf-") as fr:
                 text = fr.read()
-            fn = _file.split('.')[0]
+            fn = _file.split(".")[0]
             d = {merge_key: fn, text_key: text}
             if annotation_df is None:
                 d[tag_key] = []
             else:
                 # name, tag, start_span, end_span
                 # filename, label, start_span, end_span
-                r = annotation_df.query(f'filename=="{fn.strip()}"')[['label', 'start_span', 'end_span']]
-                d[tag_key] = [{'tag': row[0], 'start': row[1], 'end': row[2] } for row in r]
+                r = annotation_df.query(f'filename=="{fn.strip()}"')[
+                    ["label", "start_span", "end_span"]
+                ]
+                d[tag_key] = [
+                    {"tag": row[0], "start": row[1], "end": row[2]} for row in r
+                ]
             annotations.append(d)
-    if len(annotations)==0:
-        raise ValueError("No JSONL or TXT file found in the directory, maybe check the directory?")
+    if len(annotations) == 0:
+        raise ValueError(
+            "No JSONL or TXT file found in the directory, maybe check the directory?"
+        )
 
-    NEW_DICT = defaultdict(lambda : defaultdict(list))
+    NEW_DICT = defaultdict(lambda: defaultdict(list))
     for d in tqdm(annotations):
         # list of tags
         tags = d[tag_key]
         text = d[text_key]
         id = d[merge_key]
 
-        assert(tags is not None), f"Tags should not be none: {id}"
+        assert tags is not None, f"Tags should not be none: {id}"
 
         NEW_DICT[id][tag_key].extend(tags)
         NEW_DICT[id][text_key].extend([text])
 
     NEW_DICT_LIST = []
-    for k,v in tqdm(NEW_DICT.items()):
+    for k, v in tqdm(NEW_DICT.items()):
         # check if text is consistent
         #
         list_of_texts = v[text_key]
         set_of_hashes = set()
         for t in list_of_texts:
-            _hash = hashlib.md5(t.encode('utf-8')).hexdigest()
+            _hash = hashlib.md5(t.encode("utf-8")).hexdigest()
             set_of_hashes.add(_hash)
 
-        if len(set_of_hashes)>1:
-            print(f"Skipping {k} because there are {len(set_of_hashes)} different texts")
+        if len(set_of_hashes) > 1:
+            print(
+                f"Skipping {k} because there are {len(set_of_hashes)} different texts"
+            )
             continue
 
-        _d = {
-            'id': k,
-            'tags': v[tag_key],
-            'text': list_of_texts[0]
-        }
+        _d = {"id": k, "tags": v[tag_key], "text": list_of_texts[0]}
         NEW_DICT_LIST.append(_d)
     return NEW_DICT_LIST
+
 
 def clean_spans(entities, original_text):
     """
@@ -430,20 +492,24 @@ def clean_spans(entities, original_text):
 
     for entity in entities:
         # Get the entity text and span boundaries
-        entity_text = original_text[entity["start"]:entity["end"]]
+        entity_text = original_text[entity["start"] : entity["end"]]
         start_span = entity["start"]
         end_span = entity["end"]
 
         # Text cleaning from predictor_manuela.py
         # Remove trailing space + punctuation if no opening parenthesis
         if len(entity_text) >= 2:
-            if entity_text[-2] == ' ' and entity_text[-1] in '.,;:!?' and '(' not in entity_text[:-2]:
+            if (
+                entity_text[-2] == " "
+                and entity_text[-1] in ".,;:!?"
+                and "(" not in entity_text[:-2]
+            ):
                 entity_text = entity_text[:-2]
                 end_span = end_span - 2
 
         # Remove trailing closing parenthesis if no opening parenthesis
         if len(entity_text) >= 1:
-            if entity_text[-1] == ')' and '(' not in entity_text:
+            if entity_text[-1] == ")" and "(" not in entity_text:
                 entity_text = entity_text[:-1]
                 end_span = end_span - 1
 
@@ -480,11 +546,12 @@ def clean_spans(entities, original_text):
             except ValueError:
                 return text.strip().isnumeric()
 
-        if (entity_text.strip() != '' and
-            entity_text != 'de' and
-            not is_numeric_only(entity_text) and
-            not is_special_char(entity_text)):
-
+        if (
+            entity_text.strip() != ""
+            and entity_text != "de"
+            and not is_numeric_only(entity_text)
+            and not is_special_char(entity_text)
+        ):
             # Create cleaned entity
             cleaned_entity = entity.copy()
             cleaned_entity["text"] = entity_text
@@ -498,12 +565,20 @@ def clean_spans(entities, original_text):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Fix tokenizer encoding issues')
-    parser.add_argument('--vocab-file', type=str, required=True,
-                        help='Path to the vocab.json file to fix')
-    parser.add_argument('--initial-encoding', type=str, default='cp1252',
-                        choices=['latin-1', 'cp1252'],
-                        help='Initial encoding to fix from (default: cp1252)')
+    parser = argparse.ArgumentParser(description="Fix tokenizer encoding issues")
+    parser.add_argument(
+        "--vocab-file",
+        type=str,
+        required=True,
+        help="Path to the vocab.json file to fix",
+    )
+    parser.add_argument(
+        "--initial-encoding",
+        type=str,
+        default="cp1252",
+        choices=["latin-1", "cp1252"],
+        help="Initial encoding to fix from (default: cp1252)",
+    )
 
     args = parser.parse_args()
 
