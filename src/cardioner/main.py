@@ -50,6 +50,7 @@ def inference(
     corpus_data: List[Dict],
     model_path: str,
     output_dir: str,
+    output_file_prefix: "",
     lang: str = "nl",
     max_word_per_chunk: int | None = None,
     trust_remote_code: bool = False,
@@ -76,8 +77,8 @@ def inference(
     """
 
     # Create output tsv path
-    output_tsv_path = os.path.join(output_dir, "predictions.tsv")
-    ref_tsv_path = os.path.join(output_dir, "reference.tsv")
+    output_tsv_path = os.path.join(output_dir, f"{output_file_prefix}predictions.tsv")
+    ref_tsv_path = os.path.join(output_dir, f"{output_file_prefix}reference.tsv")
     os.makedirs(output_dir, exist_ok=True)
 
     if pipe == "hf":
@@ -223,7 +224,7 @@ def inference(
     # scoring, if possible
     if len(ref_results) > 0:
         print(
-            f"Performing sequence scoring and writing to {output_dir}/sequence_result.json"
+            f"Performing sequence scoring and writing to {output_dir}/{output_file_prefix}sequence_result.json"
         )
         res_by_cat_strict, micro_summ_strict, macro_summ_strict = (
             evaluation.calculate_metrics_strict(df_ref, df)
@@ -243,7 +244,10 @@ def inference(
                 "macro": macro_summ_relaxed,
             },
         }
-        json.dump(final_dict, open(f"{output_dir}/sequence_result.json", "w"))
+        json.dump(
+            final_dict,
+            open(f"{output_dir}/{output_file_prefix}sequence_result.json", "w"),
+        )
 
     return pred_results
 

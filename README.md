@@ -285,6 +285,18 @@ There will be 3 outputs in the output_dir; ```predictions.tsv```, ```reference.t
 }
 ```
 
+To run inference tests on a folder of model folds use
+```bash
+python cardioner.run_inference_on_folds.py \
+    --bulk_file data/corpus.jsonl \
+    --splits_file data/splits.json \
+    --model_folder models/trained_folds \
+    --output_dir results/fold_inference \
+    --lang nl \
+    --pipe dt4h
+```
+
+This will produce results/prediction files for all folds, including an aggregated results file.
 
 We also provide options to process an annotated set structured as follows:
 ```bash

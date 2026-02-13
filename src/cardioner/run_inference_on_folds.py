@@ -1,7 +1,10 @@
 # process model folds with inference
+import argparse
 import json
 import os
 from typing import List, Literal, Tuple
+
+import numpy as np
 
 from cardioner import main
 
@@ -71,26 +74,357 @@ def get_model_folders(model_folder: str, folder_prefix="fold_"):
     return [f for f in os.listdir(model_folder) if f.startswith(folder_prefix)]
 
 
+def aggregate_results(
+    resultfile_list: List[str], output_file: str | None = None
+) -> dict:
+    """
+    Aggregate results from multiple fold result files.
+
+    Computes mean and standard deviation for all metrics across folds:
+    - strict/relaxed
+    - per_category (DISEASE, MEDICATION, PROCEDURE, SYMPTOM)
+    - micro/macro
+    - Precision, Recall, F1
+
+    Args:
+        resultfile_list: List of paths to result JSON files
+        output_file: Optional path to save aggregated results
+
+    Returns:
+        Dictionary with aggregated results (mean and std for each metric)
+    """
+    # Load all results
+    results = []
+    for f in resultfile_list:
+        with open(f, "r", encoding="utf-8") as fr:
+            results.append(json.load(fr))
+
+    if not results:
+        return {}
+
+    # Initialize structure to collect values
+    metrics = ["Precision", "Recall", "F1"]
+    match_types = ["strict", "relaxed"]
+    agg_types = ["micro", "macro"]
+
+    # Get categories from first result file
+    categories = list(results[0]["strict"]["per_category"].keys())
+
+    # Collect all values
+    collected = {
+        match_type: {
+            "per_category": {cat: {m: [] for m in metrics} for cat in categories},
+            "micro": {m: [] for m in metrics},
+            "macro": {m: [] for m in metrics},
+        }
+        for match_type in match_types
+    }
+
+    for result in results:
+        for match_type in match_types:
+            # Per category metrics
+            for cat in categories:
+                for metric in metrics:
+                    value = result[match_type]["per_category"].get(cat, {}).get(metric)
+                    if value is not None:
+                        collected[match_type]["per_category"][cat][metric].append(value)
+
+            # Micro and macro metrics
+            for agg_type in agg_types:
+                for metric in metrics:
+                    value = result[match_type].get(agg_type, {}).get(metric)
+                    if value is not None:
+                        collected[match_type][agg_type][metric].append(value)
+
+    # Compute mean and std
+    aggregated = {
+        match_type: {
+            "per_category": {},
+            "micro": {},
+            "macro": {},
+        }
+        for match_type in match_types
+    }
+
+    for match_type in match_types:
+        # Per category
+        for cat in categories:
+            aggregated[match_type]["per_category"][cat] = {}
+            for metric in metrics:
+                values = collected[match_type]["per_category"][cat][metric]
+                if values:
+                    aggregated[match_type]["per_category"][cat][metric] = {
+                        "mean": float(np.mean(values)),
+                        "std": float(np.std(values)),
+                        "values": values,
+                    }
+
+        # Micro and macro
+        for agg_type in agg_types:
+            aggregated[match_type][agg_type] = {}
+            for metric in metrics:
+                values = collected[match_type][agg_type][metric]
+                if values:
+                    aggregated[match_type][agg_type][metric] = {
+                        "mean": float(np.mean(values)),
+                        "std": float(np.std(values)),
+                        "values": values,
+                    }
+
+    # Add metadata
+    aggregated["_metadata"] = {
+        "n_folds": len(results),
+        "source_files": resultfile_list,
+    }
+
+    # Save if output file specified
+    if output_file:
+        with open(output_file, "w", encoding="utf-8") as fw:
+            json.dump(aggregated, fw, indent=2)
+        print(f"Aggregated results saved to: {output_file}")
+
+    # Print summary
+    print_aggregated_summary(aggregated)
+
+    return aggregated
+
+
+def print_aggregated_summary(aggregated: dict):
+    """Print a formatted summary of aggregated results."""
+    n_folds = aggregated.get("_metadata", {}).get("n_folds", "?")
+    print("\n" + "=" * 80)
+    print(f"AGGREGATED RESULTS ACROSS {n_folds} FOLDS")
+    print("=" * 80)
+
+    for match_type in ["strict", "relaxed"]:
+        print(f"\n{match_type.upper()} MATCHING:")
+        print("-" * 60)
+
+        # Micro/Macro
+        for agg_type in ["micro", "macro"]:
+            print(f"\n  {agg_type.capitalize()}:")
+            for metric in ["Precision", "Recall", "F1"]:
+                data = aggregated[match_type][agg_type].get(metric, {})
+                mean = data.get("mean", 0)
+                std = data.get("std", 0)
+                print(f"    {metric}: {mean:.3f} ± {std:.3f}")
+
+        # Per category
+        print(f"\n  Per Category:")
+        categories = list(aggregated[match_type]["per_category"].keys())
+        for cat in categories:
+            print(f"    {cat}:")
+            for metric in ["Precision", "Recall", "F1"]:
+                data = aggregated[match_type]["per_category"][cat].get(metric, {})
+                mean = data.get("mean", 0)
+                std = data.get("std", 0)
+                print(f"      {metric}: {mean:.3f} ± {std:.3f}")
+
+    print("\n" + "=" * 80)
+
+
 def process_splits(
-    corpora: List[dict],
+    corpus: List[dict],
+    corpus_validation: List[dict] | None,
     model_list: List[str],
     splits: List[Tuple],
-    output_dir,
-    lang,
-    max_word_per_chunk,
-    trust_remote_code,
-    strategy,
-    pipe,
+    output_dir: str,
+    lang: str,
+    max_word_per_chunk: int = 256,
+    trust_remote_code: bool = True,
+    strategy: Literal["average", "min", "first", "simple"] = "simple",
+    pipe: Literal["dt4h", "hf"] = "hf",
 ):
-
-    for k, corpus in enumerate(corpora):
+    # This runs and scores inference for each folds test samples
+    resultfile_list = []
+    for k, (_, test_indcs) in enumerate(splits):
+        print(f"Running inference for fold {k}")
+        _corpus = [d for d in corpus if d["id"] in test_indcs]
+        output_file_prefix = f"fold_on_fold{k}_"
         main.inference(
-            corpus,
+            _corpus,
             model_list[k],
-            output_dir,
-            lang,
-            max_word_per_chunk,
-            trust_remote_code,
-            strategy,
-            pipe,
+            output_dir=output_dir,
+            output_file_prefix=output_file_prefix,
+            lang=lang,
+            max_word_per_chunk=max_word_per_chunk,
+            trust_remote_code=trust_remote_code,
+            strategy=strategy,
+            pipe=pipe,
         )
+        resultfile_list.append(f"{output_dir}/{output_file_prefix}sequence_result.json")
+
+    resultfile_val_list = []
+    if corpus_validation is not None:
+        # This runs and scores inference for each fold model on the same validation set
+        for k, (_, test_indcs) in enumerate(splits):
+            print(f"Running inference for fold {k}")
+            output_file_prefix = f"fold{k}_on_val_"
+            main.inference(
+                corpus_validation,
+                model_list[k],
+                output_dir=output_dir,
+                output_file_prefix=output_file_prefix,
+                lang=lang,
+                max_word_per_chunk=max_word_per_chunk,
+                trust_remote_code=trust_remote_code,
+                strategy=strategy,
+                pipe=pipe,
+            )
+            resultfile_val_list.append(
+                f"{output_dir}/{output_file_prefix}sequence_result.json"
+            )
+
+    # Aggregate fold-on-fold results
+    print("\n" + "=" * 80)
+    print("FOLD-ON-FOLD RESULTS (each model tested on its own fold's test set)")
+    print("=" * 80)
+    fold_on_fold_aggregated = aggregate_results(
+        resultfile_list,
+        output_file=f"{output_dir}/aggregated_fold_on_fold_results.json",
+    )
+
+    # Aggregate validation results if available
+    val_aggregated = None
+    if corpus_validation is not None and resultfile_val_list:
+        print("\n" + "=" * 80)
+        print("VALIDATION RESULTS (all models tested on held-out validation set)")
+        print("=" * 80)
+        val_aggregated = aggregate_results(
+            resultfile_val_list,
+            output_file=f"{output_dir}/aggregated_validation_results.json",
+        )
+
+    return fold_on_fold_aggregated, val_aggregated
+
+
+def run_main():
+    parser = argparse.ArgumentParser(
+        description="Run inference on k-fold cross-validation splits and aggregate results.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Required arguments
+    parser.add_argument(
+        "--bulk_file",
+        type=str,
+        required=True,
+        help="Path to the bulk JSONL file containing all corpus entries.",
+    )
+    parser.add_argument(
+        "--split_file",
+        type=str,
+        required=True,
+        help="Path to the JSON file containing fold splits and test files.",
+    )
+    parser.add_argument(
+        "--model_folder",
+        type=str,
+        required=True,
+        help="Path to the folder containing trained fold models.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Directory to save inference results.",
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default="nl",
+        help="Language code for the corpus.",
+    )
+    parser.add_argument(
+        "--max_word_per_chunk",
+        type=int,
+        default=None,
+        help="Maximum number of words per chunk for inference.",
+    )
+    parser.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        default=True,
+        help="Whether to trust remote code when loading models.",
+    )
+    parser.add_argument(
+        "--no_trust_remote_code",
+        action="store_false",
+        dest="trust_remote_code",
+        help="Disable trusting remote code when loading models.",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="simple",
+        choices=["average", "min", "first", "simple"],
+        help="Strategy for combining predictions.",
+    )
+    parser.add_argument(
+        "--pipe",
+        type=str,
+        default="hf",
+        choices=["dt4h", "hf"],
+        help="Pipeline type to use for inference.",
+    )
+    parser.add_argument(
+        "--folder_prefix",
+        type=str,
+        default="fold_",
+        help="Prefix for fold model folders.",
+    )
+    parser.add_argument(
+        "--skip_validation",
+        action="store_true",
+        default=False,
+        help="Skip inference on the held-out validation/test set.",
+    )
+
+    args = parser.parse_args()
+
+    # Prepare corpora and splits
+    corpus, corpus_validation, splits = make_corpora(args.bulk_file, args.split_file)
+
+    if args.skip_validation:
+        corpus_validation = None
+
+    # Get model folders and sort them
+    model_folders = get_model_folders(args.model_folder, args.folder_prefix)
+    model_folders = sorted(model_folders)  # Ensure consistent ordering
+    model_list = [os.path.join(args.model_folder, f) for f in model_folders]
+
+    if len(model_list) != len(splits):
+        raise ValueError(
+            f"Number of model folders ({len(model_list)}) does not match "
+            f"number of splits ({len(splits)}). "
+            f"Found models: {model_folders}"
+        )
+
+    print(f"Found {len(model_list)} fold models:")
+    for i, model_path in enumerate(model_list):
+        print(f"  Fold {i}: {model_path}")
+
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Run inference on all splits
+    fold_on_fold_aggregated, val_aggregated = process_splits(
+        corpus=corpus,
+        corpus_validation=corpus_validation,
+        model_list=model_list,
+        splits=splits,
+        output_dir=args.output_dir,
+        lang=args.lang,
+        max_word_per_chunk=args.max_word_per_chunk,
+        trust_remote_code=args.trust_remote_code,
+        strategy=args.strategy,
+        pipe=args.pipe,
+    )
+
+    return fold_on_fold_aggregated, val_aggregated
+
+
+if __name__ == "__main__":
+    run_main()
