@@ -23,7 +23,7 @@ sentencepiece = "^0.2.1"
 pydantic = "^2.9.2"
 evaluate = "^0.4.3"
 #torchtext = "^0.18.0"
-torch = "2.6.0"  #{ version = "2.5.0", source = "torch" }
+torch = {version = "2.5.0", source = "torch" }
 accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"
 torchmetrics = "^1.6.1"

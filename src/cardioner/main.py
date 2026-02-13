@@ -54,7 +54,7 @@ def inference(
     max_word_per_chunk: int | None = None,
     trust_remote_code: bool = False,
     strategy: Literal["simple", "average", "first", "max"] = "simple",
-    pipe: Literal["custom", "hf"] = "hf",
+    pipe: Literal["dt4h", "hf"] = "hf",
     dt4h_post_hoc_cleaning=True,
     dt4h_min_confidence=0.5,
 ):
