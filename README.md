@@ -309,18 +309,20 @@ assets/
 
 with, in each ```.jsonl```
 
-```json 
+```json
+[
 {
   "entity_group": "MEDICATION",
   "span_text": "omeprazol",
   "start": 1462,
   "end": 1471 
-}
+},
 {
   "entity_group": "MEDICATION",
   "span_text": "prednison",
   "start": 1501,
   "end": 1510 
 }
+]
 ...
 ```

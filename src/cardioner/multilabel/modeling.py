@@ -44,16 +44,40 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
         # If base_model is not provided, load it from config
         # modeling.py
         if base_model is None:
-            name = getattr(config, "name_or_path", None)
-            if name is None:
+            # IMPORTANT: Use backbone_model_name (the original pretrained model) for loading,
+            # NOT name_or_path which gets updated to the checkpoint path during saving/loading.
+            backbone_name = getattr(config, "backbone_model_name", None)
+            if backbone_name is None:
+                # Fallback to name_or_path for backwards compatibility
+                backbone_name = getattr(config, "name_or_path", None)
+            if backbone_name is None:
                 raise ValueError(
-                    "config.name_or_path is required to load pretrained backbone"
+                    "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
                 )
+
+            # Create a clean config for the backbone (without custom attributes that might confuse AutoModel)
+            backbone_config = AutoConfig.from_pretrained(backbone_name)
+            # Copy over relevant attributes from our config
+            backbone_config.hidden_dropout_prob = getattr(
+                config, "hidden_dropout_prob", 0.1
+            )
+
             self.backbone = AutoModel.from_pretrained(
-                name, config=config
-            )  # ← use pretrained
+                backbone_name, config=backbone_config
+            )  # ← use pretrained backbone
         else:
             self.backbone = base_model
+
+        # Store the backbone model name for future loading
+        if (
+            not hasattr(config, "backbone_model_name")
+            or config.backbone_model_name is None
+        ):
+            # If we got here with a base_model, try to get its name
+            if base_model is not None and hasattr(base_model.config, "_name_or_path"):
+                config.backbone_model_name = base_model.config._name_or_path
+            elif hasattr(config, "_name_or_path"):
+                config.backbone_model_name = config._name_or_path
 
         # Access custom attributes correctly
         self.lm_output_size = self.backbone.config.hidden_size
@@ -85,6 +109,10 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             classifier_hidden_layers=getattr(config, "classifier_hidden_layers", None),
             classifier_dropout=getattr(config, "classifier_dropout", 0.1),
         )
+
+    def _set_backbone_model_name(self, name: str):
+        """Explicitly set the backbone model name in config (call before saving)."""
+        self.config.backbone_model_name = name
 
     def _build_classifier_head(self, hidden_layers, dropout_rate):
         """

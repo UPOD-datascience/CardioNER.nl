@@ -156,7 +156,7 @@ def aggregate_results(
                     aggregated[match_type]["per_category"][cat][metric] = {
                         "mean": float(np.mean(values)),
                         "std": float(np.std(values)),
-                        "values": values,
+                        # "values": values,
                     }
 
         # Micro and macro
@@ -168,7 +168,7 @@ def aggregate_results(
                     aggregated[match_type][agg_type][metric] = {
                         "mean": float(np.mean(values)),
                         "std": float(np.std(values)),
-                        "values": values,
+                        # "values": values,
                     }
 
     # Add metadata
