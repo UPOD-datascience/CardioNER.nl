@@ -17,10 +17,24 @@ import torch.nn.functional as F
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tqdm import tqdm
 from transformers import (
+    AutoConfig,
     AutoModelForTokenClassification,
     AutoTokenizer,
     TokenClassificationPipeline,
 )
+
+# Import custom model classes for loading legacy models
+try:
+    from cardioner.multilabel.modeling import MultiLabelTokenClassificationModelCustom
+    from cardioner.multilabel.trainer import MultiLabelTokenClassificationModelHF
+except ImportError:
+    # Fallback for different import contexts
+    try:
+        from multilabel.modeling import MultiLabelTokenClassificationModelCustom
+        from multilabel.trainer import MultiLabelTokenClassificationModelHF
+    except ImportError:
+        MultiLabelTokenClassificationModelHF = None
+        MultiLabelTokenClassificationModelCustom = None
 from transformers.pipelines.token_classification import AggregationStrategy
 from utils import clean_spans
 
@@ -90,7 +104,13 @@ def load_tsv_to_dataframe(file_path: str) -> pd.DataFrame:
 
 
 class PredictionNER:
-    def __init__(self, model_checkpoint: str, revision: Optional[str], stride: int=256, overlap: int=0) -> None:
+    def __init__(
+        self,
+        model_checkpoint: str,
+        revision: Optional[str],
+        stride: int = 256,
+        overlap: int = 0,
+    ) -> None:
         MAX_TOKENS_IOB_SENT = stride
         OVERLAPPING_LEN = overlap
 
@@ -100,9 +120,7 @@ class PredictionNER:
             is_split_into_words=True,
             truncation=False,
         )
-        self.model = AutoModelForTokenClassification.from_pretrained(
-            model_checkpoint, revision=revision
-        )
+        self.model = self._load_model(model_checkpoint, revision)
         self.text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name="o200k_base",
             separators=["\n\n\n", "\n\n", "\n", " .", " !", " ?", " ،", " ,", " ", ""],
@@ -114,6 +132,92 @@ class PredictionNER:
         ner_labels = list(self.model.config.id2label.values())
         self.base_entity_types = sorted(
             set(label[2:] for label in ner_labels if label != "O")
+        )
+
+    def _load_model(self, model_checkpoint: str, revision: Optional[str]):
+        """
+        Smart model loader that handles both HF standard models and custom model types.
+        """
+        import json
+        import os
+
+        config_path = os.path.join(model_checkpoint, "config.json")
+
+        # Check if it's a custom model by looking at the config
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config_dict = json.load(f)
+
+            architectures = config_dict.get("architectures", [])
+            auto_map = config_dict.get("auto_map", {})
+
+            # Case 1: MultiLabelTokenClassificationModelHF (standard HF-style, no auto_map)
+            if "MultiLabelTokenClassificationModelHF" in architectures and not auto_map:
+                if MultiLabelTokenClassificationModelHF is None:
+                    raise ImportError(
+                        "MultiLabelTokenClassificationModelHF not available. "
+                        "Make sure cardioner.multilabel.trainer is importable."
+                    )
+                print(
+                    f"Loading MultiLabelTokenClassificationModelHF from {model_checkpoint}"
+                )
+
+                # Suppress misleading "weights not initialized" warning during backbone loading
+                # The backbone weights get overwritten by the saved checkpoint anyway
+                import logging as py_logging
+
+                from transformers import logging as hf_logging
+
+                prev_verbosity = hf_logging.get_verbosity()
+                hf_logging.set_verbosity_error()
+                py_logging.getLogger("transformers.modeling_utils").setLevel(
+                    py_logging.ERROR
+                )
+
+                config = AutoConfig.from_pretrained(model_checkpoint, revision=revision)
+                # Set backbone_model_name for proper loading
+                if (
+                    not hasattr(config, "backbone_model_name")
+                    or config.backbone_model_name is None
+                ):
+                    config.backbone_model_name = config._name_or_path
+                model = MultiLabelTokenClassificationModelHF(config)
+
+                # Restore logging verbosity
+                hf_logging.set_verbosity(prev_verbosity)
+                py_logging.getLogger("transformers.modeling_utils").setLevel(
+                    py_logging.WARNING
+                )
+
+                # Load state dict
+                model_file = os.path.join(model_checkpoint, "model.safetensors")
+                if not os.path.exists(model_file):
+                    model_file = os.path.join(model_checkpoint, "pytorch_model.bin")
+                if os.path.exists(model_file):
+                    if model_file.endswith(".safetensors"):
+                        from safetensors.torch import load_file
+
+                        state_dict = load_file(model_file)
+                    else:
+                        import torch
+
+                        state_dict = torch.load(model_file, map_location="cpu")
+                    model.load_state_dict(state_dict)
+                return model
+
+            # Case 2: Custom model with auto_map (trust_remote_code)
+            if auto_map:
+                print(
+                    f"Loading custom model with trust_remote_code from {model_checkpoint}"
+                )
+                return AutoModelForTokenClassification.from_pretrained(
+                    model_checkpoint, revision=revision, trust_remote_code=True
+                )
+
+        # Default: standard HuggingFace model
+        print(f"Loading standard HuggingFace model from {model_checkpoint}")
+        return AutoModelForTokenClassification.from_pretrained(
+            model_checkpoint, revision=revision, trust_remote_code=True
         )
 
     def split_text_with_indices(self, text):

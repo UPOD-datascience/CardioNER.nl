@@ -190,6 +190,9 @@ class ModelTrainer:
         or_config.classifier_hidden_layers = classifier_hidden_layers
         or_config.classifier_dropout = classifier_dropout
         or_config.class_weights = class_weights
+        # Store the original backbone model name for proper loading later
+        # This is critical because name_or_path gets overwritten during save/load
+        or_config.backbone_model_name = model
 
         self.classifier_hidden_layers = classifier_hidden_layers
         self.classifier_dropout = classifier_dropout
@@ -660,6 +663,8 @@ class MultiHeadCRFTrainer:
             num_attention_heads=base_config.num_attention_heads,
             num_hidden_layers=base_config.num_hidden_layers,
             intermediate_size=base_config.intermediate_size,
+            # Store the original backbone model name for proper loading later
+            backbone_model_name=model,
         )
 
         # Load base model and create MultiHeadCRF model
@@ -1008,6 +1013,8 @@ class MultiHeadTrainer:
             num_attention_heads=base_config.num_attention_heads,
             num_hidden_layers=base_config.num_hidden_layers,
             intermediate_size=base_config.intermediate_size,
+            # Store the original backbone model name for proper loading later
+            backbone_model_name=model,
         )
 
         # Load base model and create MultiHead model

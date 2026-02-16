@@ -173,7 +173,31 @@ class MultiLabelTokenClassificationModelHF(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.roberta = AutoModel.from_pretrained(config.name_or_path, config=config)
+
+        # Use backbone_model_name if available, fallback to name_or_path
+        # This is critical because name_or_path gets overwritten during save/load
+        backbone_name = getattr(config, "backbone_model_name", None)
+        if backbone_name is None:
+            backbone_name = getattr(config, "name_or_path", None)
+        if backbone_name is None:
+            raise ValueError(
+                "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
+            )
+
+        # Create a clean config for the backbone
+        backbone_config = AutoConfig.from_pretrained(backbone_name)
+        backbone_config.hidden_dropout_prob = getattr(
+            config, "hidden_dropout_prob", 0.1
+        )
+
+        self.roberta = AutoModel.from_pretrained(backbone_name, config=backbone_config)
+
+        # Store backbone_model_name in config for future loading
+        if (
+            not hasattr(config, "backbone_model_name")
+            or config.backbone_model_name is None
+        ):
+            config.backbone_model_name = backbone_name
 
         freeze_backbone = getattr(config, "freeze_backbone", False)
         if freeze_backbone:

@@ -38,6 +38,7 @@ class MultiHeadCRFConfig(PretrainedConfig):
         classifier_dropout: float = 0.1,
         classifier_hidden_layers: Optional[Tuple] = None,
         class_weights: Optional[List[float]] = None,
+        backbone_model_name: Optional[str] = None,
         **kwargs,
     ):
         self.entity_types = entity_types or []
@@ -48,6 +49,7 @@ class MultiHeadCRFConfig(PretrainedConfig):
         self.classifier_dropout = classifier_dropout
         self.classifier_hidden_layers = classifier_hidden_layers
         self.class_weights = class_weights
+        self.backbone_model_name = backbone_model_name
         super().__init__(**kwargs)
 
 
@@ -349,12 +351,38 @@ class TokenClassificationModelCRF(PreTrainedModel):
 
         # If base_model is not provided, load it from config
         if base_model is None:
-            from transformers import RobertaForTokenClassification
+            from transformers import AutoConfig, RobertaForTokenClassification
+
+            # Use backbone_model_name if available, fallback to name_or_path
+            # This is critical because name_or_path gets overwritten during save/load
+            backbone_name = getattr(config, "backbone_model_name", None)
+            if backbone_name is None:
+                backbone_name = getattr(config, "name_or_path", None) or getattr(
+                    config, "_name_or_path", None
+                )
+            if backbone_name is None:
+                raise ValueError(
+                    "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
+                )
+
+            # Create a clean config for the backbone
+            backbone_config = AutoConfig.from_pretrained(backbone_name)
+            backbone_config.hidden_dropout_prob = getattr(
+                config, "hidden_dropout_prob", 0.1
+            )
+            backbone_config.num_labels = config.num_labels
 
             roberta_model = RobertaForTokenClassification.from_pretrained(
-                config.name_or_path or config._name_or_path, config=config
+                backbone_name, config=backbone_config
             )
             self.roberta = roberta_model.roberta
+
+            # Store backbone_model_name in config for future loading
+            if (
+                not hasattr(config, "backbone_model_name")
+                or config.backbone_model_name is None
+            ):
+                config.backbone_model_name = backbone_name
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -563,9 +591,33 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
         # Initialize the transformer backbone
         if base_model is None:
-            from transformers import RobertaModel
+            from transformers import AutoConfig, RobertaModel
 
-            self.roberta = RobertaModel(config, add_pooling_layer=False)
+            # Use backbone_model_name if available, fallback to name_or_path
+            backbone_name = getattr(config, "backbone_model_name", None)
+            if backbone_name is None:
+                backbone_name = getattr(config, "name_or_path", None) or getattr(
+                    config, "_name_or_path", None
+                )
+
+            if backbone_name:
+                # Load pretrained weights
+                backbone_config = AutoConfig.from_pretrained(backbone_name)
+                backbone_config.hidden_dropout_prob = getattr(
+                    config, "hidden_dropout_prob", 0.1
+                )
+                self.roberta = RobertaModel.from_pretrained(
+                    backbone_name, config=backbone_config, add_pooling_layer=False
+                )
+                # Store backbone_model_name in config for future loading
+                if (
+                    not hasattr(config, "backbone_model_name")
+                    or config.backbone_model_name is None
+                ):
+                    config.backbone_model_name = backbone_name
+            else:
+                # Fallback: initialize without pretrained weights (not recommended)
+                self.roberta = RobertaModel(config, add_pooling_layer=False)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -869,6 +921,7 @@ class MultiHeadConfig(PretrainedConfig):
         classifier_dropout: float = 0.1,
         use_class_weights: bool = False,
         class_weights: Optional[Dict[str, List[float]]] = None,
+        backbone_model_name: Optional[str] = None,
         **kwargs,
     ):
         self.entity_types = entity_types or []
@@ -878,6 +931,7 @@ class MultiHeadConfig(PretrainedConfig):
         self.classifier_dropout = classifier_dropout
         self.use_class_weights = use_class_weights
         self.class_weights = class_weights
+        self.backbone_model_name = backbone_model_name
         super().__init__(**kwargs)
 
 
@@ -930,9 +984,33 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
 
         # Initialize the transformer backbone
         if base_model is None:
-            from transformers import RobertaModel
+            from transformers import AutoConfig, RobertaModel
 
-            self.roberta = RobertaModel(config, add_pooling_layer=False)
+            # Use backbone_model_name if available, fallback to name_or_path
+            backbone_name = getattr(config, "backbone_model_name", None)
+            if backbone_name is None:
+                backbone_name = getattr(config, "name_or_path", None) or getattr(
+                    config, "_name_or_path", None
+                )
+
+            if backbone_name:
+                # Load pretrained weights
+                backbone_config = AutoConfig.from_pretrained(backbone_name)
+                backbone_config.hidden_dropout_prob = getattr(
+                    config, "hidden_dropout_prob", 0.1
+                )
+                self.roberta = RobertaModel.from_pretrained(
+                    backbone_name, config=backbone_config, add_pooling_layer=False
+                )
+                # Store backbone_model_name in config for future loading
+                if (
+                    not hasattr(config, "backbone_model_name")
+                    or config.backbone_model_name is None
+                ):
+                    config.backbone_model_name = backbone_name
+            else:
+                # Fallback: initialize without pretrained weights (not recommended)
+                self.roberta = RobertaModel(config, add_pooling_layer=False)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -1227,13 +1305,36 @@ class TokenClassificationModel(PreTrainedModel):
         self.num_labels = config.num_labels
 
         # Initialize the roberta backbone - load pretrained weights
-        from transformers import AutoModel
+        from transformers import AutoConfig, AutoModel
 
-        # Load pretrained weights like multilabel model does
-        # config.name_or_path contains the model name/path
-        self.roberta = AutoModel.from_pretrained(
-            config.name_or_path, config=config, add_pooling_layer=False
+        # Use backbone_model_name if available, fallback to name_or_path
+        # This is critical because name_or_path gets overwritten during save/load
+        backbone_name = getattr(config, "backbone_model_name", None)
+        if backbone_name is None:
+            backbone_name = getattr(config, "name_or_path", None) or getattr(
+                config, "_name_or_path", None
+            )
+        if backbone_name is None:
+            raise ValueError(
+                "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
+            )
+
+        # Create a clean config for the backbone
+        backbone_config = AutoConfig.from_pretrained(backbone_name)
+        backbone_config.hidden_dropout_prob = getattr(
+            config, "hidden_dropout_prob", 0.1
         )
+
+        self.roberta = AutoModel.from_pretrained(
+            backbone_name, config=backbone_config, add_pooling_layer=False
+        )
+
+        # Store backbone_model_name in config for future loading
+        if (
+            not hasattr(config, "backbone_model_name")
+            or config.backbone_model_name is None
+        ):
+            config.backbone_model_name = backbone_name
         self.dropout = nn.Dropout(
             config.hidden_dropout_prob
             if hasattr(config, "hidden_dropout_prob")
@@ -1562,3 +1663,116 @@ try:
     AutoConfig.register("multihead-crf-tagger", MultiHeadCRFConfig)
 except Exception:
     pass  # Config may already be registered
+
+
+def patch_legacy_model(
+    model_path: str, backbone_model_name: str, dry_run: bool = True
+) -> bool:
+    """
+    Patch a legacy saved model by adding backbone_model_name to config.json.
+
+    Use this to fix models trained before backbone_model_name was added to the config.
+
+    Args:
+        model_path: Path to the saved model directory
+        backbone_model_name: The original backbone model name used during training
+                            (e.g., "CLTL/MedRoBERTa.nl", "GroNLP/bert-base-dutch-cased")
+        dry_run: If True, only print what would be changed without modifying files
+
+    Returns:
+        bool: True if patch was successful (or would be successful in dry_run mode)
+
+    Example:
+        >>> # First, do a dry run to see what will change
+        >>> patch_legacy_model("/path/to/saved/model", "CLTL/MedRoBERTa.nl", dry_run=True)
+        >>> # Then apply the patch
+        >>> patch_legacy_model("/path/to/saved/model", "CLTL/MedRoBERTa.nl", dry_run=False)
+    """
+    import json
+    import os
+    import shutil
+
+    config_path = os.path.join(model_path, "config.json")
+
+    if not os.path.exists(config_path):
+        print(f"ERROR: config.json not found at {config_path}")
+        return False
+
+    # Load existing config
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    # Check if already patched
+    if "backbone_model_name" in config:
+        print(f"Model already has backbone_model_name: {config['backbone_model_name']}")
+        if config["backbone_model_name"] == backbone_model_name:
+            print("No changes needed.")
+            return True
+        else:
+            print(f"WARNING: Existing backbone_model_name differs from provided value!")
+            print(f"  Existing: {config['backbone_model_name']}")
+            print(f"  Provided: {backbone_model_name}")
+            if dry_run:
+                print("Would update to new value (dry_run=True)")
+            else:
+                print("Updating to new value...")
+
+    # Add backbone_model_name
+    config["backbone_model_name"] = backbone_model_name
+
+    if dry_run:
+        print(f"\n[DRY RUN] Would patch {config_path}:")
+        print(f'  Adding: backbone_model_name = "{backbone_model_name}"')
+        print("\nTo apply this patch, run with dry_run=False")
+        return True
+
+    # Create backup
+    backup_path = config_path + ".backup"
+    shutil.copy2(config_path, backup_path)
+    print(f"Created backup at {backup_path}")
+
+    # Write updated config
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Successfully patched {config_path}")
+    print(f'  Added: backbone_model_name = "{backbone_model_name}"')
+
+    return True
+
+
+def patch_multiple_models(
+    model_paths: list, backbone_model_name: str, dry_run: bool = True
+) -> dict:
+    """
+    Patch multiple legacy saved models at once.
+
+    Args:
+        model_paths: List of paths to saved model directories
+        backbone_model_name: The original backbone model name used during training
+        dry_run: If True, only print what would be changed without modifying files
+
+    Returns:
+        dict: Results for each model path
+
+    Example:
+        >>> models = ["/path/to/model1", "/path/to/model2"]
+        >>> patch_multiple_models(models, "CLTL/MedRoBERTa.nl", dry_run=False)
+    """
+    results = {}
+    for path in model_paths:
+        print(f"\n{'=' * 60}")
+        print(f"Processing: {path}")
+        print("=" * 60)
+        results[path] = patch_legacy_model(path, backbone_model_name, dry_run)
+
+    # Summary
+    print(f"\n{'=' * 60}")
+    print("SUMMARY")
+    print("=" * 60)
+    success = sum(1 for v in results.values() if v)
+    print(
+        f"Successfully {'would patch' if dry_run else 'patched'}: {success}/{len(model_paths)}"
+    )
+
+    return results
