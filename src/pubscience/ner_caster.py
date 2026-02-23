@@ -145,6 +145,8 @@ class NERFormer:
                 # parse the line
                 # example; T1	DISEASE 188 200	ritmestormen
                 # now, id= ann tag = DISEASE, start = 188, end = 200
+                if l.startswith("#"):
+                    continue
                 try:
                     l = l.strip().split("\t")
                     tag = l[1].split(" ")[0]

@@ -12,20 +12,30 @@ from typing import Dict, List
 
 
 def parse_dir(json_dir: str = None) -> Dict[str, List]:
-    # Collect JSON files from the top-level directory only
-    jsons = [(json_dir, f) for f in os.listdir(json_dir) if f.endswith(".json")]
-
+    # Collect JSON files recursively.
+    # We specifically look for 'eval_results.json' which is the standard output name from Trainer.
     res_dict = defaultdict(list)
-    if jsons:
-        for dir_path, _json in jsons:
-            floc = os.path.join(dir_path, _json)
-            d = json.load(open(floc, "rb"))
-            for k, v in d.items():
-                if isinstance(v, dict):
-                    for _k, _v in v.items():
-                        res_dict[f"{k}_{_k}"].append(_v)
-                else:
-                    res_dict[k].append(v)
+
+    if not os.path.exists(json_dir):
+        print(f"Directory {json_dir} does not exist.")
+        return res_dict
+
+    for root, dirs, files in os.walk(json_dir):
+        for file in files:
+            if file == "eval_results.json":
+                floc = os.path.join(root, file)
+                try:
+                    with open(floc, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+
+                    for k, v in d.items():
+                        if isinstance(v, dict):
+                            for _k, _v in v.items():
+                                res_dict[f"{k}_{_k}"].append(_v)
+                        else:
+                            res_dict[k].append(v)
+                except Exception as e:
+                    print(f"Error reading {floc}: {e}")
     return res_dict
 
 
@@ -34,11 +44,24 @@ def get_aggregates(res_dict: dict = None) -> Dict[str, Dict]:
     out_string += "=" * 50 + "\n"
     out_string += "class\tmean\tmedian\tstdev\n"
 
-    print(res_dict)
+    # print(res_dict)
     agg_dict = defaultdict(dict)
     for k, v in res_dict.items():
-        print(v)
-        _mean, _median, _stdev = sum(v) / len(v), stat.median(v), stat.stdev(v)
+        # print(v)
+
+        # Ensure we are working with numbers
+        numeric_v = [x for x in v if isinstance(x, (int, float))]
+
+        if not numeric_v:
+            continue
+
+        _mean = sum(numeric_v) / len(numeric_v)
+        _median = stat.median(numeric_v)
+
+        if len(numeric_v) > 1:
+            _stdev = stat.stdev(numeric_v)
+        else:
+            _stdev = 0.0
 
         out_string += (
             f"{k}\t{round(_mean, 3)}\t{round(_median, 3)}\t{round(_stdev, 3)}\n"
@@ -61,13 +84,15 @@ if __name__ == "__main__":
     args = argparser.parse_args()
 
     collected_dict = parse_dir(args.dir)
-    json.dump(
-        collected_dict,
-        open(os.path.join(args.dir, "collected_results.json"), "w", encoding="latin1"),
-    )
+
+    # Save collected results
+    output_collected = os.path.join(args.dir, "collected_results.json")
+    with open(output_collected, "w", encoding="utf-8") as f:
+        json.dump(collected_dict, f, indent=4)
 
     aggregated_dict = get_aggregates(collected_dict)
-    json.dump(
-        aggregated_dict,
-        open(os.path.join(args.dir, "aggregated_results.json"), "w", encoding="latin1"),
-    )
+
+    # Save aggregated results
+    output_aggregated = os.path.join(args.dir, "aggregated_results.json")
+    with open(output_aggregated, "w", encoding="utf-8") as f:
+        json.dump(aggregated_dict, f, indent=4)

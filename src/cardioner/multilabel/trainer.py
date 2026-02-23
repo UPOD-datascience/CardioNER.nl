@@ -850,7 +850,8 @@ class ModelTrainer:
                 self.model.config.requires_trust_remote_code = True
 
             trainer.save_model(self.output_dir)
-            trainer.save_metrics(self.output_dir, metrics=metrics)
+            print(f"Computed metrics: {metrics}")
+            trainer.save_metrics("eval", metrics=metrics)
             self.tokenizer.save_pretrained(self.output_dir)
 
             if self.custom_model:

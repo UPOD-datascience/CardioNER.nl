@@ -1214,7 +1214,11 @@ def train(
             train_data = [shuffled_data[i] for i in train_idx]
             test_data = [shuffled_data[i] for i in test_idx]
 
-            if (tokenized_data_validation is not None) & (force_splitter == True):
+            if (
+                (tokenized_data_validation is not None)
+                and (len(tokenized_data_validation) > 0)
+                and (force_splitter == True)
+            ):
                 TrainClass.train(
                     train_data=train_data,
                     test_data=test_data,
@@ -1225,7 +1229,10 @@ def train(
                 TrainClass.train(
                     train_data=train_data,
                     test_data=[],
-                    eval_data=tokenized_data_validation,
+                    eval_data=tokenized_data_validation
+                    if (tokenized_data_validation is not None)
+                    and (len(tokenized_data_validation) > 0)
+                    else test_data,
                     profile=profile,
                 )
         # perform model merger
@@ -1478,7 +1485,11 @@ def train_multihead(
             train_data = [shuffled_data[i] for i in train_idx]
             test_data = [shuffled_data[i] for i in test_idx]
 
-            if (tokenized_data_validation is not None) & (force_splitter == True):
+            if (
+                (tokenized_data_validation is not None)
+                and (len(tokenized_data_validation) > 0)
+                and (force_splitter == True)
+            ):
                 trainer.train(
                     train_data=train_data,
                     test_data=test_data,
@@ -1489,7 +1500,10 @@ def train_multihead(
                 trainer.train(
                     train_data=train_data,
                     test_data=[],
-                    eval_data=test_data,
+                    eval_data=tokenized_data_validation
+                    if (tokenized_data_validation is not None)
+                    and (len(tokenized_data_validation) > 0)
+                    else test_data,
                     profile=profile,
                 )
 
