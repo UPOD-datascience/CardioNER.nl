@@ -36,7 +36,8 @@ except ImportError:
         MultiLabelTokenClassificationModelHF = None
         MultiLabelTokenClassificationModelCustom = None
 from transformers.pipelines.token_classification import AggregationStrategy
-from utils import clean_spans
+
+from cardioner.utils import clean_spans
 
 
 def split_sentence_with_indices(text):

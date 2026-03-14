@@ -484,10 +484,18 @@ class TokenClassificationModelCRF(PreTrainedModel):
         if labels is not None:
             # CRF calculates the log-likelihood of the correct sequence
             # We use a negative sign to convert it into a loss
-            # Following ieeta-pt approach: don't pass mask to CRF
-            # All positions have valid labels (O for special/padding tokens)
+            # Mask padding/special tokens when attention_mask is available
             labels_long = labels.long()
-            loss = -self.crf(logits, labels_long, reduction="mean")
+            if attention_mask is not None:
+                mask = attention_mask.bool()
+                loss = -self.crf(logits, labels_long, mask=mask, reduction="mean")
+            else:
+                if not getattr(self, "_warned_no_attention_mask", False):
+                    print(
+                        "WARNING: attention_mask is None; CRF loss will include padding tokens."
+                    )
+                    self._warned_no_attention_mask = True
+                loss = -self.crf(logits, labels_long, reduction="mean")
 
         if not return_dict:
             output = (logits,) + outputs[2:]
@@ -754,9 +762,9 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
         if labels is not None:
             # Training mode - compute CRF loss for each head
-            # Following ieeta-pt approach: don't pass mask to CRF
-            # All positions have valid labels (O for special/padding tokens)
+            # Mask padding/special tokens when attention_mask is available
             losses = {}
+            mask = attention_mask.bool() if attention_mask is not None else None
 
             for entity_type in self.entity_types:
                 if entity_type in labels:
@@ -766,11 +774,24 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                     )
                     crf = getattr(self, f"{entity_type}_crf")
                     # CRF returns negative log likelihood, we want to minimize it
-                    losses[entity_type] = crf(
-                        logits[entity_type],
-                        entity_labels,
-                        reduction=self.crf_reduction,
-                    )
+                    if mask is not None:
+                        losses[entity_type] = crf(
+                            logits[entity_type],
+                            entity_labels,
+                            mask=mask,
+                            reduction=self.crf_reduction,
+                        )
+                    else:
+                        if not getattr(self, "_warned_no_attention_mask", False):
+                            print(
+                                "WARNING: attention_mask is None; CRF loss will include padding tokens."
+                            )
+                            self._warned_no_attention_mask = True
+                        losses[entity_type] = crf(
+                            logits[entity_type],
+                            entity_labels,
+                            reduction=self.crf_reduction,
+                        )
 
             # Sum losses from all heads
             total_loss = sum(losses.values())
@@ -778,12 +799,15 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
         else:
             # Inference mode - decode each head
-            # Following ieeta-pt approach: don't pass mask, decode all positions
             predictions = {}
+            mask = attention_mask.bool() if attention_mask is not None else None
 
             for entity_type in self.entity_types:
                 crf = getattr(self, f"{entity_type}_crf")
-                decoded = crf.decode(logits[entity_type])
+                if mask is not None:
+                    decoded = crf.decode(logits[entity_type], mask=mask)
+                else:
+                    decoded = crf.decode(logits[entity_type])
                 predictions[entity_type] = torch.tensor(decoded)
 
             # Return as list sorted by entity type for consistency

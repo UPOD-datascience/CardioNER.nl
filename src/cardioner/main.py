@@ -20,9 +20,6 @@ import evaluate
 import pandas as pd
 from datasets import Dataset
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from multiclass.trainer import ModelTrainer as MultiClassModelTrainer
-from multiclass.trainer import MultiHeadCRFTrainer, MultiHeadTrainer
-from multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from sklearn.model_selection import GroupKFold, train_test_split
 from sklearn.utils import shuffle
 
@@ -37,6 +34,9 @@ from transformers import (
 )
 
 from cardioner import evaluation, model_merger, parse_performance_json, predictor
+from cardioner.multiclass.trainer import ModelTrainer as MultiClassModelTrainer
+from cardioner.multiclass.trainer import MultiHeadCRFTrainer, MultiHeadTrainer
+from cardioner.multilabel.trainer import ModelTrainer as MultiLabelModelTrainer
 from cardioner.utils import calculate_class_weights, merge_annotations, process_pipe
 
 # Clear any existing CUDA context
@@ -766,14 +766,14 @@ def prepare(
         )
 
     if multi_class:
-        from multiclass.loader import (
+        from cardioner.multiclass.loader import (
             annotate_corpus_centered,
             annotate_corpus_paragraph,
             annotate_corpus_standard,
             tokenize_and_align_labels,
         )
     else:
-        from multilabel.loader import (
+        from cardioner.multilabel.loader import (
             annotate_corpus_centered,
             annotate_corpus_paragraph,
             annotate_corpus_standard,
@@ -918,7 +918,7 @@ def prepare_multihead(
 
     Each entity type gets its own BIO label sequence.
     """
-    from multiclass.loader import (
+    from cardioner.multiclass.loader import (
         annotate_corpus_multihead,
         annotate_corpus_multihead_centered,
         get_entity_types_from_corpus,
@@ -1214,6 +1214,29 @@ def train(
             train_data = [shuffled_data[i] for i in train_idx]
             test_data = [shuffled_data[i] for i in test_idx]
 
+            fold_output_dir = os.path.join(output_dir, f"fold_{k}")
+            os.makedirs(fold_output_dir, exist_ok=True)
+            split_export = {
+                "train_ids": [d["id"] for d in train_data],
+                "train_gids": [d["gid"] for d in train_data],
+                "test_ids": [d["id"] for d in test_data],
+                "test_gids": [d["gid"] for d in test_data],
+            }
+            if (
+                (tokenized_data_validation is not None)
+                and (len(tokenized_data_validation) > 0)
+                and (force_splitter == True)
+            ):
+                split_export["validation_ids"] = [
+                    d["id"] for d in tokenized_data_validation
+                ]
+                split_export["validation_gids"] = [
+                    d["gid"] for d in tokenized_data_validation
+                ]
+            split_path = os.path.join(fold_output_dir, "split.json")
+            with open(split_path, "w", encoding="utf-8") as fw:
+                json.dump(split_export, fw, indent=2)
+
             if (
                 (tokenized_data_validation is not None)
                 and (len(tokenized_data_validation) > 0)
@@ -1484,6 +1507,29 @@ def train_multihead(
             print(f"Training on split {k}")
             train_data = [shuffled_data[i] for i in train_idx]
             test_data = [shuffled_data[i] for i in test_idx]
+
+            fold_output_dir = os.path.join(output_dir, f"fold_{k}")
+            os.makedirs(fold_output_dir, exist_ok=True)
+            split_export = {
+                "train_ids": [d["id"] for d in train_data],
+                "train_gids": [d["gid"] for d in train_data],
+                "test_ids": [d["id"] for d in test_data],
+                "test_gids": [d["gid"] for d in test_data],
+            }
+            if (
+                (tokenized_data_validation is not None)
+                and (len(tokenized_data_validation) > 0)
+                and (force_splitter == True)
+            ):
+                split_export["validation_ids"] = [
+                    d["id"] for d in tokenized_data_validation
+                ]
+                split_export["validation_gids"] = [
+                    d["gid"] for d in tokenized_data_validation
+                ]
+            split_path = os.path.join(fold_output_dir, "split.json")
+            with open(split_path, "w", encoding="utf-8") as fw:
+                json.dump(split_export, fw, indent=2)
 
             if (
                 (tokenized_data_validation is not None)
