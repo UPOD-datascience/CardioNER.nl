@@ -1349,9 +1349,15 @@ class TokenClassificationModel(PreTrainedModel):
             config, "hidden_dropout_prob", 0.1
         )
 
-        self.roberta = AutoModel.from_pretrained(
-            backbone_name, config=backbone_config, add_pooling_layer=False
-        )
+        try:
+            self.roberta = AutoModel.from_pretrained(
+                backbone_name, config=backbone_config, add_pooling_layer=False
+            )
+        except TypeError:
+            # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
+            self.roberta = AutoModel.from_pretrained(
+                backbone_name, config=backbone_config
+            )
 
         # Store backbone_model_name in config for future loading
         if (
@@ -1409,18 +1415,31 @@ class TokenClassificationModel(PreTrainedModel):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        # Run inputs through the RoBERTa backbone
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        # Run inputs through the transformer backbone
+        try:
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        except TypeError:
+            # Some backbones (e.g., DeBERTa) do not accept head_mask
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
         sequence_output = outputs.last_hidden_state
         sequence_output = self.dropout(sequence_output)
