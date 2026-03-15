@@ -43,6 +43,7 @@ duckdb = "^1.4.2"
 pysbd = "^0.3.4"
 pyarrow = "^22.0.0"
 ipykernel = "^7.1.0"
+rapidfuzz = "^3.14.3"
 
 [build-system]
 requires = ["poetry-core"]

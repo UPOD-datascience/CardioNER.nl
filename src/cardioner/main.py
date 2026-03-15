@@ -1027,6 +1027,7 @@ def train(
     tokenized_data_test: List[Dict] | None,
     tokenized_data_validation: List[Dict],
     force_splitter: bool = False,
+    only_first_split: bool = False,
     Model: str = "CLTL/MedRoBERTa.nl",
     Splits: List[Tuple[List[str], List[str]]] | int | None = 5,
     output_dir: str = "../output",
@@ -1063,6 +1064,7 @@ def train(
             tokenized_data_test=tokenized_data_test,
             tokenized_data_validation=tokenized_data_validation,
             force_splitter=force_splitter,
+            only_first_split=only_first_split,
             Model=Model,
             Splits=Splits,
             output_dir=output_dir,
@@ -1168,6 +1170,9 @@ def train(
             ]
 
         print(f"Splitting data into {len(SplitList)} folds")
+        if only_first_split:
+            SplitList = SplitList[:1]
+            print("Only running the first split (only_first_split=True)")
         for k, (train_idx, test_idx) in enumerate(SplitList):
             if multi_class:
                 TrainClass = MultiClassModelTrainer(
@@ -1385,6 +1390,7 @@ def train_multihead(
     tokenized_data_test: List[Dict] | None,
     tokenized_data_validation: List[Dict],
     force_splitter: bool = False,
+    only_first_split: bool = False,
     Model: str = "CLTL/MedRoBERTa.nl",
     Splits: List[Tuple[List[str], List[str]]] | int | None = 5,
     output_dir: str = "../output",
@@ -1462,6 +1468,9 @@ def train_multihead(
             ]
 
         print(f"Splitting data into {len(SplitList)} folds")
+        if only_first_split:
+            SplitList = SplitList[:1]
+            print("Only running the first split (only_first_split=True)")
         for k, (train_idx, test_idx) in enumerate(SplitList):
             if use_crf:
                 trainer = MultiHeadCRFTrainer(
@@ -1684,6 +1693,12 @@ if __name__ == "__main__":
     argparsers.add_argument("--use_crf", action="store_true", default=False)
     argparsers.add_argument("--profile", action="store_true", default=False)
     argparsers.add_argument("--force_splitter", action="store_true", default=False)
+    argparsers.add_argument(
+        "--only_first_split",
+        action="store_true",
+        default=False,
+        help="If using a splitter/cross-validation, run only the first split",
+    )
     argparsers.add_argument("--write_annotations", action="store_true", default=False)
     argparsers.add_argument("--without_iob_tagging", action="store_true", default=False)
     argparsers.add_argument(
@@ -1772,6 +1787,7 @@ if __name__ == "__main__":
     corpus_validation = args.corpus_validation
     split_file = args.split_file
     force_splitter = args.force_splitter
+    only_first_split = args.only_first_split
     _annotation_loc = args.annotation_loc
     parse_annotations = args.parse_annotations
     train_model = args.train_model
@@ -2132,6 +2148,7 @@ if __name__ == "__main__":
             tokenized_data_test,
             tokenized_data_validation,
             force_splitter=force_splitter,
+            only_first_split=only_first_split,
             Model=_model,
             Splits=splits,
             output_dir=OutputDir,
