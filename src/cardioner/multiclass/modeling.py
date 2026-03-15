@@ -1394,8 +1394,13 @@ class TokenClassificationModel(PreTrainedModel):
             # Default single linear layer
             self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
-        # Initialize weights
-        self.init_weights()
+        # Initialize only classifier weights to preserve pretrained backbone
+        if isinstance(self.classifier, nn.Sequential):
+            for module in self.classifier:
+                if isinstance(module, nn.Linear):
+                    self._init_weights(module)
+        elif isinstance(self.classifier, nn.Linear):
+            self._init_weights(self.classifier)
 
     def forward(
         self,
