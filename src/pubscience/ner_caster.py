@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
+PRUNED_FROM_IDS = ["disease", "procedure", "symptom", "medication"]
+
 
 class TAGS(BaseModel):
     start: int
@@ -236,10 +238,12 @@ def collect_jsons(
         "SINTOMA": "SYMPTOM",
         "PROCEDIMIENTO": "PROCEDURE",
     },
+    check_text_match: bool = False,
 ):
     # go through jsonl's and per "id" collect/extend the "tags" lists
     #
     id_tags_map = {}
+    pruned_ids = set()
     for js in os.listdir(jsons_path):
         # load jsonl into list
         if js.endswith(".json"):
@@ -248,9 +252,21 @@ def collect_jsons(
 
             for json_obj in jsonl_list:
                 id = json_obj["id"]
+                for term in PRUNED_FROM_IDS:
+                    id = id.replace(term, "")
+                id = id.replace("--", "-")
                 tags = json_obj["tags"]
                 text = json_obj["text"]
+                if id in pruned_ids:
+                    continue
                 if id in id_tags_map:
+                    if check_text_match and id_tags_map[id]["text"] != text:
+                        print(
+                            f"Text mismatch for id {id}: cannot merge annotations...skipping"
+                        )
+                        del id_tags_map[id]
+                        pruned_ids.add(id)
+                        continue
                     id_tags_map[id]["tags"].extend(tags)
                 else:
                     id_tags_map[id] = {"tags": tags, "text": text}
@@ -302,6 +318,11 @@ if __name__ == "__main__":
     parser.add_argument("--out_path", type=str, help="Path to output file")
     parser.add_argument("--name_map", type=str, help="Mapping of column names")
     parser.add_argument("--collect_json", action="store_true")
+    parser.add_argument(
+        "--require_text_match",
+        action="store_true",
+        help="Require identical text when merging ids",
+    )
     parser.add_argument("--write_to_file", action="store_true")
 
     args = parser.parse_args()
@@ -322,4 +343,8 @@ if __name__ == "__main__":
         )
         ner.transform()
     else:
-        collect_jsons(args.json_dir, args.out_path)
+        collect_jsons(
+            args.json_dir,
+            args.out_path,
+            check_text_match=args.require_text_match,
+        )
