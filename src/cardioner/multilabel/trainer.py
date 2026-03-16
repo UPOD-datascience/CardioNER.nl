@@ -540,6 +540,8 @@ class ModelTrainer:
         or_config.label2id = self.label2id
         or_config.hidden_dropout_prob = 0.1
         or_config.freeze_backbone = freeze_backbone
+        or_config.output_hidden_states = False
+        or_config.output_attentions = False
         # Store the original backbone model name for proper loading later
         # This is critical because name_or_path gets overwritten during save/load
         or_config.backbone_model_name = model

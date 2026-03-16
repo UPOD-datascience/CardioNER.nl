@@ -1323,40 +1323,51 @@ class TokenClassificationModel(PreTrainedModel):
     This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, base_model=None):
         super().__init__(config)
         self.config = config
         self.num_labels = config.num_labels
 
         # Initialize the roberta backbone - load pretrained weights
-        from transformers import AutoConfig, AutoModel
+        if base_model is None:
+            from transformers import AutoConfig, AutoModel
 
-        # Use backbone_model_name if available, fallback to name_or_path
-        # This is critical because name_or_path gets overwritten during save/load
-        backbone_name = getattr(config, "backbone_model_name", None)
-        if backbone_name is None:
-            backbone_name = getattr(config, "name_or_path", None) or getattr(
-                config, "_name_or_path", None
-            )
-        if backbone_name is None:
-            raise ValueError(
-                "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
+            # Use backbone_model_name if available, fallback to name_or_path
+            # This is critical because name_or_path gets overwritten during save/load
+            backbone_name = getattr(config, "backbone_model_name", None)
+            if backbone_name is None:
+                backbone_name = getattr(config, "name_or_path", None) or getattr(
+                    config, "_name_or_path", None
+                )
+            if backbone_name is None:
+                raise ValueError(
+                    "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
+                )
+
+            # Create a clean config for the backbone
+            backbone_config = AutoConfig.from_pretrained(backbone_name)
+            backbone_config.hidden_dropout_prob = getattr(
+                config, "hidden_dropout_prob", 0.1
             )
 
-        # Create a clean config for the backbone
-        backbone_config = AutoConfig.from_pretrained(backbone_name)
-        backbone_config.hidden_dropout_prob = getattr(
-            config, "hidden_dropout_prob", 0.1
-        )
-
-        try:
-            self.roberta = AutoModel.from_pretrained(
-                backbone_name, config=backbone_config, add_pooling_layer=False
-            )
-        except TypeError:
-            # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
-            self.roberta = AutoModel.from_pretrained(
-                backbone_name, config=backbone_config
+            try:
+                self.roberta = AutoModel.from_pretrained(
+                    backbone_name, config=backbone_config, add_pooling_layer=False
+                )
+            except TypeError:
+                # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
+                self.roberta = AutoModel.from_pretrained(
+                    backbone_name, config=backbone_config
+                )
+        else:
+            if hasattr(base_model, "roberta"):
+                self.roberta = base_model.roberta
+            else:
+                self.roberta = base_model
+            backbone_name = (
+                getattr(getattr(self.roberta, "config", None), "_name_or_path", None)
+                or getattr(config, "backbone_model_name", None)
+                or getattr(config, "name_or_path", None)
             )
 
         # Store backbone_model_name in config for future loading

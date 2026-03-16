@@ -17,12 +17,12 @@ import torch
 from torchcrf import CRF
 from transformers import (
     AutoConfig,
+    AutoModel,
     AutoModelForTokenClassification,
     AutoTokenizer,
     DataCollatorForTokenClassification,
     PreTrainedModel,
     RobertaForTokenClassification,
-    RobertaModel,
     Trainer,
     TrainingArguments,
 )
@@ -195,6 +195,8 @@ class ModelTrainer:
         or_config.classifier_hidden_layers = classifier_hidden_layers
         or_config.classifier_dropout = classifier_dropout
         or_config.class_weights = class_weights
+        or_config.output_hidden_states = False
+        or_config.output_attentions = False
         # Store the original backbone model name for proper loading later
         # This is critical because name_or_path gets overwritten during save/load
         or_config.backbone_model_name = model
@@ -240,9 +242,13 @@ class ModelTrainer:
                 raise ImportError(
                     "TokenClassificationModel could not be imported. Please ensure modeling.py is available."
                 )
-            self.model = TokenClassificationModel.from_pretrained(
-                model, config=or_config, ignore_mismatched_sizes=True
-            )
+            try:
+                base_model = AutoModel.from_pretrained(
+                    model, config=or_config, add_pooling_layer=False
+                )
+            except TypeError:
+                base_model = AutoModel.from_pretrained(model, config=or_config)
+            self.model = TokenClassificationModel(or_config, base_model=base_model)
 
             # Set up auto_map for trust_remote_code loading
             self.model.config.auto_map = {
