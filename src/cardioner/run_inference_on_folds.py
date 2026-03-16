@@ -335,7 +335,7 @@ def run_main():
         "--lang",
         type=str,
         default="nl",
-        help="Language code for the corpus.",
+        help="Language code for the corpus (e.g., 'nl', 'en', or 'multi' for multilingual).",
     )
     parser.add_argument(
         "--max_word_per_chunk",

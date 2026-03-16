@@ -1659,7 +1659,7 @@ if __name__ == "__main__":
         "--lang",
         type=str,
         required=True,
-        choices=["es", "nl", "en", "it", "ro", "sv", "cz"],
+        choices=["es", "nl", "en", "it", "ro", "sv", "cz", "multi"],
     )
     argparsers.add_argument("--corpus_train", type=str, required=False)
     argparsers.add_argument("--corpus_validation", type=str, required=False)

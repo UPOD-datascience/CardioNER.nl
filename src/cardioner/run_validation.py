@@ -17,6 +17,7 @@ from spacy.lang.it import Italian
 from spacy.lang.nl import Dutch
 from spacy.lang.ro import Romanian
 from spacy.lang.sv import Swedish
+from spacy.lang.xx import MultiLanguage
 from tqdm import tqdm
 from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
 from transformers.pipelines import TokenClassificationPipeline
@@ -31,6 +32,7 @@ lang_dict = {
     "ro": Romanian,
     "sv": Swedish,
     "cz": Czech,
+    "multi": MultiLanguage,
 }
 
 
@@ -310,7 +312,7 @@ if __name__ == "__main__":
         "--lang",
         type=str,
         help="The language of the text",
-        choices=["es", "nl", "en", "it", "ro", "sv", "cz"],
+        choices=["es", "nl", "en", "it", "ro", "sv", "cz", "multi"],
         required=True,
     )
     parser.add_argument("--ignore_zero", action="store_true", default=False)

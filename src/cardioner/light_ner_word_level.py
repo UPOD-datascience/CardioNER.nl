@@ -1,42 +1,41 @@
+import gc
+import itertools
+import json
+import os
+import re
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Literal
+
 import lightning as L
-
-from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
-from transformers import RobertaModel, BertModel, PreTrainedTokenizer
-from transformers import RobertaForTokenClassification, BertForTokenClassification
-from transformers import XLMRobertaForTokenClassification
-from tokenizers import Encoding
-
+import pandas as pd
+import spacy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import Metric, F1Score, Precision, Recall, Accuracy
-from torch import Tensor
-from torch.nn import ModuleDict
-from torch.utils.data import DataLoader
+import yaml
+from evaluate import load
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
-import os
-from functools import partial
-import gc
-from evaluate import load
-from torchmetrics import Metric
-import lightning as L
-from torch import Tensor
-import torch.nn as nn
-import torch.nn.functional as F
-from seqeval.metrics import classification_report
 from lightning.pytorch.loggers import TensorBoardLogger
-import yaml
-
-import itertools
-import re
-from torch.utils.data import Dataset
-from pathlib import Path
-import pandas as pd
-import json
-import spacy
-
-from typing import Dict, Literal, List
+from seqeval.metrics import classification_report
+from tokenizers import Encoding
+from torch import Tensor
+from torch.nn import ModuleDict
+from torch.utils.data import DataLoader, Dataset
+from torchmetrics import Accuracy, F1Score, Metric, Precision, Recall
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    AutoTokenizer,
+    BertForTokenClassification,
+    BertModel,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+    RobertaForTokenClassification,
+    RobertaModel,
+    XLMRobertaForTokenClassification,
+)
 
 torch.cuda.empty_cache()
 gc.collect()
@@ -70,20 +69,31 @@ class CardioCCC(Dataset):
         iob_tags: bool = False,
     ):
 
-        val_str = "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
+        val_str = (
+            "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
+        )
+        val_str = (
+            "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
+        )
         self.root_path = Path(root_path)
-        self.split_file_names = json.load((self.root_path / "splits.json").open())[lang][split]["symp"]
+        self.split_file_names = json.load((self.root_path / "splits.json").open())[
+            lang
+        ][split]["symp"]
         self.lang = lang
         self.iob_tags = iob_tags
-        batches = ["b1", "b2"] # if lang != "ro" else ["b1"]
+        batches = ["b1", "b2"]  # if lang != "ro" else ["b1"]
         self.annotations = []
-        self.nlp = spacy.blank(lang if lang != "cz" else "cs")
+        self.nlp = spacy.blank(
+            "xx" if lang == "multi" else (lang if lang != "cz" else "cs")
+        )
         for batch in batches:
             lang_path = self.root_path / batch / val_str / lang
             raw_annotations = []
             for label_folder in self.LABEL_FOLDERS:
                 ann_path = lang_path / label_folder / "tsv"
-                raw_annotations.append(pd.read_csv(next(ann_path.glob("*.tsv")), sep="\t", na_filter=False))
+                raw_annotations.append(
+                    pd.read_csv(next(ann_path.glob("*.tsv")), sep="\t", na_filter=False)
+                )
             raw_annotations = pd.concat(raw_annotations, axis=0)
             if lang == "es":
                 raw_annotations["tag"] = raw_annotations["tag"].apply(rename_tag)
@@ -93,8 +103,14 @@ class CardioCCC(Dataset):
                     continue
                 file_name = group[0] + ".txt"
                 text = (lang_path / "dis/txt" / file_name).read_text(encoding=encoding)
-                labels = group[1].loc[:, ["tag", "start_span", "end_span", "text"]].to_dict(orient="records")
-                tokens, labels = tokenize_and_align_labels(self.nlp, text, labels, self.iob_tags, tag2label)
+                labels = (
+                    group[1]
+                    .loc[:, ["tag", "start_span", "end_span", "text"]]
+                    .to_dict(orient="records")
+                )
+                tokens, labels = tokenize_and_align_labels(
+                    self.nlp, text, labels, self.iob_tags, tag2label
+                )
                 self.annotations.append({"tokens": tokens, "labels": labels})
 
     def __len__(self):
@@ -109,7 +125,12 @@ def tokenize_and_align_labels(nlp, text, labels, iob_tags, tag2label: dict):
     tokens = [t.text for t in doc]
     token_offsets = [(token.idx, token.idx + len(token.text)) for token in doc]
     token_tags = {tag: ["O"] * len(doc) for tag in tag2label.keys()}
-    D_REMAP = {"ENFERMEDAD": "DISEASE", "SINTOMA": "SYMPTOM", "PROCEDIMIENTO": "PROCEDURE", "FARMACO": "MEDICATION"}
+    D_REMAP = {
+        "ENFERMEDAD": "DISEASE",
+        "SINTOMA": "SYMPTOM",
+        "PROCEDIMIENTO": "PROCEDURE",
+        "FARMACO": "MEDICATION",
+    }
     for label in labels:
         tag = D_REMAP.get(label["tag"], label["tag"])
         start, end, tag_type = int(label["start_span"]), int(label["end_span"]), tag
@@ -143,33 +164,63 @@ def flatten_token_list(l):
 
 
 def split_tokens(tokens: list[str], tokenizer: PreTrainedTokenizer, max_seq_len: int):
-    paragraphs_breaks = [0] + [i + 1 for i in range(len(tokens)) if re.match(".*\n\n+.*", tokens[i])] + [len(tokens)]
-    paragraphs = [tokens[paragraphs_breaks[i] : paragraphs_breaks[i + 1]] for i in range(len(paragraphs_breaks) - 1)]
+    paragraphs_breaks = (
+        [0]
+        + [i + 1 for i in range(len(tokens)) if re.match(".*\n\n+.*", tokens[i])]
+        + [len(tokens)]
+    )
+    paragraphs = [
+        tokens[paragraphs_breaks[i] : paragraphs_breaks[i + 1]]
+        for i in range(len(paragraphs_breaks) - 1)
+    ]
     for p_idx, para_tokens in enumerate(paragraphs):
-        ids = tokenizer.encode(para_tokens, add_special_tokens=False, is_split_into_words=True)
+        ids = tokenizer.encode(
+            para_tokens, add_special_tokens=False, is_split_into_words=True
+        )
         if len(ids) > max_seq_len:
             line_breaks = (
                 [0]
-                + [i + 1 for i in range(len(para_tokens)) if re.sub("\n\n+", "", para_tokens[i]).count("\n") == 1]
+                + [
+                    i + 1
+                    for i in range(len(para_tokens))
+                    if re.sub("\n\n+", "", para_tokens[i]).count("\n") == 1
+                ]
                 + [len(para_tokens)]
             )
-            lines = [para_tokens[line_breaks[i] : line_breaks[i + 1]] for i in range(len(line_breaks) - 1)]
+            lines = [
+                para_tokens[line_breaks[i] : line_breaks[i + 1]]
+                for i in range(len(line_breaks) - 1)
+            ]
             for l_idx, line_tokens in enumerate(lines):
-                ids = tokenizer.encode(line_tokens, add_special_tokens=False, is_split_into_words=True)
+                ids = tokenizer.encode(
+                    line_tokens, add_special_tokens=False, is_split_into_words=True
+                )
                 if len(ids) > max_seq_len:
                     sentence_breaks = (
                         [0]
-                        + [i + 1 for i in range(len(line_tokens)) if re.match(r"[\.!\?]", line_tokens[i])]
+                        + [
+                            i + 1
+                            for i in range(len(line_tokens))
+                            if re.match(r"[\.!\?]", line_tokens[i])
+                        ]
                         + [len(line_tokens)]
                     )
                     sentences = [
-                        line_tokens[sentence_breaks[i] : sentence_breaks[i + 1]] for i in range(len(sentence_breaks) - 1)
+                        line_tokens[sentence_breaks[i] : sentence_breaks[i + 1]]
+                        for i in range(len(sentence_breaks) - 1)
                     ]
                     for s_idx, sentence_tokens in enumerate(sentences):
-                        ids = tokenizer.encode(sentence_tokens, add_special_tokens=False, is_split_into_words=True)
+                        ids = tokenizer.encode(
+                            sentence_tokens,
+                            add_special_tokens=False,
+                            is_split_into_words=True,
+                        )
                         if len(ids) > max_seq_len:
                             word_breaks = [i for i in range(len(sentence_tokens) + 1)]
-                            words = [sentence_tokens[word_breaks[i] : word_breaks[i + 1]] for i in range(len(word_breaks) - 1)]
+                            words = [
+                                sentence_tokens[word_breaks[i] : word_breaks[i + 1]]
+                                for i in range(len(word_breaks) - 1)
+                            ]
                             sentences[s_idx] = words
                     lines[l_idx] = sentences
             paragraphs[p_idx] = lines
@@ -177,7 +228,12 @@ def split_tokens(tokens: list[str], tokenizer: PreTrainedTokenizer, max_seq_len:
     return splits
 
 
-def align_labels_to_text(encoding: Encoding, token_tags: dict[str, list[str]], tag2label: dict, iob_tags: bool):
+def align_labels_to_text(
+    encoding: Encoding,
+    token_tags: dict[str, list[str]],
+    tag2label: dict,
+    iob_tags: bool,
+):
     offset = 3 if iob_tags else 2
     num_labels = len(tag2label.keys()) * offset
     labels = torch.zeros((encoding["input_ids"].shape[1], num_labels))
@@ -220,7 +276,9 @@ def merge_splits_into_chunks(
     iob_tags: bool,
 ):
 
-    encoding = tokenizer(tokens, is_split_into_words=True, add_special_tokens=False, return_tensors="pt")
+    encoding = tokenizer(
+        tokens, is_split_into_words=True, add_special_tokens=False, return_tensors="pt"
+    )
     tokens_ids = encoding.input_ids[0]
     word_to_token_list = [encoding.word_to_tokens(i) for i in range(len(tokens))]
 
@@ -228,28 +286,41 @@ def merge_splits_into_chunks(
     assert len(tokens_ids) == len(label_ids)
     # Merge splits into chunks without exceeding max_seq_len
     start_chunk_idx, end_chunk_idx = 0, 0
-    chunks = {"tokens": [], "input_ids": [], "label_ids": [], "word_to_token": [], "labels_words": []}
+    chunks = {
+        "tokens": [],
+        "input_ids": [],
+        "label_ids": [],
+        "word_to_token": [],
+        "labels_words": [],
+    }
     for i in range(len(splits) + 1):
         # TODO: optimize this
         if i < len(splits):
             # Compute the current chunk length after adding the next tokenized split
             sentence = splits[i]
-            token_idx_list = get_tokens_indices(word_to_token_list, start_chunk_idx, end_chunk_idx + len(sentence))
+            token_idx_list = get_tokens_indices(
+                word_to_token_list, start_chunk_idx, end_chunk_idx + len(sentence)
+            )
             chunk_ids = tokens_ids[token_idx_list]
         if i == len(splits) or len(chunk_ids) > max_seq_len:
             # add previous splits as a chunk if current chunk exceeds max_seq_len or if the splits are finished
-            token_idx_list = get_tokens_indices(word_to_token_list, start_chunk_idx, end_chunk_idx)
+            token_idx_list = get_tokens_indices(
+                word_to_token_list, start_chunk_idx, end_chunk_idx
+            )
             chunk_ids = tokens_ids[token_idx_list]
             chunk_labels_ids = label_ids[token_idx_list]
             chunk_labels_words = {
-                tag: [token_tags[tag][i] for i in range(start_chunk_idx, end_chunk_idx)] for tag in token_tags.keys()
+                tag: [token_tags[tag][i] for i in range(start_chunk_idx, end_chunk_idx)]
+                for tag in token_tags.keys()
             }
             chunk_word_to_token = []
             for i in range(start_chunk_idx, end_chunk_idx):
                 tok_span = word_to_token_list[i]
                 if tok_span is not None:
                     start, end = tok_span
-                    chunk_word_to_token.append([j - token_idx_list[0] for j in range(start, end)])
+                    chunk_word_to_token.append(
+                        [j - token_idx_list[0] for j in range(start, end)]
+                    )
                 else:
                     chunk_word_to_token.append(None)
 
@@ -282,7 +353,15 @@ class ChunkedCardioCCC(Dataset):
         for item in dataset:
             tokens, labels = item["tokens"], item["labels"]
             splits = split_tokens(tokens, tokenizer, model_max_len)
-            chunks = merge_splits_into_chunks(tokens, splits, labels, tokenizer, model_max_len, tag2label, self.dataset.iob_tags)
+            chunks = merge_splits_into_chunks(
+                tokens,
+                splits,
+                labels,
+                tokenizer,
+                model_max_len,
+                tag2label,
+                self.dataset.iob_tags,
+            )
             if iter_by_chunk:
                 for i in range(len(chunks["tokens"])):
                     self.chunked_data.append(
@@ -308,9 +387,15 @@ def collate_fn_chunked_bert(batch: list[dict], padding_value: int):
     input_ids = [chunk["input_ids"] for chunk in batch]
     labels = [chunk["label_ids"] for chunk in batch]
     attention_mask = [torch.ones_like(ids) for ids in input_ids]
-    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=padding_value)
-    attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
-    labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=padding_value
+    )
+    attention_mask = torch.nn.utils.rnn.pad_sequence(
+        attention_mask, batch_first=True, padding_value=0
+    )
+    labels = torch.nn.utils.rnn.pad_sequence(
+        labels, batch_first=True, padding_value=-100
+    )
     word_to_token = [chunk["word_to_token"] for chunk in batch]
     labels_words = [chunk["labels_words"] for chunk in batch]
     return {
@@ -327,8 +412,12 @@ def collate_fn_chunked_bert_test(chunks: list[dict], padding_value: int):
     num_chunks = len(chunks["input_ids"])
     input_ids = [chunks["input_ids"][i] for i in range(num_chunks)]
     attention_mask = [torch.ones_like(ids) for ids in input_ids]
-    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=padding_value)
-    attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=padding_value
+    )
+    attention_mask = torch.nn.utils.rnn.pad_sequence(
+        attention_mask, batch_first=True, padding_value=0
+    )
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -355,7 +444,10 @@ class NEREval(Metric):
         preds, labels_words = self.preds, self.labels_words
         offset = 3 if self.iob_tags else 2
         results = {}
-        predictions, references = {tag: [] for tag in self.tag2label.keys()}, {tag: [] for tag in self.tag2label.keys()}
+        predictions, references = (
+            {tag: [] for tag in self.tag2label.keys()},
+            {tag: [] for tag in self.tag2label.keys()},
+        )
 
         for i in range(len(preds)):
             for tag in self.tag2label.keys():
@@ -386,14 +478,14 @@ class NERModule(L.LightningModule):
         self,
         lm: nn.Module,
         lm_output_size: int,
-        label2tag: Dict[int,str],
+        label2tag: Dict[int, str],
         iob_tags: bool,
         freeze_backbone: bool = False,
         word_prediction_strategy: str = "first_token",
         learning_rate=2e-5,
         weight_decay=1e-3,
-        classifier_hidden_layers: tuple|None = None,
-        classifier_dropout: float = 0.1
+        classifier_hidden_layers: tuple | None = None,
+        classifier_dropout: float = 0.1,
     ):
         super().__init__()
         self.lm = lm
@@ -405,20 +497,21 @@ class NERModule(L.LightningModule):
         self.lm.train()
         self.label2tag = label2tag
         self.learning_rate = learning_rate
-        self.weight_decay= weight_decay
+        self.weight_decay = weight_decay
         self.iob_tags = iob_tags
         self.offset = 3 if iob_tags else 2
         self.num_tags = len(label2tag.keys())
         self.num_labels = self.num_tags * self.offset
-        #self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        # self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.loss_fn = nn.CrossEntropyLoss()
-        #self.loss_fn = nn.BCEWithLogitsLoss()
+        # self.loss_fn = nn.BCEWithLogitsLoss()
         self.word_prediction_strategy = word_prediction_strategy
-        self.metric = NEREval(iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()})
+        self.metric = NEREval(
+            iob_tags=self.iob_tags, tag2label={v: k for k, v in self.label2tag.items()}
+        )
 
-        self._build_classifier_head(classifier_hidden_layers,
-            classifier_dropout)
+        self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
 
     def _build_classifier_head(self, hidden_layers, dropout_rate):
         """
@@ -451,7 +544,9 @@ class NERModule(L.LightningModule):
         self.classifier = nn.Sequential(*layers)
         print(f"Created classifier head with architecture: {self.classifier}")
 
-    def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
+    def exclude_padding_and_special_tokens(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ):
         logits = logits.view(-1, self.num_labels)
         labels = labels.view(-1, self.num_labels)
         label_mask = labels[:, 0] != -100  # exclude padding and special tokens
@@ -464,35 +559,44 @@ class NERModule(L.LightningModule):
         for i in range(self.num_tags):
             loss.append(
                 self.loss_fn(
-                    logits[:, i * self.offset : (i + 1) * self.offset], labels[:, i * self.offset : (i + 1) * self.offset]
+                    logits[:, i * self.offset : (i + 1) * self.offset],
+                    labels[:, i * self.offset : (i + 1) * self.offset],
                 )
             )
         loss = torch.stack(loss).mean()
-        #labels = labels.float()
-        #loss = self.loss_fn(logits, labels)
+        # labels = labels.float()
+        # loss = self.loss_fn(logits, labels)
         return loss
 
     def training_step(self, batch, batch_idx):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
 
         loss = self.compute_loss(logits, labels)
-        self.log("train_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids))
+        self.log(
+            "train_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids)
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
         loss = self.compute_loss(logits, labels)
-        self.log("val_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids))
+        self.log(
+            "val_loss", loss, on_epoch=True, sync_dist=True, batch_size=len(input_ids)
+        )
 
     def predict_word_level_entity(self, logits: torch.Tensor, token_ids: list[int]):
         if self.word_prediction_strategy == "first_token":
@@ -502,21 +606,27 @@ class NERModule(L.LightningModule):
         elif self.word_prediction_strategy == "average":
             return torch.mean(logits[token_ids], dim=0)
         else:
-            raise ValueError(f"Invalid word prediction strategy: {self.word_prediction_strategy}")
+            raise ValueError(
+                f"Invalid word prediction strategy: {self.word_prediction_strategy}"
+            )
 
     def test_step(self, batch, batch_idx):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         word_to_token = batch["word_to_token"]
         labels_words = batch["labels_words"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         all_preds = []
         all_labels_words = {}
         for i in range(input_ids.shape[0]):
             for j in range(len(word_to_token[i])):
                 if word_to_token[i][j] is not None:
-                    pred = self.predict_word_level_entity(logits[i], word_to_token[i][j])
+                    pred = self.predict_word_level_entity(
+                        logits[i], word_to_token[i][j]
+                    )
                     all_preds.append(pred)
                 else:
                     sep_pred = torch.zeros(self.num_labels, device=logits.device)
@@ -535,11 +645,18 @@ class NERModule(L.LightningModule):
         results = self.metric.compute()
         for label in results.keys():
             for metric, metric_value in results[label].items():
-                self.log(f"test_{label}_{metric}", metric_value, on_epoch=True, sync_dist=True)
+                self.log(
+                    f"test_{label}_{metric}",
+                    metric_value,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
         self.metric.reset()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        optimizer = torch.optim.Adam(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
         return optimizer
 
 
@@ -563,7 +680,9 @@ class RobertaNER(RobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.base_model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -599,7 +718,9 @@ class BertNER(BertForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.base_model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -635,7 +756,9 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.base_model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -653,43 +776,107 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
-    argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
-    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
-    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
-    argparser.add_argument("--weight_decay", type=float, default=1e-3, help="Learning rate for the optimizer")
-    argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
-    argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
-    argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
-    argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
+    argparser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for training and evaluation",
+    )
+    argparser.add_argument(
+        "--accumulation_steps", type=int, default=1, help="Gradient accumulation steps"
+    )
+    argparser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=2e-5,
+        help="Learning rate for the optimizer",
+    )
+    argparser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=1e-3,
+        help="Learning rate for the optimizer",
+    )
+    argparser.add_argument(
+        "--freeze_backbone",
+        action="store_true",
+        help="Freeze the transformer backbone and train only the classifier head",
+    )
+    argparser.add_argument(
+        "--patience", type=int, default=5, help="Patience for early stopping"
+    )
+    argparser.add_argument(
+        "--num_workers", type=int, default=4, help="Number of workers for data loading"
+    )
+    argparser.add_argument(
+        "--max_epochs",
+        type=int,
+        default=30,
+        help="Maximum number of epochs for training",
+    )
     argparser.add_argument(
         "--root_path",
         type=str,
         default="T://laupodteam/AIOS/Bram/notebooks/code_dev/CardioNER.nl/assets",
         help="Root path for the dataset",
     )
-    argparser.add_argument("--lang", type=str, default="nl", help="Language of the dataset")
-    argparser.add_argument("--model_name", type=str, default="CLTL/MedRoBERTa.nl", help="Name of the pre-trained model")
-    argparser.add_argument("--devices", type=int, nargs="+", default=[4], help="List of devices to use for training")
-    argparser.add_argument("--use_cpu", action="store_true", help="Flag to use CPU for training")
-    argparser.add_argument("--file_encoding", type=str, help="Important:encoding of train/val/test files. Check carefully.")
-    argparser.add_argument("--with_suggestion", action="store_true", help="Use corpus with suggested annotations")
-    argparser.add_argument("--use_iob_tags", action="store_true", help="Use IOB tags for labels")
+    argparser.add_argument(
+        "--lang", type=str, default="nl", help="Language of the dataset"
+    )
+    argparser.add_argument(
+        "--model_name",
+        type=str,
+        default="CLTL/MedRoBERTa.nl",
+        help="Name of the pre-trained model",
+    )
+    argparser.add_argument(
+        "--devices",
+        type=int,
+        nargs="+",
+        default=[4],
+        help="List of devices to use for training",
+    )
+    argparser.add_argument(
+        "--use_cpu", action="store_true", help="Flag to use CPU for training"
+    )
+    argparser.add_argument(
+        "--file_encoding",
+        type=str,
+        help="Important:encoding of train/val/test files. Check carefully.",
+    )
+    argparser.add_argument(
+        "--with_suggestion",
+        action="store_true",
+        help="Use corpus with suggested annotations",
+    )
+    argparser.add_argument(
+        "--use_iob_tags", action="store_true", help="Use IOB tags for labels"
+    )
     argparser.add_argument("--output_dir", type=str, default=".")
-    argparser.add_argument("--ckpt_path", type=str, default=None, help="Path to the checkpoint file")
+    argparser.add_argument(
+        "--ckpt_path", type=str, default=None, help="Path to the checkpoint file"
+    )
     argparser.add_argument(
         "--word_prediction_strategy",
-          type=str,
-          default="average",
-          choices=["average", "first_token", "last_token"],
-          help="Strategy to predict word-level entities"
+        type=str,
+        default="average",
+        choices=["average", "first_token", "last_token"],
+        help="Strategy to predict word-level entities",
     )
     argparser.add_argument(
-        "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
+        "--classifier_hidden_layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Hidden layers for the classifier",
     )
     argparser.add_argument(
-        "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
+        "--classifier_dropout",
+        type=float,
+        default=0.1,
+        help="Dropout rate for the classifier",
     )
-    argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
+    argparser.add_argument("--tag_classes", type=str, nargs="+", default=None)
 
     args = argparser.parse_args()
 
@@ -720,9 +907,11 @@ if __name__ == "__main__":
     classifier_dropout = args.classifier_dropout
 
     if classifier_hidden_layers is not None:
-        raise Warning("You are using a custom head, this will break the compatibility with the HF library as-is")
+        raise Warning(
+            "You are using a custom head, this will break the compatibility with the HF library as-is"
+        )
 
-    CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
+    CLASS_LIST = ["DISEASE", "MEDICATION", "PROCEDURE", "SYMPTOM"]
 
     if args.tag_classes is None:
         tag2label = {
@@ -748,7 +937,10 @@ if __name__ == "__main__":
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
-    if "Roberta" in model.config.architectures[0] or "Camembert" in model.config.architectures[0]:
+    if (
+        "Roberta" in model.config.architectures[0]
+        or "Camembert" in model.config.architectures[0]
+    ):
         max_len = max_len - 2
 
     print(f"The maximum length: {max_len}")
@@ -780,15 +972,61 @@ if __name__ == "__main__":
         iob_tags=use_iob_tags,
         tag2label=tag2label,
     )
-    train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
-    val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
-    test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=False, model_max_len=max_len)
+    train = ChunkedCardioCCC(
+        train,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=True,
+        model_max_len=max_len,
+    )
+    val = ChunkedCardioCCC(
+        val,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=True,
+        model_max_len=max_len,
+    )
+    test = ChunkedCardioCCC(
+        test,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=False,
+        model_max_len=max_len,
+    )
 
-    collate_fn_train = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
-    collate_fn_test = partial(collate_fn_chunked_bert_test, padding_value=tokenizer.pad_token_id)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=True, num_workers=num_workers, persistent_workers=True)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn_train, shuffle=False, num_workers=num_workers, persistent_workers=True)
-    test_loader = DataLoader(test, batch_size=1, collate_fn=collate_fn_test, shuffle=False, num_workers=num_workers, persistent_workers=True)
+    collate_fn_train = partial(
+        collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id
+    )
+    collate_fn_test = partial(
+        collate_fn_chunked_bert_test, padding_value=tokenizer.pad_token_id
+    )
+    train_loader = DataLoader(
+        train,
+        batch_size=batch_size,
+        collate_fn=collate_fn_train,
+        shuffle=True,
+        num_workers=num_workers,
+        persistent_workers=True,
+    )
+    val_loader = DataLoader(
+        val,
+        batch_size=batch_size,
+        collate_fn=collate_fn_train,
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=True,
+    )
+    test_loader = DataLoader(
+        test,
+        batch_size=1,
+        collate_fn=collate_fn_test,
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=True,
+    )
 
     if args.ckpt_path is None:
         module = NERModule(
@@ -800,7 +1038,7 @@ if __name__ == "__main__":
             freeze_backbone=args.freeze_backbone,
             word_prediction_strategy=args.word_prediction_strategy,
             classifier_hidden_layers=classifier_hidden_layers,
-            classifier_dropout=classifier_dropout
+            classifier_dropout=classifier_dropout,
         )
     else:
         module = NERModule.load_from_checkpoint(
@@ -824,7 +1062,9 @@ if __name__ == "__main__":
         ModelCheckpoint(monitor="val_loss", mode="min"),
     ]
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
-    strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
+    strategy = (
+        "auto" if use_cpu else strategy
+    )  # ddp_spawn if use_cpu and not in notebook
 
     log_root = f"lightning_logs/NER_word_level/{model_name.replace('/', '_')}"
     logger = TensorBoardLogger(save_dir=".", name=log_root)
@@ -836,7 +1076,9 @@ if __name__ == "__main__":
         devices="auto" if use_cpu else devices,
         max_epochs=max_epochs,
         strategy=strategy,
-        precision="16-mixed" if isinstance(devices, list) or devices == "cuda" else "bf16",
+        precision="16-mixed"
+        if isinstance(devices, list) or devices == "cuda"
+        else "bf16",
         logger=logger,
     )
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
@@ -848,7 +1090,7 @@ if __name__ == "__main__":
     # save as huggingface compatible model
     ########################################
     # make transformer class
-    #TODO: this is ducktape fix
+    # TODO: this is ducktape fix
     offset = 3 if use_iob_tags else 2
     base_config = AutoConfig.from_pretrained(model_name)
     base_config.num_labels = module.num_labels * offset
@@ -856,14 +1098,14 @@ if __name__ == "__main__":
     # change tag2label
     # TODO: is dirty ducktape, code should be refactored?
     _tag2label = {}
-    for i, (k,v) in enumerate(tag2label.items(), start=0):
-        _tag2label[f'O-{k}'] = max(0, v-1+i*offset)
-        _tag2label[f'I-{k}'] = max(1, v+i*offset)
+    for i, (k, v) in enumerate(tag2label.items(), start=0):
+        _tag2label[f"O-{k}"] = max(0, v - 1 + i * offset)
+        _tag2label[f"I-{k}"] = max(1, v + i * offset)
         if use_iob_tags:
-            _tag2label[f'B-{k}'] = max(2, (v+1)+i*offset)
+            _tag2label[f"B-{k}"] = max(2, (v + 1) + i * offset)
 
     tag2label = _tag2label
-    label2tag = {v:k for k,v in tag2label.items()}
+    label2tag = {v: k for k, v in tag2label.items()}
 
     base_config.id2label = label2tag
     base_config.label2id = tag2label
@@ -884,8 +1126,9 @@ if __name__ == "__main__":
         print(f"Storing as BertNER model in {save_dir}")
     elif base_config.architectures[0].startswith("XLMRoberta"):
         hf_model = XLMRobertaNER(base_config)
-        hf_model.xlmroberta.load_state_dict(module.to("cpu").lm.state_dict(), strict=False)
-        print(f"Storing as XLMRobertaNER model in {save_dir}")
+        hf_model.xlmroberta.load_state_dict(
+            module.to("cpu").lm.state_dict(), strict=False
+        )
 
     hf_model.classifier.load_state_dict(module.to("cpu").classifier.state_dict())
 

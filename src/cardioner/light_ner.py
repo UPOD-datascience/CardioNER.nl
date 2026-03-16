@@ -1,36 +1,39 @@
-import lightning as L
-
+import gc
 import itertools
-import re
-from torch.utils.data import Dataset
-from pathlib import Path
-import pandas as pd
 import json
+import os
+import re
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Literal
+
+import lightning as L
+import numpy as np
+import pandas as pd
 import spacy
-
-from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, AutoModel
-from transformers import RobertaModel, BertModel, PreTrainedTokenizer
-from transformers import RobertaForTokenClassification, BertForTokenClassification
-from transformers import XLMRobertaForTokenClassification
-from tokenizers import Encoding
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import Metric, F1Score, Precision, Recall, Accuracy
-from torch import Tensor
-from torch.nn import ModuleDict
-from torch.utils.data import DataLoader
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
-import os
-from functools import partial
-import gc
-
 from sklearn.utils.class_weight import compute_class_weight
-import numpy as np
-
-from typing import Dict, Literal, List
+from tokenizers import Encoding
+from torch import Tensor
+from torch.nn import ModuleDict
+from torch.utils.data import DataLoader, Dataset
+from torchmetrics import Accuracy, F1Score, Metric, Precision, Recall
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    AutoTokenizer,
+    BertForTokenClassification,
+    BertModel,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+    RobertaForTokenClassification,
+    RobertaModel,
+    XLMRobertaForTokenClassification,
+)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
@@ -38,12 +41,13 @@ gc.collect()
 
 import argparse
 
+
 def convert_to_iob(labels, text, tokenizer):
     """Convert entity annotations to IOB format aligned with transformer tokenization"""
     iob_labels = []
 
     # Sort labels by start position
-    sorted_labels = sorted(labels, key=lambda x: int(x['start_span']))
+    sorted_labels = sorted(labels, key=lambda x: int(x["start_span"]))
 
     # Get transformer tokenization info
     encoding = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
@@ -54,7 +58,11 @@ def convert_to_iob(labels, text, tokenizer):
 
     # Assign B/I tags directly based on character spans
     for label in sorted_labels:
-        tag, start_idx, end_idx = label["tag"], int(label["start_span"]), int(label["end_span"])
+        tag, start_idx, end_idx = (
+            label["tag"],
+            int(label["start_span"]),
+            int(label["end_span"]),
+        )
 
         # Find all tokens that overlap with this entity
         entity_tokens = []
@@ -83,14 +91,17 @@ def convert_to_iob(labels, text, tokenizer):
         if token_start == token_end:  # Skip special tokens
             continue
 
-        iob_labels.append({
-            "tag": tag,
-            "start_span": token_start,
-            "end_span": token_end,
-            "text": text[token_start:token_end]
-        })
+        iob_labels.append(
+            {
+                "tag": tag,
+                "start_span": token_start,
+                "end_span": token_end,
+                "text": text[token_start:token_end],
+            }
+        )
 
     return iob_labels
+
 
 def flatten_list(l):
     if not isinstance(l, list):
@@ -101,10 +112,19 @@ def flatten_list(l):
 def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label: dict):
     num_labels = len(tag2label.keys())
     text_labels = torch.zeros((text_encoding.input_ids.shape[1], num_labels))
-    D_REMAP={"ENFERMEDAD": "DISEASE", "SINTOMA": "SYMPTOM", "PROCEDIMIENTO": "PROCEDURE", "FARMACO": "MEDICATION"}
+    D_REMAP = {
+        "ENFERMEDAD": "DISEASE",
+        "SINTOMA": "SYMPTOM",
+        "PROCEDIMIENTO": "PROCEDURE",
+        "FARMACO": "MEDICATION",
+    }
     for label in labels:
         tag_0 = D_REMAP.get(label["tag"], label["tag"])
-        tag, start_idx, end_idx = tag_0, int(label["start_span"]), int(label["end_span"])
+        tag, start_idx, end_idx = (
+            tag_0,
+            int(label["start_span"]),
+            int(label["end_span"]),
+        )
         if any([tag.upper() in _tag for _tag in tag2label.keys()]):
             start_token_idx = text_encoding.char_to_token(start_idx)
             end_token_idx = text_encoding.char_to_token(end_idx - 1)
@@ -113,7 +133,9 @@ def align_labels_to_text(text_encoding: Encoding, labels: list[dict], tag2label:
             except TypeError as e:
                 print(f"Error: {e} for tag {tag}, start {start_idx}, end {end_idx}")
                 raise TypeError("Check the labels/alignment/tokenizer")
-    text_labels[~text_labels[:, 1:].any(dim=1), 0] = 1  # Adding null class if no other label is present
+    text_labels[~text_labels[:, 1:].any(dim=1), 0] = (
+        1  # Adding null class if no other label is present
+    )
     return text_labels
 
 
@@ -129,12 +151,20 @@ def split_text(text: str, tokenizer: PreTrainedTokenizer, max_seq_len: int):
                 ids = tokenizer.encode(lines[l_idx], add_special_tokens=True)
                 if len(ids) > max_seq_len:
                     sentences = re.split(r"([.!?]\s+)", lines[l_idx])
-                    sentences = ["".join(sentences[i : i + 2]) for i in range(0, len(sentences), 2)]
+                    sentences = [
+                        "".join(sentences[i : i + 2])
+                        for i in range(0, len(sentences), 2)
+                    ]
                     for s_idx in range(len(sentences)):
-                        ids = tokenizer.encode(sentences[s_idx], add_special_tokens=True)
+                        ids = tokenizer.encode(
+                            sentences[s_idx], add_special_tokens=True
+                        )
                         if len(ids) > max_seq_len:
                             words = re.split(r"(\s+)", sentences[s_idx])
-                            words = ["".join(words[i : i + 2]) for i in range(0, len(words), 2)]
+                            words = [
+                                "".join(words[i : i + 2])
+                                for i in range(0, len(words), 2)
+                            ]
                             sentences[s_idx] = words
                     lines[l_idx] = sentences
             paragraphs[p_idx] = lines
@@ -143,7 +173,11 @@ def split_text(text: str, tokenizer: PreTrainedTokenizer, max_seq_len: int):
 
 
 def get_tokens_indices(char_to_token_list: list[int], start_idx: int, end_idx: int):
-    token_idx_list = [char_to_token_list[i] for i in range(start_idx, end_idx) if char_to_token_list[i] is not None]
+    token_idx_list = [
+        char_to_token_list[i]
+        for i in range(start_idx, end_idx)
+        if char_to_token_list[i] is not None
+    ]
     token_idx_list = [k for k, _ in itertools.groupby(token_idx_list)]
     return token_idx_list
 
@@ -156,7 +190,9 @@ def merge_splits_into_chunks(
     labels: list[dict],
     tag2label: dict,
 ):
-    encoding = tokenizer(text, add_special_tokens=False, return_tensors="pt", return_offsets_mapping=True)
+    encoding = tokenizer(
+        text, add_special_tokens=False, return_tensors="pt", return_offsets_mapping=True
+    )
     char_to_token_list = [encoding.char_to_token(i) for i in range(len(text))]
     text_ids = encoding.input_ids[0]
     text_label_ids = align_labels_to_text(encoding, labels, tag2label)
@@ -170,11 +206,15 @@ def merge_splits_into_chunks(
         if i < len(splits):
             # Compute the current chunk length after adding the next tokenized split
             sentence = splits[i]
-            token_idx_list = get_tokens_indices(char_to_token_list, start_chunk_idx, end_chunk_idx + len(sentence))
+            token_idx_list = get_tokens_indices(
+                char_to_token_list, start_chunk_idx, end_chunk_idx + len(sentence)
+            )
             chunk_ids = text_ids[token_idx_list]
         if i == len(splits) or len(chunk_ids) > max_seq_len:
             # add previous splits as a chunk if current chunk exceeds max_seq_len or if the splits are finished
-            token_idx_list = get_tokens_indices(char_to_token_list, start_chunk_idx, end_chunk_idx)
+            token_idx_list = get_tokens_indices(
+                char_to_token_list, start_chunk_idx, end_chunk_idx
+            )
             chunk_ids = text_ids[token_idx_list]
             chunk_labels_ids = text_label_ids[token_idx_list]
             chunks["text"].append(text[start_chunk_idx:end_chunk_idx])
@@ -213,7 +253,9 @@ def split_iob(label: dict, nlp: spacy.Language, orig_text: str):
             "text": text[second_token.idx :],
         }
         new_labels.append(i_label)
-        assert orig_text[i_start_span:end_span] == i_label["text"], f"{orig_text[i_start_span:end_span]} != {i_label['text']}"
+        assert orig_text[i_start_span:end_span] == i_label["text"], (
+            f"{orig_text[i_start_span:end_span]} != {i_label['text']}"
+        )
     assert orig_text[start_span:b_end_span] == b_label["text"]
     return new_labels
 
@@ -229,16 +271,22 @@ class CardioCCC(Dataset):
         encoding: str = "UTF-8",
         with_suggestion: bool = False,
         iob_tags: bool = False,
-        tokenizer = None  # Add tokenizer parameter
+        tokenizer=None,  # Add tokenizer parameter
     ):
-        val_str = "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
+        val_str = (
+            "2_validated_w_sugs" if with_suggestion else "1_validated_without_sugs"
+        )
         self.root_path = Path(root_path)
-        self.split_file_names = json.load((self.root_path / "splits.json").open())[lang][split]["symp"]
+        self.split_file_names = json.load((self.root_path / "splits.json").open())[
+            lang
+        ][split]["symp"]
         self.lang = lang
-        batches = ["b1", "b2"] # if lang != "ro" else ["b1"]
+        batches = ["b1", "b2"]  # if lang != "ro" else ["b1"]
         self.annotations = []
         if iob_tags:
-            nlp = spacy.blank(lang if lang != "cz" else "cs")
+            nlp = spacy.blank(
+                "xx" if lang == "multi" else (lang if lang != "cz" else "cs")
+            )
 
         # For IOB tagging, we now need the tokenizer
         if iob_tags and tokenizer is None:
@@ -248,7 +296,9 @@ class CardioCCC(Dataset):
             raw_annotations = []
             for label_folder in self.LABEL_FOLDERS:
                 ann_path = lang_path / label_folder / "tsv"
-                raw_annotations.append(pd.read_csv(next(ann_path.glob("*.tsv")), sep="\t", na_filter=False))
+                raw_annotations.append(
+                    pd.read_csv(next(ann_path.glob("*.tsv")), sep="\t", na_filter=False)
+                )
             raw_annotations = pd.concat(raw_annotations, axis=0)
 
             for group in raw_annotations.groupby("name"):
@@ -256,7 +306,11 @@ class CardioCCC(Dataset):
                     continue
                 file_name = group[0] + ".txt"
                 text = (lang_path / "dis/txt" / file_name).read_text(encoding=encoding)
-                labels = group[1].loc[:, ["tag", "start_span", "end_span", "text"]].to_dict(orient="records")
+                labels = (
+                    group[1]
+                    .loc[:, ["tag", "start_span", "end_span", "text"]]
+                    .to_dict(orient="records")
+                )
 
                 # Use the improved IOB conversion if requested
                 if iob_tags:
@@ -272,7 +326,6 @@ class CardioCCC(Dataset):
 
 
 class ChunkedCardioCCC(Dataset):
-
     def __init__(
         self,
         dataset: CardioCCC,
@@ -291,7 +344,9 @@ class ChunkedCardioCCC(Dataset):
         for i, item in enumerate(dataset):
             text, labels = item["text"], item["labels"]
             splits = split_text(text, tokenizer, model_max_len)
-            chunks = merge_splits_into_chunks(text, splits, tokenizer, model_max_len, labels, self.tag2label)
+            chunks = merge_splits_into_chunks(
+                text, splits, tokenizer, model_max_len, labels, self.tag2label
+            )
             if iter_by_chunk:
                 for i in range(len(chunks["text"])):
                     self.chunked_data.append(
@@ -315,9 +370,15 @@ def collate_fn_chunked_bert(batch: list[dict], padding_value: int):
     input_ids = [chunk["input_ids"] for chunk in batch]
     labels = [chunk["label_ids"] for chunk in batch]
     attention_mask = [torch.ones_like(ids) for ids in input_ids]
-    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=padding_value)
-    attention_mask = torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True, padding_value=0)
-    labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=padding_value
+    )
+    attention_mask = torch.nn.utils.rnn.pad_sequence(
+        attention_mask, batch_first=True, padding_value=0
+    )
+    labels = torch.nn.utils.rnn.pad_sequence(
+        labels, batch_first=True, padding_value=-100
+    )
     return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 
@@ -327,11 +388,20 @@ class NEREval(Metric):
         self.num_labels = num_labels
         self.add_state("preds", default=[], dist_reduce_fx="cat")
         self.add_state("labels", default=[], dist_reduce_fx="cat")
-        metric_classes_dict = {"f1": F1Score, "precision": Precision, "recall": Recall, "accuracy": Accuracy}
+        metric_classes_dict = {
+            "f1": F1Score,
+            "precision": Precision,
+            "recall": Recall,
+            "accuracy": Accuracy,
+        }
         self.classification_metrics = ModuleDict(
             {
-                k
-                + (f"_{avg}" if avg != "none" else ""): v(task="multilabel", num_labels=num_labels, average=avg, zero_division=1)
+                k + (f"_{avg}" if avg != "none" else ""): v(
+                    task="multilabel",
+                    num_labels=num_labels,
+                    average=avg,
+                    zero_division=1,
+                )
                 for k, v in metric_classes_dict.items()
                 for avg in ["none", "micro", "macro"]
             }
@@ -354,16 +424,17 @@ class NEREval(Metric):
 
 
 class NERModule(L.LightningModule):
-    def __init__(self,
-                 lm: nn.Module,
-                 lm_output_size: int,
-                 label2tag: Dict[int,str],
-                 freeze_backbone: bool = False,
-                 learning_rate: float = 2e-5,
-                 weight_decay:float = 1e-3,
-                 classifier_hidden_layers: tuple|None = None,
-                 classifier_dropout: float = 0.1,
-                 class_weights: List[float]|None=None
+    def __init__(
+        self,
+        lm: nn.Module,
+        lm_output_size: int,
+        label2tag: Dict[int, str],
+        freeze_backbone: bool = False,
+        learning_rate: float = 2e-5,
+        weight_decay: float = 1e-3,
+        classifier_hidden_layers: tuple | None = None,
+        classifier_dropout: float = 0.1,
+        class_weights: List[float] | None = None,
     ):
         super().__init__()
         self.lm = lm
@@ -375,19 +446,20 @@ class NERModule(L.LightningModule):
         self.lm.train(not freeze_backbone)
         self.label2tag = label2tag
         self.num_labels = len(label2tag.keys())
-        #self.classifier = nn.Linear(lm_output_size, self.num_labels)
+        # self.classifier = nn.Linear(lm_output_size, self.num_labels)
         self.lm_output_size = lm_output_size
         self.metric = NEREval(num_labels=self.num_labels)
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         if class_weights is not None:
             # Register as buffer so it automatically moves to correct device
-            self.register_buffer('class_weights', torch.tensor(class_weights, dtype=torch.float))
+            self.register_buffer(
+                "class_weights", torch.tensor(class_weights, dtype=torch.float)
+            )
         else:
             self.class_weights = None
 
-        self._build_classifier_head(classifier_hidden_layers,
-            classifier_dropout)
+        self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
 
     def _build_classifier_head(self, hidden_layers, dropout_rate):
         """
@@ -420,7 +492,9 @@ class NERModule(L.LightningModule):
         self.classifier = nn.Sequential(*layers)
         print(f"Created classifier head with architecture: {self.classifier}")
 
-    def exclude_padding_and_special_tokens(self, logits: torch.Tensor, labels: torch.Tensor):
+    def exclude_padding_and_special_tokens(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ):
         logits = logits.view(-1, self.num_labels)
         labels = labels.view(-1, self.num_labels)
         label_mask = labels[:, 0] != -100  # exclude padding and special tokens
@@ -432,7 +506,9 @@ class NERModule(L.LightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
         # Use pos_weight for class balancing
@@ -447,7 +523,9 @@ class NERModule(L.LightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
         loss = F.binary_cross_entropy_with_logits(logits, labels)
@@ -460,7 +538,12 @@ class NERModule(L.LightningModule):
         for k, v in results.items():
             if "micro" not in k and "macro" not in k:
                 for i in range(self.num_labels):
-                    self.log(f"val_{k}_class_{self.label2tag[i]}", v[i], on_epoch=True, sync_dist=True)
+                    self.log(
+                        f"val_{k}_class_{self.label2tag[i]}",
+                        v[i],
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
             else:
                 self.log(f"val_{k}", v, on_epoch=True, sync_dist=True)
         self.metric.reset()
@@ -469,7 +552,9 @@ class NERModule(L.LightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
-        sequence_out = self.lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        sequence_out = self.lm(
+            input_ids=input_ids, attention_mask=attention_mask
+        ).last_hidden_state
         logits = self.classifier(sequence_out)
         logits, labels = self.exclude_padding_and_special_tokens(logits, labels)
         preds = logits.sigmoid()
@@ -482,7 +567,12 @@ class NERModule(L.LightningModule):
             if "micro" not in k and "macro" not in k:
                 for i in range(self.num_labels):
                     new_results[f"test_{k}_class_{self.label2tag[i]}"] = v[i].item()
-                    self.log(f"test_{k}_class_{self.label2tag[i]}", v[i], on_epoch=True, sync_dist=True)
+                    self.log(
+                        f"test_{k}_class_{self.label2tag[i]}",
+                        v[i],
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
             else:
                 new_results[f"test_{k}"] = v.item()
                 self.log(f"test_{k}", v, on_epoch=True, sync_dist=True)
@@ -490,7 +580,9 @@ class NERModule(L.LightningModule):
         return new_results
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        optimizer = torch.optim.Adam(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
         return optimizer
 
 
@@ -503,7 +595,7 @@ class RobertaNER(RobertaForTokenClassification):
     def __init__(self, config):
         super().__init__(config)
         # 1) Instantiate the base model from config:
-        #self.base_model = AutoModel.from_config(config)
+        # self.base_model = AutoModel.from_config(config)
 
         # 2) Add your classifier head
         #    (requires config.hidden_size and config.num_labels to be set properly)
@@ -514,7 +606,9 @@ class RobertaNER(RobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.roberta(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -550,7 +644,9 @@ class BertNER(BertForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.base_model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -586,7 +682,9 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         # 3) Forward pass through the base model
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        outputs = self.base_model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
         # The base AutoModel typically returns a last_hidden_state as outputs[0]
         # But check the docs if you're using a model that returns a different format
         sequence_output = outputs[0]  # shape: (batch_size, seq_len, hidden_size)
@@ -604,37 +702,105 @@ class XLMRobertaNER(XLMRobertaForTokenClassification):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="NER trainer")
-    argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and evaluation")
-    argparser.add_argument("--accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
-    argparser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate for the optimizer")
-    argparser.add_argument("--weight_decay", type=float, default=1e-3, help="Learning rate for the optimizer")
-    argparser.add_argument("--early_stop_metric", type=str, default="loss", choices=["loss", "f1"], help="Metric to monitor in Early Stopping")
-    argparser.add_argument("--freeze_backbone", action="store_true", help="Freeze the transformer backbone and train only the classifier head")
-    argparser.add_argument("--patience", type=int, default=5, help="Patience for early stopping")
-    argparser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
-    argparser.add_argument("--max_epochs", type=int, default=30, help="Maximum number of epochs for training")
+    argparser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for training and evaluation",
+    )
+    argparser.add_argument(
+        "--accumulation_steps", type=int, default=1, help="Gradient accumulation steps"
+    )
+    argparser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=2e-5,
+        help="Learning rate for the optimizer",
+    )
+    argparser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=1e-3,
+        help="Learning rate for the optimizer",
+    )
+    argparser.add_argument(
+        "--early_stop_metric",
+        type=str,
+        default="loss",
+        choices=["loss", "f1"],
+        help="Metric to monitor in Early Stopping",
+    )
+    argparser.add_argument(
+        "--freeze_backbone",
+        action="store_true",
+        help="Freeze the transformer backbone and train only the classifier head",
+    )
+    argparser.add_argument(
+        "--patience", type=int, default=5, help="Patience for early stopping"
+    )
+    argparser.add_argument(
+        "--num_workers", type=int, default=4, help="Number of workers for data loading"
+    )
+    argparser.add_argument(
+        "--max_epochs",
+        type=int,
+        default=30,
+        help="Maximum number of epochs for training",
+    )
     argparser.add_argument(
         "--root_path",
         type=str,
         default="/path/to/cardioCCC",
         help="Root path for the dataset",
     )
-    argparser.add_argument("--lang", type=str, default="nl", help="Language of the dataset")
-    argparser.add_argument("--model_name", type=str, default="CLTL/MedRoBERTa.nl", help="Name of the pre-trained model")
-    argparser.add_argument("--devices", type=int, nargs="+", default=[4], help="List of devices to use for training")
-    argparser.add_argument("--use_cpu", action="store_true", help="Flag to use CPU for training")
-    argparser.add_argument("--file_encoding", type=str, help="Important:encoding of train/val/test files. Check carefully.")
-    argparser.add_argument("--with_suggestion", action="store_true", help="Use corpus with suggested annotations")
-    argparser.add_argument("--use_iob_tags", action="store_true", help="Use IOB tags for labels")
+    argparser.add_argument(
+        "--lang", type=str, default="nl", help="Language of the dataset"
+    )
+    argparser.add_argument(
+        "--model_name",
+        type=str,
+        default="CLTL/MedRoBERTa.nl",
+        help="Name of the pre-trained model",
+    )
+    argparser.add_argument(
+        "--devices",
+        type=int,
+        nargs="+",
+        default=[4],
+        help="List of devices to use for training",
+    )
+    argparser.add_argument(
+        "--use_cpu", action="store_true", help="Flag to use CPU for training"
+    )
+    argparser.add_argument(
+        "--file_encoding",
+        type=str,
+        help="Important:encoding of train/val/test files. Check carefully.",
+    )
+    argparser.add_argument(
+        "--with_suggestion",
+        action="store_true",
+        help="Use corpus with suggested annotations",
+    )
+    argparser.add_argument(
+        "--use_iob_tags", action="store_true", help="Use IOB tags for labels"
+    )
     argparser.add_argument("--output_dir", type=str, default=".")
     argparser.add_argument(
-        "--classifier_hidden_layers", type=int, nargs="+", default=None, help="Hidden layers for the classifier"
+        "--classifier_hidden_layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Hidden layers for the classifier",
     )
     argparser.add_argument(
-        "--classifier_dropout", type=float, default=0.1, help="Dropout rate for the classifier"
+        "--classifier_dropout",
+        type=float,
+        default=0.1,
+        help="Dropout rate for the classifier",
     )
-    argparser.add_argument('--tag_classes', type=str, nargs='+', default=None)
-    argparser.add_argument('--use_class_weights', action='store_true')
+    argparser.add_argument("--tag_classes", type=str, nargs="+", default=None)
+    argparser.add_argument("--use_class_weights", action="store_true")
 
     args = argparser.parse_args()
 
@@ -665,9 +831,11 @@ if __name__ == "__main__":
     classifier_dropout = args.classifier_dropout
 
     if classifier_hidden_layers is not None:
-        raise Warning("You are using a custom head, this will break the compatibility with the HF library as-is")
+        raise Warning(
+            "You are using a custom head, this will break the compatibility with the HF library as-is"
+        )
 
-    CLASS_LIST = ['DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM']
+    CLASS_LIST = ["DISEASE", "MEDICATION", "PROCEDURE", "SYMPTOM"]
 
     if args.tag_classes is not None:
         fstr = "Invalid tag classes in argument, should be one of multiple of 'DISEASE', 'MEDICATION', 'PROCEDURE', 'SYMPTOM'"
@@ -712,83 +880,141 @@ if __name__ == "__main__":
 
     label2tag = {v: k for k, v in tag2label.items()}
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, add_prefix_space=True, use_fast=True
+    )
     model = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
 
     max_len = model.config.max_position_embeddings
     print(f"Model arch: {model.config.architectures}")
-    if "Roberta" in model.config.architectures[0] or "Camembert" in model.config.architectures[0]:
+    if (
+        "Roberta" in model.config.architectures[0]
+        or "Camembert" in model.config.architectures[0]
+    ):
         max_len = max_len - 2
 
     print(f"The maximum length: {max_len}")
 
     train = CardioCCC(
-        root_path, "train", lang,
+        root_path,
+        "train",
+        lang,
         encoding=file_encoding,
         with_suggestion=with_suggestion,
         iob_tags=use_iob_tags,
-        tokenizer=tokenizer if use_iob_tags else None  # Pass tokenizer when IOB tags are used
+        tokenizer=tokenizer
+        if use_iob_tags
+        else None,  # Pass tokenizer when IOB tags are used
     )
     val = CardioCCC(
-        root_path, "validation", lang,
+        root_path,
+        "validation",
+        lang,
         encoding=file_encoding,
         with_suggestion=with_suggestion,
         iob_tags=use_iob_tags,
-        tokenizer=tokenizer if use_iob_tags else None
+        tokenizer=tokenizer if use_iob_tags else None,
     )
     test = CardioCCC(
-        root_path, "test", lang,
+        root_path,
+        "test",
+        lang,
         encoding=file_encoding,
         with_suggestion=with_suggestion,
         iob_tags=use_iob_tags,
-        tokenizer=tokenizer if use_iob_tags else None
+        tokenizer=tokenizer if use_iob_tags else None,
     )
 
-    train = ChunkedCardioCCC(train, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
-    val = ChunkedCardioCCC(val, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
-    test = ChunkedCardioCCC(test, tokenizer, lang, tag2label=tag2label, iter_by_chunk=True, model_max_len=max_len)
+    train = ChunkedCardioCCC(
+        train,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=True,
+        model_max_len=max_len,
+    )
+    val = ChunkedCardioCCC(
+        val,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=True,
+        model_max_len=max_len,
+    )
+    test = ChunkedCardioCCC(
+        test,
+        tokenizer,
+        lang,
+        tag2label=tag2label,
+        iter_by_chunk=True,
+        model_max_len=max_len,
+    )
 
     collate_fn = partial(collate_fn_chunked_bert, padding_value=tokenizer.pad_token_id)
-    train_loader = DataLoader(train, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(
+        train,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
 
     train_labels = []  # Your actual training labels
     for batch in train_loader:
-        train_labels.extend(batch['labels'].flatten().tolist())
+        train_labels.extend(batch["labels"].flatten().tolist())
 
     if args.use_class_weights:
         class_weights = compute_class_weight(
-            'balanced',
-            classes=np.unique(train_labels),
-            y=train_labels
+            "balanced", classes=np.unique(train_labels), y=train_labels
         )
     else:
         class_weights = None
 
     print(f"Class weights are set to:{class_weights}")
 
-    module = NERModule(lm=model,
-                       lm_output_size=model.config.hidden_size,
-                       learning_rate=args.learning_rate,
-                       weight_decay=args.weight_decay,
-                       freeze_backbone=args.freeze_backbone,
-                       label2tag=label2tag,
-                       classifier_hidden_layers=classifier_hidden_layers,
-                       classifier_dropout=classifier_dropout,
-                       class_weights=class_weights)
-
+    module = NERModule(
+        lm=model,
+        lm_output_size=model.config.hidden_size,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        freeze_backbone=args.freeze_backbone,
+        label2tag=label2tag,
+        classifier_hidden_layers=classifier_hidden_layers,
+        classifier_dropout=classifier_dropout,
+        class_weights=class_weights,
+    )
 
     if torch.cuda.is_available() & use_cpu == False:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         torch.set_float32_matmul_precision("medium")
 
     callbacks = [
-        EarlyStopping(monitor=f"val_{early_stop_metric}", mode=early_stop_mode, patience=patience),
+        EarlyStopping(
+            monitor=f"val_{early_stop_metric}", mode=early_stop_mode, patience=patience
+        ),
         ModelCheckpoint(monitor=f"val_{early_stop_metric}", mode=early_stop_mode),
     ]
     strategy = "ddp_find_unused_parameters_true" if len(devices) > 1 else "auto"
-    strategy = "auto" if use_cpu else strategy  # ddp_spawn if use_cpu and not in notebook
+    strategy = (
+        "auto" if use_cpu else strategy
+    )  # ddp_spawn if use_cpu and not in notebook
 
     trainer = L.Trainer(
         accumulate_grad_batches=accumulation_steps,
@@ -798,7 +1024,9 @@ if __name__ == "__main__":
         devices="auto" if use_cpu else devices,
         max_epochs=max_epochs,
         strategy=strategy,
-        precision="16-mixed" if isinstance(devices, list) or devices == "cuda" else "bf16",
+        precision="16-mixed"
+        if isinstance(devices, list) or devices == "cuda"
+        else "bf16",
     )
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
     trainer.test(model=module, dataloaders=test_loader)

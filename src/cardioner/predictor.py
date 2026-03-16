@@ -673,7 +673,7 @@ if __name__ == "__main__":
         "--root", "-p", type=str, help="Path to the dataset root directory."
     )
     parser.add_argument(
-        "--lang", "-l", type=str, help="Language code (e.g., 'es', 'en')."
+        "--lang", "-l", type=str, help="Language code (e.g., 'es', 'en', 'multi')."
     )
     parser.add_argument(
         "--cat", "-c", type=str, help="Category (e.g., 'med' for medication)."
