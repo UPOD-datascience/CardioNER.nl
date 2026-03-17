@@ -194,7 +194,7 @@ python main.py \
     --entity_types DRUG DISEASE SYMPTOM \
     --train_model \
     --parse_annotations \
-    --output_dir ./output_multihead
+    --output_dir ./output
 ```
 
 **Multiclass** (*assumes no over span overlap!*)
@@ -206,7 +206,7 @@ python main.py \
     --entity_types DRUG DISEASE SYMPTOM \
     --train_model \
     --parse_annotations \
-    --output_dir ./output_multihead
+    --output_dir ./output
 ```
 
 **Multiclass CRF** (*assumes no over span overlap!*)
@@ -219,7 +219,7 @@ python main.py \
     --entity_types DRUG DISEASE SYMPTOM \
     --train_model \
     --parse_annotations \
-    --output_dir ./output_multihead
+    --output_dir ./output
 ```
 
 **Multiclass multihead**
@@ -231,7 +231,7 @@ python main.py \
     --entity_types DRUG DISEASE SYMPTOM \
     --train_model \
     --parse_annotations \
-    --output_dir ./output_multihead
+    --output_dir ./output
 ```
 
 **Multiclass multihead CRF**
@@ -243,7 +243,7 @@ python main.py \
     --entity_types DRUG DISEASE SYMPTOM \
     --train_model \
     --parse_annotations \
-    --output_dir ./output_multihead
+    --output_dir ./output
 ```
 
 
@@ -326,3 +326,19 @@ with, in each ```.jsonl```
 ]
 ...
 ```
+
+
+## MultiClinAI 'competition'
+
+For training
+
+```python
+poetry run python -m cardioner.main --lang=nl --corpus_train path/to/jsonl --parse_annotations --train_model --max_token_length 128 --chunk_size 128 --batch_size 16 --chunk_type=centered --output_dir=/path/to/output --num_epochs=20 --learning_rate=2e-5 --weight_decay=1e-4 --accumulation_steps=1 --model=model_name_or_location --force_splitter --num_splits=10 --use_class_weights --multiclass --classifier_hidden_layers 768 768 --only_first_split --entity_types CATEGORY
+```
+
+For inference
+
+```python
+poetry run python -m cardioner.main --inference_only --model_path=/path/to/model --inference_pipe=dt4h --corpus_inference=/path/to/test/files
+```
+

@@ -64,7 +64,7 @@ def inference(
     Uses the simple aggregation from the huggingface tokenclassification pipeline
 
     Args:
-        corpus_data: List of documents with 'id' and 'text' fields
+        corpus_data: List of documents with 'id' and 'text' fields, and potentially tagged entities
         model_path: Path to the trained model directory
         output_dir: Directory to save output TSV
         lang: Language code for tokenization
