@@ -226,8 +226,7 @@ class PredictionNER:
                         model_checkpoint, revision=revision, trust_remote_code=True
                     )
                 except ValueError as e:
-                    if "model type" not in str(e) and "model_type" not in str(e):
-                        raise
+                    error_text = str(e)
                     model_ref = auto_map.get("AutoModelForTokenClassification")
                     if isinstance(model_ref, str):
                         model_cls = get_class_from_dynamic_module(
@@ -240,6 +239,12 @@ class PredictionNER:
                             trust_remote_code=True,
                             config=fallback_config,
                         )
+                    if (
+                        "model type" not in error_text
+                        and "model_type" not in error_text
+                        and "config_class" not in error_text
+                    ):
+                        raise
                     fallback_config = PretrainedConfig.from_dict(config_dict)
                     return AutoModelForTokenClassification.from_pretrained(
                         model_checkpoint,
