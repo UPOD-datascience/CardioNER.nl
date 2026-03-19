@@ -524,7 +524,8 @@ class PredictionNER:
             valid_words,
             return_tensors="pt",
             is_split_into_words=True,
-            truncation=False,
+            truncation=True,
+            max_length=self.tokenizer.model_max_length,
             padding=True,
         )
         inputs = inputs.to(self.device)
