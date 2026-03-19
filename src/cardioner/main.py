@@ -50,14 +50,15 @@ def inference(
     corpus_data: List[Dict],
     model_path: str,
     output_dir: str,
-    output_file_prefix: "",
+    output_file_prefix: str = "",
     lang: str = "nl",
-    max_word_per_chunk: int | None = None,
-    trust_remote_code: bool = False,
+    max_word_per_chunk: int | None = 125,
+    trust_remote_code: bool = True,
     strategy: Literal["simple", "average", "first", "max"] = "simple",
     pipe: Literal["dt4h", "hf"] = "hf",
     dt4h_post_hoc_cleaning=True,
     dt4h_min_confidence=0.5,
+    dt4h_batch_size: int = 4,
 ):
     """
     Run inference on a corpus using a pre-trained model.
@@ -157,7 +158,9 @@ def inference(
                     }
                 )
     else:
-        ner_pipe = predictor.PredictionNER(model_checkpoint=model_path, revision=None)
+        ner_pipe = predictor.PredictionNER(
+            model_checkpoint=model_path, revision=None, stride=max_word_per_chunk
+        )
         pred_results = []
         ref_results = []
         for doc in tqdm(corpus_data, desc="Running inference"):
@@ -183,8 +186,9 @@ def inference(
             if not text:
                 continue
 
-            res = ner_pipe.do_prediction(
+            res = ner_pipe.do_prediction_batch(
                 text,
+                batch_size=dt4h_batch_size,
                 confidence_threshold=dt4h_min_confidence,
                 post_hoc_cleaning=dt4h_post_hoc_cleaning,
             )
@@ -1776,6 +1780,21 @@ if __name__ == "__main__":
         default="hf",
         help="Use the standard pipeline [hf] for token classification or our custom inference class [dt4h], not that in the latter case the inference strategy is moot. For now [dt4h] only works for multilabel/multiclass, not CRF",
     )
+    argparsers.add_argument(
+        "--inference_batch_size",
+        type=int,
+        default=4,
+        help="Batch size for dt4h inference (PredictionNER).",
+    )
+    argparsers.add_argument(
+        "--inference_stride",
+        type=int,
+        default=125,
+        help="Stride for inference.",
+    )
+    argparsers.add_argument(
+        "--output_file_prefix", type=str, help="Prefix for the inference results file."
+    )
 
     args = argparsers.parse_args()
 
@@ -1911,11 +1930,13 @@ if __name__ == "__main__":
                 corpus_data=corpus_inference_list,
                 model_path=args.model_path,
                 output_dir=args.output_dir,
+                output_file_prefix=args.output_file_prefix,
                 lang=lang,
-                max_word_per_chunk=None,  # Auto-detect from tokenizer
+                max_word_per_chunk=args.inference_stride,  # Auto-detect from tokenizer
                 trust_remote_code=args.trust_remote_code,
                 strategy=args.inference_strategy,
                 pipe=args.inference_pipe,
+                dt4h_batch_size=args.inference_batch_size,
             )
 
         print("Inference completed!")
@@ -2186,8 +2207,9 @@ if __name__ == "__main__":
                     corpus_data=corpus_validation_list,
                     model_path=OutputDir,
                     output_dir=OutputDir,
+                    output_file_prefix=args.output_file_prefix,
                     lang=lang,
-                    max_word_per_chunk=None,  # Auto-detect from tokenizer
+                    max_word_per_chunk=args.inference_stride,  # Auto-detect from tokenizer
                     trust_remote_code=args.trust_remote_code,
                 )
             else:

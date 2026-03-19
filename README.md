@@ -336,9 +336,9 @@ For training
 poetry run python -m cardioner.main --lang=nl --corpus_train path/to/jsonl --parse_annotations --train_model --max_token_length 128 --chunk_size 128 --batch_size 16 --chunk_type=centered --output_dir=/path/to/output --num_epochs=20 --learning_rate=2e-5 --weight_decay=1e-4 --accumulation_steps=1 --model=model_name_or_location --force_splitter --num_splits=10 --use_class_weights --multiclass --classifier_hidden_layers 768 768 --only_first_split --entity_types CATEGORY
 ```
 
-For inference
+For inference of a model with e.g. a context length of $128$ use an inference_stride<128 and make sure that inference_batch_size $\times$ inference_stride < max_positional_embeddings - 2 to avoid runtime errors. 
 
 ```python
-poetry run python -m cardioner.main --inference_only --model_path=/path/to/model --inference_pipe=dt4h --corpus_inference=/path/to/test/files
+poetry run python -m cardioner.main --inference_only --model_path=/path/to/model --inference_pipe=dt4h --corpus_inference=/path/to/test/files --inference_batch_size=4 --lang=multi --trust_remote_code --inference_stride=125 --output_file_prefix=symptom_modelname
 ```
 

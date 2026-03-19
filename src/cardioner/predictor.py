@@ -20,8 +20,10 @@ from transformers import (
     AutoConfig,
     AutoModelForTokenClassification,
     AutoTokenizer,
+    PretrainedConfig,
     TokenClassificationPipeline,
 )
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 # Import custom model classes for loading legacy models
 try:
@@ -109,9 +111,11 @@ class PredictionNER:
         self,
         model_checkpoint: str,
         revision: Optional[str],
-        stride: int = 256,
+        stride: int | None = 250,
         overlap: int = 0,
+        device: Optional[str] = None,
     ) -> None:
+
         MAX_TOKENS_IOB_SENT = stride
         OVERLAPPING_LEN = overlap
 
@@ -121,7 +125,16 @@ class PredictionNER:
             is_split_into_words=True,
             truncation=False,
         )
+        if MAX_TOKENS_IOB_SENT is None:
+            MAX_TOKENS_IOB_SENT = self.tokenizer.model_max_length // 2
+
         self.model = self._load_model(model_checkpoint, revision)
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+        self.model = self.model.to(self.device)
+        self.model.eval()
         self.text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name="o200k_base",
             separators=["\n\n\n", "\n\n", "\n", " .", " !", " ?", " ،", " ,", " ", ""],
@@ -151,6 +164,7 @@ class PredictionNER:
 
             architectures = config_dict.get("architectures", [])
             auto_map = config_dict.get("auto_map", {})
+            print("Architecture:", architectures)
 
             # Case 1: MultiLabelTokenClassificationModelHF (standard HF-style, no auto_map)
             if "MultiLabelTokenClassificationModelHF" in architectures and not auto_map:
@@ -211,9 +225,37 @@ class PredictionNER:
                 print(
                     f"Loading custom model with trust_remote_code from {model_checkpoint}"
                 )
-                return AutoModelForTokenClassification.from_pretrained(
-                    model_checkpoint, revision=revision, trust_remote_code=True
-                )
+                try:
+                    return AutoModelForTokenClassification.from_pretrained(
+                        model_checkpoint, revision=revision, trust_remote_code=True
+                    )
+                except ValueError as e:
+                    error_text = str(e)
+                    model_ref = auto_map.get("AutoModelForTokenClassification")
+                    if isinstance(model_ref, str):
+                        model_cls = get_class_from_dynamic_module(
+                            model_ref, model_checkpoint
+                        )
+                        fallback_config = PretrainedConfig.from_dict(config_dict)
+                        return model_cls.from_pretrained(
+                            model_checkpoint,
+                            revision=revision,
+                            trust_remote_code=True,
+                            config=fallback_config,
+                        )
+                    if (
+                        "model type" not in error_text
+                        and "model_type" not in error_text
+                        and "config_class" not in error_text
+                    ):
+                        raise
+                    fallback_config = PretrainedConfig.from_dict(config_dict)
+                    return AutoModelForTokenClassification.from_pretrained(
+                        model_checkpoint,
+                        revision=revision,
+                        trust_remote_code=True,
+                        config=fallback_config,
+                    )
 
         # Default: standard HuggingFace model
         print(f"Loading standard HuggingFace model from {model_checkpoint}")
@@ -255,6 +297,7 @@ class PredictionNER:
         inputs = self.tokenizer(
             text_words, return_tensors="pt", is_split_into_words=True, truncation=False
         )
+        inputs = inputs.to(self.device)
         word_ids = inputs.word_ids()
 
         # 4. Predict
@@ -463,6 +506,146 @@ class PredictionNER:
 
         return entities
 
+    def predict_text_batch(
+        self, texts: List[str], o_confidence_threshold: float = 0.70
+    ) -> List[List[Dict[str, str]]]:
+        batch_text_matches = [split_sentence_with_indices(t) for t in texts]
+        batch_text_words = [
+            [m.group().strip() for m in matches if m.group().strip()]
+            for matches in batch_text_matches
+        ]
+
+        valid_indices = [i for i, words in enumerate(batch_text_words) if words]
+        if not valid_indices:
+            return [[] for _ in texts]
+
+        valid_words = [batch_text_words[i] for i in valid_indices]
+        inputs = self.tokenizer(
+            valid_words,
+            return_tensors="pt",
+            is_split_into_words=True,
+            truncation=True,
+            max_length=self.tokenizer.model_max_length,
+            padding=True,
+        )
+        inputs = inputs.to(self.device)
+
+        with torch.no_grad():
+            logits = self.model(**inputs).logits
+            probs = F.softmax(logits, dim=-1)
+
+        predictions = torch.argmax(logits, dim=2)
+        id2label = self.model.config.id2label
+
+        results_per_valid = []
+        for batch_idx, words in enumerate(valid_words):
+            word_ids = inputs.word_ids(batch_index=batch_idx)
+            text_matches = batch_text_matches[valid_indices[batch_idx]]
+            non_empty_matches = [m for m in text_matches if m.group().strip()]
+            seen = set()
+            results = []
+
+            for i, word_idx in enumerate(word_ids):
+                if word_idx is None or word_idx in seen:
+                    continue
+                seen.add(word_idx)
+
+                word = words[word_idx]
+                start = non_empty_matches[word_idx].start()
+                end = non_empty_matches[word_idx].end()
+
+                tag_id = predictions[batch_idx, i].item()
+                tag = id2label[tag_id]
+                score = probs[batch_idx, i, tag_id].item()
+
+                if tag == "O" and score < o_confidence_threshold:
+                    sorted_probs = torch.argsort(probs[batch_idx, i], descending=True)
+                    for alt_id in sorted_probs:
+                        alt_tag = id2label[alt_id.item()]
+                        if alt_tag != "O":
+                            tag_id = alt_id.item()
+                            tag = alt_tag
+                            score = probs[batch_idx, i, tag_id].item()
+                            break
+
+                results.append(
+                    {
+                        "word": word,
+                        "tag": tag,
+                        "start": start,
+                        "end": end,
+                        "score": score,
+                    }
+                )
+
+            results_per_valid.append(results)
+
+        output = [[] for _ in texts]
+        for out_idx, valid_idx in enumerate(valid_indices):
+            output[valid_idx] = results_per_valid[out_idx]
+        return output
+
+    def do_prediction_batch(
+        self,
+        text,
+        batch_size: int = 8,
+        confidence_threshold: float = 0.6,
+        post_hoc_cleaning: bool = True,
+        o_confidence_threshold: float = 0.70,
+    ):
+        final_prediction = []
+        batch_texts = []
+        batch_offsets = []
+
+        for sub_text, sub_text_start, sub_text_end in self.split_text_with_indices(
+            text
+        ):
+            batch_texts.append(sub_text)
+            batch_offsets.append(sub_text_start)
+
+            if len(batch_texts) >= batch_size:
+                batch_tokens = self.predict_text_batch(
+                    batch_texts, o_confidence_threshold=o_confidence_threshold
+                )
+                for tokens, sub_text, sub_text_start in zip(
+                    batch_tokens, batch_texts, batch_offsets
+                ):
+                    predictions = self.aggregate_entities(
+                        tokens,
+                        sub_text,
+                        confidence_threshold=confidence_threshold,
+                        post_hoc_cleaning=post_hoc_cleaning,
+                    )
+                    for pred in predictions:
+                        pred["start"] += sub_text_start
+                        pred["end"] += sub_text_start
+                        pred["entity"] = pred["tag"]
+                        final_prediction.append(pred)
+
+                batch_texts = []
+                batch_offsets = []
+
+        if batch_texts:
+            batch_tokens = self.predict_text_batch(
+                batch_texts, o_confidence_threshold=o_confidence_threshold
+            )
+            for tokens, sub_text, sub_text_start in zip(
+                batch_tokens, batch_texts, batch_offsets
+            ):
+                predictions = self.aggregate_entities(
+                    tokens,
+                    sub_text,
+                    confidence_threshold=confidence_threshold,
+                    post_hoc_cleaning=post_hoc_cleaning,
+                )
+                for pred in predictions:
+                    pred["start"] += sub_text_start
+                    pred["end"] += sub_text_start
+                    pred["entity"] = pred["tag"]
+                    final_prediction.append(pred)
+
+        return final_prediction
+
     def do_prediction(self, text, confidence_threshold=0.6, post_hoc_cleaning=True):
         final_prediction = []
         # final_prediction_2 = []
@@ -485,8 +668,18 @@ class PredictionNER:
         return final_prediction
 
 
-def evaluate(model_checkpoint, revision, root_path, lang, cat):
-    ner = PredictionNER(model_checkpoint=model_checkpoint, revision=revision)
+def evaluate(
+    model_checkpoint,
+    revision,
+    root_path,
+    lang,
+    cat,
+    device: Optional[str] = None,
+    batch_size: int = 8,
+):
+    ner = PredictionNER(
+        model_checkpoint=model_checkpoint, revision=revision, device=device
+    )
     # conver the predictions to ann format
     test_files_root = os.path.join(root_path, "txt")
     tsv_file_path_test = os.path.join(root_path, f"test_cardioccc_{lang}_{cat}.tsv")
@@ -499,7 +692,11 @@ def evaluate(model_checkpoint, revision, root_path, lang, cat):
             os.path.join(test_files_root, fn + ".txt"), "r", encoding="utf-8"
         ) as f:
             document_text = f.read()
-            prds = ner.do_prediction(document_text, confidence_threshold=0.35)
+            prds = ner.do_prediction_batch(
+                document_text,
+                batch_size=batch_size,
+                confidence_threshold=0.35,
+            )
             for prd in prds:
                 prd_ann.append(
                     {
@@ -678,6 +875,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cat", "-c", type=str, help="Category (e.g., 'med' for medication)."
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to run on (e.g., 'cuda', 'cpu'). Defaults to CUDA if available.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Batch size for batched chunk inference.",
+    )
 
     args = parser.parse_args()
 
@@ -690,7 +899,15 @@ if __name__ == "__main__":
     lang = lang.upper()
     cat = cat.upper()
 
-    evaluate(model_checkpoint, revision, root, lang, cat)
+    evaluate(
+        model_checkpoint,
+        revision,
+        root,
+        lang,
+        cat,
+        device=args.device,
+        batch_size=args.batch_size,
+    )
 
     # Now use these variables below as needed
     print(f"Using model: {model_checkpoint} (revision: {revision})")
