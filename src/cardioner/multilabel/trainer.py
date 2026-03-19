@@ -185,12 +185,12 @@ class MultiLabelTokenClassificationModelHF(PreTrainedModel):
             )
 
         # Create a clean config for the backbone
-        backbone_config = AutoConfig.from_pretrained(backbone_name)
+        backbone_config = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
         backbone_config.hidden_dropout_prob = getattr(
             config, "hidden_dropout_prob", 0.1
         )
 
-        self.roberta = AutoModel.from_pretrained(backbone_name, config=backbone_config)
+        self.roberta = AutoModel.from_pretrained(backbone_name, config=backbone_config, trust_remote_code=True)
 
         # Store backbone_model_name in config for future loading
         if (
@@ -533,7 +533,7 @@ class ModelTrainer:
                 label_pad_token_id=-100,
             )
         or_config = AutoConfig.from_pretrained(
-            model, hf_token=self.hf_token, return_unused_kwargs=False
+            model, hf_token=self.hf_token, return_unused_kwargs=False, trust_remote_code=True
         )
         or_config.num_labels = len(self.label2id)
         or_config.id2label = self.id2label
@@ -555,7 +555,7 @@ class ModelTrainer:
             print(
                 "Warning: You are now creating a custom model class which requires trust_remote_code=True to load!"
             )
-            base_model = AutoModel.from_pretrained(model, token=hf_token)
+            base_model = AutoModel.from_pretrained(model, token=hf_token, trust_remote_code=True)
 
             # Store custom parameters in config for proper saving/loading
             or_config.classifier_hidden_layers = classifier_hidden_layers
