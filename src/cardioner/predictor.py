@@ -111,10 +111,11 @@ class PredictionNER:
         self,
         model_checkpoint: str,
         revision: Optional[str],
-        stride: int = 256,
+        stride: int | None = 250,
         overlap: int = 0,
         device: Optional[str] = None,
     ) -> None:
+
         MAX_TOKENS_IOB_SENT = stride
         OVERLAPPING_LEN = overlap
 
@@ -124,6 +125,9 @@ class PredictionNER:
             is_split_into_words=True,
             truncation=False,
         )
+        if MAX_TOKENS_IOB_SENT is None:
+            MAX_TOKENS_IOB_SENT = self.tokenizer.model_max_length // 2
+
         self.model = self._load_model(model_checkpoint, revision)
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

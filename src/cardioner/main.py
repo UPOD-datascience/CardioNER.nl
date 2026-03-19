@@ -52,7 +52,7 @@ def inference(
     output_dir: str,
     output_file_prefix: str = "",
     lang: str = "nl",
-    max_word_per_chunk: int | None = None,
+    max_word_per_chunk: int | None = 125,
     trust_remote_code: bool = True,
     strategy: Literal["simple", "average", "first", "max"] = "simple",
     pipe: Literal["dt4h", "hf"] = "hf",
@@ -158,7 +158,9 @@ def inference(
                     }
                 )
     else:
-        ner_pipe = predictor.PredictionNER(model_checkpoint=model_path, revision=None)
+        ner_pipe = predictor.PredictionNER(
+            model_checkpoint=model_path, revision=None, stride=max_word_per_chunk
+        )
         pred_results = []
         ref_results = []
         for doc in tqdm(corpus_data, desc="Running inference"):
@@ -1785,6 +1787,12 @@ if __name__ == "__main__":
         help="Batch size for dt4h inference (PredictionNER).",
     )
     argparsers.add_argument(
+        "--inference_stride",
+        type=int,
+        default=125,
+        help="Stride for inference.",
+    )
+    argparsers.add_argument(
         "--output_file_prefix", type=str, help="Prefix for the inference results file."
     )
 
@@ -1924,7 +1932,7 @@ if __name__ == "__main__":
                 output_dir=args.output_dir,
                 output_file_prefix=args.output_file_prefix,
                 lang=lang,
-                max_word_per_chunk=None,  # Auto-detect from tokenizer
+                max_word_per_chunk=args.inference_stride,  # Auto-detect from tokenizer
                 trust_remote_code=args.trust_remote_code,
                 strategy=args.inference_strategy,
                 pipe=args.inference_pipe,
@@ -2201,7 +2209,7 @@ if __name__ == "__main__":
                     output_dir=OutputDir,
                     output_file_prefix=args.output_file_prefix,
                     lang=lang,
-                    max_word_per_chunk=None,  # Auto-detect from tokenizer
+                    max_word_per_chunk=args.inference_stride,  # Auto-detect from tokenizer
                     trust_remote_code=args.trust_remote_code,
                 )
             else:
