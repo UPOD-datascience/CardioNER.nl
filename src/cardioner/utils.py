@@ -440,7 +440,7 @@ def merge_annotations(
         text = d[text_key]
         id = d[merge_key]
 
-        assert tags is not None, f"Tags should not be none: {id}"
+        #assert tags is not None, f"Tags should not be none: {id}"
 
         NEW_DICT[id][tag_key].extend(tags)
         NEW_DICT[id][text_key].extend([text])
@@ -461,7 +461,11 @@ def merge_annotations(
             )
             continue
 
-        _d = {"id": k, "tags": v[tag_key], "text": list_of_texts[0]}
+        if len(v[tag_key])==0:
+            vt = None
+        else:
+            vt = v[tag_key]
+        _d = {"id": k, "tags": vt, "text": list_of_texts[0]}
         NEW_DICT_LIST.append(_d)
     return NEW_DICT_LIST
 
