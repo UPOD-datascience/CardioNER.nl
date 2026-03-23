@@ -186,7 +186,7 @@ class ModelTrainer:
         )
 
         or_config = AutoConfig.from_pretrained(
-            model, hf_token=hf_token, return_unused_kwargs=False
+            model, hf_token=hf_token, return_unused_kwargs=False, trust_remote_code=True
         )
         or_config.num_labels = len(self.label2id)
         or_config.id2label = self.id2label
@@ -244,10 +244,10 @@ class ModelTrainer:
                 )
             try:
                 base_model = AutoModel.from_pretrained(
-                    model, config=or_config, add_pooling_layer=False
+                    model, config=or_config, add_pooling_layer=False, trust_remote_code=True
                 )
             except TypeError:
-                base_model = AutoModel.from_pretrained(model, config=or_config)
+                base_model = AutoModel.from_pretrained(model, config=or_config, trust_remote_code=True)
             self.model = TokenClassificationModel(or_config, base_model=base_model)
 
             # Set up auto_map for trust_remote_code loading
@@ -688,7 +688,7 @@ class MultiHeadCRFTrainer:
         )
 
         # Create MultiHeadCRF config
-        base_config = AutoConfig.from_pretrained(model, token=hf_token)
+        base_config = AutoConfig.from_pretrained(model, token=hf_token, trust_remote_code=True)
         config = MultiHeadCRFConfig(
             entity_types=self.entity_types,
             number_of_layers_per_head=number_of_layers_per_head,
@@ -1049,7 +1049,7 @@ class MultiHeadTrainer:
         )
 
         # Create MultiHead config (no CRF)
-        base_config = AutoConfig.from_pretrained(model, token=hf_token)
+        base_config = AutoConfig.from_pretrained(model, token=hf_token, trust_remote_code=True)
         config = MultiHeadConfig(
             entity_types=self.entity_types,
             number_of_layers_per_head=number_of_layers_per_head,

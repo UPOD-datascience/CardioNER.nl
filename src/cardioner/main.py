@@ -790,7 +790,7 @@ def prepare(
     )
     tokenizer.model_max_length = max_length
 
-    model_config = AutoConfig.from_pretrained(Model, token=hf_token)
+    model_config = AutoConfig.from_pretrained(Model, token=hf_token, trust_remote_code=True)
     max_model_length = model_config.max_position_embeddings  # 514
     num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)  # 2
     max_allowed_chunk_size = max_model_length - num_special_tokens  # 512
