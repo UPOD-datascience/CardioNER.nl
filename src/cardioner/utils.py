@@ -440,7 +440,7 @@ def merge_annotations(
         text = d[text_key]
         id = d[merge_key]
 
-        #assert tags is not None, f"Tags should not be none: {id}"
+        # assert tags is not None, f"Tags should not be none: {id}"
 
         NEW_DICT[id][tag_key].extend(tags)
         NEW_DICT[id][text_key].extend([text])
@@ -461,7 +461,7 @@ def merge_annotations(
             )
             continue
 
-        if len(v[tag_key])==0:
+        if len(v[tag_key]) == 0:
             vt = None
         else:
             vt = v[tag_key]
@@ -478,7 +478,7 @@ def clean_spans(entities, original_text):
     - Removes trailing space + punctuation if no opening parenthesis
     - Removes trailing closing parenthesis if no opening parenthesis
     - Removes leading whitespace
-    - Removes Dutch definite article "de " prefix
+    - Does not strip language-specific articles
     - Validates entities (non-empty, not just "de", not numeric, not special chars)
 
     Args:
@@ -529,10 +529,25 @@ def clean_spans(entities, original_text):
             entity_text = entity_text[:-1]
             end_span = end_span - 1
 
-        # Remove Dutch definite article "de " prefix
-        if entity_text.startswith("de "):
-            entity_text = entity_text[3:]
-            start_span = start_span + 3
+        # (Removed) Language-specific article stripping
+
+        # Trim mismatched leading '(' when there is no closing ')'
+        if entity_text.startswith("(") and ")" not in entity_text:
+            entity_text = entity_text[1:]
+            start_span = start_span + 1
+
+        # Symmetric bracket trimming when both sides are present
+        bracket_pairs = {"(": ")", "[": "]", "{": "}"}
+        trimmed = True
+        while trimmed and len(entity_text) >= 2:
+            trimmed = False
+            opener = entity_text[0]
+            closer = entity_text[-1]
+            if opener in bracket_pairs and bracket_pairs[opener] == closer:
+                entity_text = entity_text[1:-1]
+                start_span = start_span + 1
+                end_span = end_span - 1
+                trimmed = True
 
         # Final cleanup - remove any remaining leading/trailing whitespace
         while entity_text.startswith(" "):
@@ -552,11 +567,25 @@ def clean_spans(entities, original_text):
             except ValueError:
                 return text.strip().isnumeric()
 
+        def is_all_caps_with_numbers(text):
+            stripped = text.strip()
+            return (
+                bool(re.fullmatch(r"[A-Z0-9]+", stripped))
+                and any(ch.isdigit() for ch in stripped)
+                and any(ch.isalpha() for ch in stripped)
+            )
+
+        tag_blocks_caps_numeric = entity.get("tag") in {
+            "PROCEDURE",
+            "SYMPTOM",
+            "DISEASE",
+        }
+
         if (
             entity_text.strip() != ""
-            and entity_text != "de"
             and not is_numeric_only(entity_text)
             and not is_special_char(entity_text)
+            and not (tag_blocks_caps_numeric and is_all_caps_with_numbers(entity_text))
         ):
             # Create cleaned entity
             cleaned_entity = entity.copy()

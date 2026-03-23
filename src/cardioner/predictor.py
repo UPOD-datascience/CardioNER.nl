@@ -381,7 +381,8 @@ class PredictionNER:
         Note:
             The method applies two correction rules:
             1. Fixes "O" tags between "B-" and "I-" tags of the same type
-            2. Converts isolated "I-" tags to "B-" tags
+            2. Enforces IOB2 compliance by converting any "I-" that does not
+               follow a "B-" or "I-" of the same type to "B-"
 
             Entities are only included if all constituent tokens meet the confidence threshold
             and the resulting text is not composed entirely of special characters.
@@ -426,19 +427,23 @@ class PredictionNER:
                 if prev_type == next_type:
                     corrected_tokens[i]["tag"] = "I-" + prev_type
 
-        # Rule 2: Convert isolated I- to B-
-        last_tag_type = None
+        # Rule 2: Enforce IOB2 compliance for I- tags
+        prev_tag = "O"
         for i in range(len(corrected_tokens)):
             tag = corrected_tokens[i]["tag"]
             if tag.startswith("I-"):
                 tag_type = tag[2:]
-                if last_tag_type != tag_type:
-                    corrected_tokens[i]["tag"] = "B-" + tag_type
-                last_tag_type = tag_type
+                if not (
+                    (prev_tag.startswith("B-") or prev_tag.startswith("I-"))
+                    and prev_tag[2:] == tag_type
+                ):
+                    tag = "B-" + tag_type
+                    corrected_tokens[i]["tag"] = tag
+                prev_tag = tag
             elif tag.startswith("B-"):
-                last_tag_type = tag[2:]
+                prev_tag = tag
             else:
-                last_tag_type = None
+                prev_tag = "O"
 
         # Rule 3: ..
 
@@ -562,7 +567,8 @@ class PredictionNER:
                     sorted_probs = torch.argsort(probs[batch_idx, i], descending=True)
                     for alt_id in sorted_probs:
                         alt_tag = id2label[alt_id.item()]
-                        if alt_tag != "O":
+                        alt_score = probs[0, i, alt_id.item()].item()
+                        if alt_tag != "O" and alt_score >= 0.5:
                             tag_id = alt_id.item()
                             tag = alt_tag
                             score = probs[batch_idx, i, tag_id].item()
@@ -591,7 +597,7 @@ class PredictionNER:
         batch_size: int = 8,
         confidence_threshold: float = 0.6,
         post_hoc_cleaning: bool = True,
-        o_confidence_threshold: float = 0.70,
+        o_confidence_threshold: float = 0.7,
     ):
         final_prediction = []
         batch_texts = []

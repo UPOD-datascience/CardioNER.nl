@@ -57,7 +57,7 @@ def inference(
     strategy: Literal["simple", "average", "first", "max"] = "simple",
     pipe: Literal["dt4h", "hf"] = "hf",
     dt4h_post_hoc_cleaning=True,
-    dt4h_min_confidence=0.5,
+    dt4h_min_confidence=0.6,
     dt4h_batch_size: int = 4,
 ):
     """
@@ -1669,7 +1669,7 @@ if __name__ == "__main__":
     argparsers.add_argument("--corpus_validation", type=str, required=False)
     argparsers.add_argument("--split_file", type=str, required=False)
     argparsers.add_argument("--annotation_loc", type=str, required=False)
-    argparsers.add_argument("--output_dir", type=str, default="../../output")
+    argparsers.add_argument("--output_dir", type=str, default="output")
     argparsers.add_argument("--parse_annotations", action="store_true", default=False)
     argparsers.add_argument("--train_model", action="store_true", default=False)
     argparsers.add_argument(
@@ -1761,6 +1761,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to corpus file/directory for inference (uses corpus_validation if not set)",
+    )
+    argparsers.add_argument(
+        "--inference_filter_file",
+        type=str,
+        default=None,
+        help="Path to a .txt file containing one document ID per line. If provided, only these IDs are kept for inference.",
     )
     argparsers.add_argument(
         "--trust_remote_code",
@@ -1867,7 +1873,7 @@ if __name__ == "__main__":
             with open(split_file, "r", encoding="utf-8") as fr:
                 split_data = json.load(fr)
 
-            test_file_ids = [entry.strip(".txt") for entry in split_data["test_files"]]
+            test_file_ids = [entry.strip(".txt") for entry in split_data["test_gids"]]
 
             original_count = len(corpus_inference_list)
             corpus_inference_list = [
@@ -1882,6 +1888,38 @@ if __name__ == "__main__":
                 print(
                     f"WARNING: No documents matched test_files from split_file. "
                     f"Expected IDs (first 5): {test_file_ids[:5]}"
+                )
+
+        # Optional ID-based filtering for inference corpus
+        if args.inference_filter_file is not None:
+            assert args.inference_filter_file.endswith(".txt"), (
+                f"Inference filter file must be a .txt file, got: {args.inference_filter_file}"
+            )
+            assert os.path.isfile(args.inference_filter_file), (
+                f"Inference filter file {args.inference_filter_file} does not exist."
+            )
+
+            with open(args.inference_filter_file, "r", encoding="utf-8") as fr:
+                filter_ids = {
+                    line.strip().removesuffix(".txt")
+                    for line in fr
+                    if line.strip() != ""
+                }
+
+            original_count = len(corpus_inference_list)
+            corpus_inference_list = [
+                entry for entry in corpus_inference_list if entry["id"] in filter_ids
+            ]
+
+            print(
+                f"Filtered corpus using inference_filter_file: {original_count} -> {len(corpus_inference_list)} documents"
+            )
+
+            if len(corpus_inference_list) == 0:
+                preview_ids = list(filter_ids)[:5]
+                print(
+                    f"WARNING: No documents matched IDs from inference_filter_file. "
+                    f"Expected IDs (first 5): {preview_ids}"
                 )
 
         print(
