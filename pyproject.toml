@@ -17,13 +17,14 @@ scikit-learn = "^1.5.2"
 scikit-lego = "^0.9.1"
 seaborn = "^0.13.2"
 simpletransformers = "^0.70.1"
-seqeval = "^1.2.2"
 datasets = "^3.1.0"
 sentencepiece = "^0.2.1"
 pydantic = "^2.9.2"
 evaluate = "^0.4.3"
+seqeval = { path = "assets/seqeval-1.2.2.tar.gz",develop = false }
+
 #torchtext = "^0.18.0"
-torch = {version = "2.5.0", source = "torch" }
+torch = {version = "2.6.0", source = "torch" }
 accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"
 torchmetrics = "^1.6.1"
@@ -51,5 +52,6 @@ build-backend = "poetry.core.masonry.api"
 
 [[tool.poetry.source]]
 name = "torch"
-url = "https://download.pytorch.org/whl/cu121"
+url = "https://download.pytorch.org/whl/cu126"
 priority = "supplemental"
+
