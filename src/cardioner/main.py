@@ -33,6 +33,13 @@ from transformers import (
     pipeline,
 )
 
+import transformers 
+import sys
+print(sys.executable)
+print(transformers.__file__)
+print(transformers.__version__)
+
+
 from cardioner import evaluation, model_merger, parse_performance_json, predictor
 from cardioner.multiclass.trainer import ModelTrainer as MultiClassModelTrainer
 from cardioner.multiclass.trainer import MultiHeadCRFTrainer, MultiHeadTrainer

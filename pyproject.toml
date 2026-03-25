@@ -11,7 +11,6 @@ packages = [{ include = "cardioner", from = "src" }]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-transformers = "4.48.0"
 spacy = "^3.7.5"
 scikit-learn = "^1.5.2"
 scikit-lego = "^0.9.1"
@@ -22,8 +21,8 @@ sentencepiece = "^0.2.1"
 pydantic = "^2.9.2"
 evaluate = "^0.4.3"
 seqeval = { path = "assets/seqeval-1.2.2.tar.gz",develop = false }
-
 #torchtext = "^0.18.0"
+transformer = "^5.0.0"
 torch = {version = "2.6.0", source = "torch" }
 accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"

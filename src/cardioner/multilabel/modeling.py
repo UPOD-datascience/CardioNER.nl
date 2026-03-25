@@ -9,6 +9,7 @@ from transformers import (
     DebertaV2Config,
     PreTrainedModel,
     RobertaConfig,
+    EuroBertModel,
 )
 from transformers.modeling_outputs import TokenClassifierOutput
 
@@ -49,7 +50,7 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             backbone_name = getattr(config, "backbone_model_name", None)
             if backbone_name is None:
                 # Fallback to name_or_path for backwards compatibility
-                backbone_name = getattr(config, "name_or_path", None)
+                backbone_name = getattr(config, "_name_or_path", None)
             if backbone_name is None:
                 raise ValueError(
                     "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
@@ -61,10 +62,13 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             backbone_config.hidden_dropout_prob = getattr(
                 config, "hidden_dropout_prob", 0.1
             )
-
-            self.backbone = AutoModel.from_pretrained(
-                backbone_name, config=backbone_config
-            )  # ← use pretrained backbone
+            if 'eurobert' in backbone_name.lower():
+                self.backbone = EuroBertModel(backbone_config)
+            else:
+                self.backbone = AutoModel.from_config(
+                    backbone_config,
+                    trust_remote_code=True,
+                )
         else:
             self.backbone = base_model
 
@@ -100,6 +104,7 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
             else 0.1
         )
         self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
+        self.post_init()
 
     @classmethod
     def from_config(cls, config):
