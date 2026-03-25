@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Continue"
 
-$output_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multilabel_3ldense_20epochs_"
+$output_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multiclass_3ldense_20epochs_"
 $base_corpus_path = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined\MultiClinNER-multi"
 
 $categories = @("procedure", "symptom")
@@ -35,6 +35,7 @@ foreach ($cat in $categories) {
             --force_splitter `
             --num_splits=20 `
             --use_class_weights `
+			--multiclass `
             --classifier_hidden_layers 768 768 768 `
             --only_first_split `
             --entity_types $entity_type
