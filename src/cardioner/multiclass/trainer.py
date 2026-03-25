@@ -244,10 +244,15 @@ class ModelTrainer:
                 )
             try:
                 base_model = AutoModel.from_pretrained(
-                    model, config=or_config, add_pooling_layer=False, trust_remote_code=True
+                    model,
+                    config=or_config,
+                    add_pooling_layer=False,
+                    trust_remote_code=True,
                 )
             except TypeError:
-                base_model = AutoModel.from_pretrained(model, config=or_config, trust_remote_code=True)
+                base_model = AutoModel.from_pretrained(
+                    model, config=or_config, trust_remote_code=True
+                )
             self.model = TokenClassificationModel(or_config, base_model=base_model)
 
             # Set up auto_map for trust_remote_code loading
@@ -656,7 +661,7 @@ class MultiHeadCRFTrainer:
             "fp16": True,
             "load_best_model_at_end": True,
             "greater_is_better": True,
-            "metric_for_best_model": "overall_f1",
+            "metric_for_best_model": "macro_f1",
             "logging_dir": f"{output_dir}/logs",
             "logging_strategy": "steps",
             "logging_steps": 256,
@@ -688,7 +693,9 @@ class MultiHeadCRFTrainer:
         )
 
         # Create MultiHeadCRF config
-        base_config = AutoConfig.from_pretrained(model, token=hf_token, trust_remote_code=True)
+        base_config = AutoConfig.from_pretrained(
+            model, token=hf_token, trust_remote_code=True
+        )
         config = MultiHeadCRFConfig(
             entity_types=self.entity_types,
             number_of_layers_per_head=number_of_layers_per_head,
@@ -701,7 +708,11 @@ class MultiHeadCRFTrainer:
             label2id=label2id,
             # Copy base config attributes
             hidden_size=base_config.hidden_size,
-            hidden_dropout_prob=base_config.hidden_dropout_prob,
+            hidden_dropout_prob=getattr(
+                base_config,
+                "hidden_dropout_prob",
+                getattr(base_config, "hidden_dropout", 0.1),
+            ),
             vocab_size=base_config.vocab_size,
             max_position_embeddings=base_config.max_position_embeddings,
             type_vocab_size=getattr(base_config, "type_vocab_size", 1),
@@ -718,9 +729,21 @@ class MultiHeadCRFTrainer:
                 "TokenClassificationModelMultiHeadCRF could not be imported."
             )
 
-        base_model = RobertaForTokenClassification.from_pretrained(
-            model, config=base_config, token=hf_token, ignore_mismatched_sizes=True
-        )
+        try:
+            base_model = AutoModel.from_pretrained(
+                model,
+                config=base_config,
+                token=hf_token,
+                add_pooling_layer=False,
+                trust_remote_code=True,
+            )
+        except TypeError:
+            base_model = AutoModel.from_pretrained(
+                model,
+                config=base_config,
+                token=hf_token,
+                trust_remote_code=True,
+            )
         self.model = TokenClassificationModelMultiHeadCRF(
             config, base_model, freeze_backbone
         )
@@ -1017,7 +1040,7 @@ class MultiHeadTrainer:
             "fp16": True,
             "load_best_model_at_end": True,
             "greater_is_better": True,
-            "metric_for_best_model": "overall_f1",
+            "metric_for_best_model": "macro_f1",
             "logging_dir": f"{output_dir}/logs",
             "logging_strategy": "steps",
             "logging_steps": 256,
@@ -1049,7 +1072,9 @@ class MultiHeadTrainer:
         )
 
         # Create MultiHead config (no CRF)
-        base_config = AutoConfig.from_pretrained(model, token=hf_token, trust_remote_code=True)
+        base_config = AutoConfig.from_pretrained(
+            model, token=hf_token, trust_remote_code=True
+        )
         config = MultiHeadConfig(
             entity_types=self.entity_types,
             number_of_layers_per_head=number_of_layers_per_head,
@@ -1063,7 +1088,11 @@ class MultiHeadTrainer:
             label2id=label2id,
             # Copy base config attributes
             hidden_size=base_config.hidden_size,
-            hidden_dropout_prob=base_config.hidden_dropout_prob,
+            hidden_dropout_prob=getattr(
+                base_config,
+                "hidden_dropout_prob",
+                getattr(base_config, "hidden_dropout", 0.1),
+            ),
             vocab_size=base_config.vocab_size,
             max_position_embeddings=base_config.max_position_embeddings,
             type_vocab_size=getattr(base_config, "type_vocab_size", 1),
@@ -1080,9 +1109,21 @@ class MultiHeadTrainer:
                 "TokenClassificationModelMultiHead could not be imported."
             )
 
-        base_model = RobertaForTokenClassification.from_pretrained(
-            model, config=base_config, token=hf_token, ignore_mismatched_sizes=True
-        )
+        try:
+            base_model = AutoModel.from_pretrained(
+                model,
+                config=base_config,
+                token=hf_token,
+                add_pooling_layer=False,
+                trust_remote_code=True,
+            )
+        except TypeError:
+            base_model = AutoModel.from_pretrained(
+                model,
+                config=base_config,
+                token=hf_token,
+                trust_remote_code=True,
+            )
         self.model = TokenClassificationModelMultiHead(
             config, base_model, freeze_backbone
         )

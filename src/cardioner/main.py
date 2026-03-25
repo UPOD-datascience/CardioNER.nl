@@ -750,7 +750,7 @@ def prepare(
 ):
     # Multi-head CRF preparation
     if use_multihead_crf:
-        from multiclass.loader import (
+        from cardioner.multiclass.loader import (
             annotate_corpus_multihead,
             annotate_corpus_multihead_centered,
             get_entity_types_from_corpus,
@@ -790,7 +790,9 @@ def prepare(
     )
     tokenizer.model_max_length = max_length
 
-    model_config = AutoConfig.from_pretrained(Model, token=hf_token, trust_remote_code=True)
+    model_config = AutoConfig.from_pretrained(
+        Model, token=hf_token, trust_remote_code=True
+    )
     max_model_length = model_config.max_position_embeddings  # 514
     num_special_tokens = tokenizer.num_special_tokens_to_add(pair=False)  # 2
     max_allowed_chunk_size = max_model_length - num_special_tokens  # 512
