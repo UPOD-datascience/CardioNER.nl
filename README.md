@@ -342,3 +342,7 @@ For inference of a model with e.g. a context length of $128$ use an inference_st
 poetry run python -m cardioner.main --inference_only --model_path=/path/to/model --inference_pipe=dt4h --corpus_inference=/path/to/test/files --inference_batch_size=4 --lang=multi --trust_remote_code --inference_stride=125 --output_file_prefix=symptom_modelname
 ```
 
+if you want to run inference and use a filter for test ids use the ```inference_filter_file``` flag
+```python
+poetry run python -m cardioner.main --inference_only --inference_batch_size=4 --trust_remote_code --corpus_inference=/path/to/test/files --model_path=/path/to/model --lang=nl --inference_pipe=dt4h --inference_batch_size=4 --inference_stride=128 --inference_filter_file=/path/to/batch_1_filter.txt 
+```

@@ -731,17 +731,29 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
         )
 
         # Get transformer outputs
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        try:
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        except TypeError:
+            # Some backbones (e.g., EuroBERT) do not accept token_type_ids/head_mask
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
         sequence_output = outputs[0]
         sequence_output = self.dropout(sequence_output)  # (batch, seq_len, hidden)
@@ -1152,17 +1164,29 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
         )
 
         # Get transformer outputs
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        try:
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        except TypeError:
+            # Some backbones (e.g., EuroBERT) do not accept token_type_ids/head_mask
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
         sequence_output = outputs[0]
         sequence_output = self.dropout(sequence_output)  # (batch, seq_len, hidden)
