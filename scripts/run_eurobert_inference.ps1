@@ -10,14 +10,14 @@ $filter_file = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\M
 $languages = @("sv", "ro", "nl", "it", "es", "en", "cz")
 
 # Log file
-$logFile = "inference_log.txt"
+$logFile = "real_inference_log.txt"
 
 foreach ($lang in $languages) {
     try {
-        $corpus_path = Join-Path $base_corpus_path "MultiClinNER-$lang\test"
+        $corpus_path = Join-Path $base_corpus_path "MultiClinNER-$lang\test\disease\txt"
         $output_prefix = "DISEASE_EuroBERT610_multilabel_$lang"
 
-        $msg = "[$(Get-Date)] Starting language: $lang"
+        $msg = "[$(Get-Date)] Starting language: $lang from $corpus_path"
         Write-Host $msg
         Add-Content $logFile $msg
 
@@ -30,8 +30,7 @@ foreach ($lang in $languages) {
             --lang=multi `
             --trust_remote_code `
             --inference_stride=128 `
-            --output_file_prefix=$output_prefix `
-            --inference_filter_file=$filter_file
+            --output_file_prefix=$output_prefix
 
         if ($LASTEXITCODE -ne 0) {
             $err = "[$(Get-Date)] ERROR for language: $lang (exit code $LASTEXITCODE)"
