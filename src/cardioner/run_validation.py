@@ -200,7 +200,7 @@ def main(
                 )
 
                 if post_hoc_cleaning:
-                    named_ents = clean_spans(named_ents, sample["text"])
+                    named_ents = clean_spans(named_ents, sample["text"], lang=lang)
 
                 if len(named_ents) > 0:
                     _res_df = pd.DataFrame(named_ents)
@@ -246,7 +246,7 @@ def main(
                     res_df_raw = pd.concat([res_df_raw, _res_df], axis=0)
     else:
         print("Continuing with Wesam predictor..")
-        ner_pipe = PredictionNER(model_checkpoint=model, revision=revision)
+        ner_pipe = PredictionNER(model_checkpoint=model, revision=revision, lang=lang)
         res_list = []
         for sample in tqdm(sample_list):
             cleaned_text = sample["text"].replace("\n", " ").replace("\t", " ")

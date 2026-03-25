@@ -114,6 +114,8 @@ class PredictionNER:
         stride: int | None = 250,
         overlap: int = 0,
         device: Optional[str] = None,
+        lang: Literal["es", "nl", "en", "it", "ro", "sv", "cz", "multi"] = "nl",
+        trim_trailing_cutoff_words: bool = False,
     ) -> None:
 
         MAX_TOKENS_IOB_SENT = stride
@@ -135,6 +137,8 @@ class PredictionNER:
             self.device = torch.device(device)
         self.model = self.model.to(self.device)
         self.model.eval()
+        self.lang = lang
+        self.trim_trailing_cutoff_words = trim_trailing_cutoff_words
         self.text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name="o200k_base",
             separators=["\n\n\n", "\n\n", "\n", " .", " !", " ?", " ،", " ,", " ", ""],
@@ -350,9 +354,13 @@ class PredictionNER:
         self,
         tagged_tokens,
         original_text,
-        confidence_threshold=0.3,
+        confidence_threshold=0.5,
         no_iob=False,
         post_hoc_cleaning=False,
+        trim_trailing_cutoff_words_enabled: Optional[bool] = False,
+        pre_merge_rule_1: bool = False,
+        pre_merge_rule_2: bool = False,
+        pre_merge_rule_3: bool = False,
     ):
         """
         Aggregates token-level predictions into entity-level predictions.
@@ -379,10 +387,12 @@ class PredictionNER:
                 Each dict contains: 'start', 'end', 'tag', 'text', 'score'
 
         Note:
-            The method applies two correction rules:
+            The method applies three correction rules:
             1. Fixes "O" tags between "B-" and "I-" tags of the same type
             2. Enforces IOB2 compliance by converting any "I-" that does not
                follow a "B-" or "I-" of the same type to "B-"
+            3. Splits entities on tokens containing "." by setting that token to "O"
+               and restarting continuation with a "B-" tag
 
             Entities are only included if all constituent tokens meet the confidence threshold
             and the resulting text is not composed entirely of special characters.
@@ -391,7 +401,6 @@ class PredictionNER:
             - Removes trailing space + punctuation (if no opening parenthesis)
             - Removes trailing closing parenthesis (if no opening parenthesis)
             - Removes leading whitespace
-            - Removes Dutch definite article "de " prefix
             - Validates entities (non-empty, not just "de", not numeric, not special chars only)
         """
 
@@ -411,41 +420,61 @@ class PredictionNER:
 
         corrected_tokens = copy.deepcopy(tagged_tokens)
 
-        # Rule 1: Fix "O" between "B-" and "I-" of same type
-        for i in range(1, len(corrected_tokens) - 1):
-            prev_tag = corrected_tokens[i - 1]["tag"]
-            curr_tag = corrected_tokens[i]["tag"]
-            next_tag = corrected_tokens[i + 1]["tag"]
+        if pre_merge_rule_1:
+            # Rule 1: Fix "O" between "B-" and "I-" of same type
+            for i in range(1, len(corrected_tokens) - 1):
+                prev_tag = corrected_tokens[i - 1]["tag"]
+                curr_tag = corrected_tokens[i]["tag"]
+                next_tag = corrected_tokens[i + 1]["tag"]
 
-            if (
-                curr_tag == "O"
-                and prev_tag.startswith("B-")
-                and next_tag.startswith("I-")
-            ):
-                prev_type = prev_tag[2:]
-                next_type = next_tag[2:]
-                if prev_type == next_type:
-                    corrected_tokens[i]["tag"] = "I-" + prev_type
-
-        # Rule 2: Enforce IOB2 compliance for I- tags
-        prev_tag = "O"
-        for i in range(len(corrected_tokens)):
-            tag = corrected_tokens[i]["tag"]
-            if tag.startswith("I-"):
-                tag_type = tag[2:]
-                if not (
-                    (prev_tag.startswith("B-") or prev_tag.startswith("I-"))
-                    and prev_tag[2:] == tag_type
+                if (
+                    curr_tag == "O"
+                    and prev_tag.startswith("B-")
+                    and next_tag.startswith("I-")
                 ):
-                    tag = "B-" + tag_type
-                    corrected_tokens[i]["tag"] = tag
-                prev_tag = tag
-            elif tag.startswith("B-"):
-                prev_tag = tag
-            else:
-                prev_tag = "O"
+                    prev_type = prev_tag[2:]
+                    next_type = next_tag[2:]
+                    if prev_type == next_type:
+                        corrected_tokens[i]["tag"] = "I-" + prev_type
 
-        # Rule 3: ..
+        if pre_merge_rule_2:
+            # Rule 2: Enforce IOB2 compliance for I- tags
+            prev_tag = "O"
+            for i in range(len(corrected_tokens)):
+                tag = corrected_tokens[i]["tag"]
+                if tag.startswith("I-"):
+                    tag_type = tag[2:]
+                    if not (
+                        (prev_tag.startswith("B-") or prev_tag.startswith("I-"))
+                        and prev_tag[2:] == tag_type
+                    ):
+                        tag = "B-" + tag_type
+                        corrected_tokens[i]["tag"] = tag
+                    prev_tag = tag
+                elif tag.startswith("B-"):
+                    prev_tag = tag
+                else:
+                    prev_tag = "O"
+
+        # Rule 3: Split entities on ".", ":", ";", "/" tokens and restart following continuation with B-
+        if pre_merge_rule_3:
+            for i in range(len(corrected_tokens)):
+                tag = corrected_tokens[i]["tag"]
+                if tag.startswith("O"):
+                    continue
+
+                token_text = original_text[
+                    corrected_tokens[i]["start"] : corrected_tokens[i]["end"]
+                ]
+                if token_text.strip() in {".", ":", ";", "/"}:
+                    corrected_tokens[i]["tag"] = "O"
+
+                    # If the next token was continuing an entity, restart it with B-
+                    if i + 1 < len(corrected_tokens) and corrected_tokens[i + 1][
+                        "tag"
+                    ].startswith("I-"):
+                        next_type = corrected_tokens[i + 1]["tag"][2:]
+                        corrected_tokens[i + 1]["tag"] = "B-" + next_type
 
         # Step 2: Aggregate entities
         entities = []
@@ -459,10 +488,11 @@ class PredictionNER:
 
             if tag.startswith("B-"):
                 if current_entity:
-                    # Check if current should be merged (same type and touching or separated by only whitespace)
+                    # Check if current should be merged (same type and touching
+                    # or separated by only whitespace)
+                    between_text = original_text[current_entity["end"] : start]
                     if current_entity["tag"] == tag[2:] and (
-                        current_entity["end"] == start
-                        or original_text[current_entity["end"] : start].isspace()
+                        current_entity["end"] == start or between_text.isspace()
                     ):
                         # Merge
                         current_entity["end"] = end
@@ -507,7 +537,17 @@ class PredictionNER:
 
         # Apply post-hoc cleaning if requested
         if post_hoc_cleaning:
-            entities = clean_spans(entities, original_text)
+            trim_cutoff = (
+                self.trim_trailing_cutoff_words
+                if trim_trailing_cutoff_words_enabled is None
+                else trim_trailing_cutoff_words_enabled
+            )
+            entities = clean_spans(
+                entities,
+                original_text,
+                lang=self.lang,
+                trim_trailing_cutoff_words_enabled=trim_cutoff,
+            )
 
         return entities
 
@@ -567,7 +607,7 @@ class PredictionNER:
                     sorted_probs = torch.argsort(probs[batch_idx, i], descending=True)
                     for alt_id in sorted_probs:
                         alt_tag = id2label[alt_id.item()]
-                        alt_score = probs[0, i, alt_id.item()].item()
+                        alt_score = probs[batch_idx, i, alt_id.item()].item()
                         if alt_tag != "O" and alt_score >= 0.5:
                             tag_id = alt_id.item()
                             tag = alt_tag
@@ -598,6 +638,7 @@ class PredictionNER:
         confidence_threshold: float = 0.6,
         post_hoc_cleaning: bool = True,
         o_confidence_threshold: float = 0.7,
+        trim_trailing_cutoff_words: Optional[bool] = None,
     ):
         final_prediction = []
         batch_texts = []
@@ -621,6 +662,7 @@ class PredictionNER:
                         sub_text,
                         confidence_threshold=confidence_threshold,
                         post_hoc_cleaning=post_hoc_cleaning,
+                        trim_trailing_cutoff_words_enabled=trim_trailing_cutoff_words,
                     )
                     for pred in predictions:
                         pred["start"] += sub_text_start
@@ -643,6 +685,7 @@ class PredictionNER:
                     sub_text,
                     confidence_threshold=confidence_threshold,
                     post_hoc_cleaning=post_hoc_cleaning,
+                    trim_trailing_cutoff_words_enabled=trim_trailing_cutoff_words,
                 )
                 for pred in predictions:
                     pred["start"] += sub_text_start
@@ -652,7 +695,13 @@ class PredictionNER:
 
         return final_prediction
 
-    def do_prediction(self, text, confidence_threshold=0.6, post_hoc_cleaning=True):
+    def do_prediction(
+        self,
+        text,
+        confidence_threshold=0.6,
+        post_hoc_cleaning=True,
+        trim_trailing_cutoff_words: Optional[bool] = None,
+    ):
         final_prediction = []
         # final_prediction_2 = []
         for sub_text, sub_text_start, sub_text_end in self.split_text_with_indices(
@@ -664,6 +713,7 @@ class PredictionNER:
                 sub_text,
                 confidence_threshold=confidence_threshold,
                 post_hoc_cleaning=post_hoc_cleaning,
+                trim_trailing_cutoff_words_enabled=trim_trailing_cutoff_words,
             )
 
             for pred in predictions:
@@ -684,7 +734,10 @@ def evaluate(
     batch_size: int = 8,
 ):
     ner = PredictionNER(
-        model_checkpoint=model_checkpoint, revision=revision, device=device
+        model_checkpoint=model_checkpoint,
+        revision=revision,
+        device=device,
+        lang=lang,
     )
     # conver the predictions to ann format
     test_files_root = os.path.join(root_path, "txt")
