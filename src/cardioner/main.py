@@ -64,7 +64,7 @@ def inference(
     strategy: Literal["simple", "average", "first", "max"] = "simple",
     pipe: Literal["dt4h", "hf"] = "hf",
     dt4h_post_hoc_cleaning=True,
-    dt4h_min_confidence=0.6,
+    dt4h_min_confidence=0.65,
     dt4h_batch_size: int = 4,
 ):
     """
@@ -166,7 +166,10 @@ def inference(
                 )
     else:
         ner_pipe = predictor.PredictionNER(
-            model_checkpoint=model_path, revision=None, stride=max_word_per_chunk
+            model_checkpoint=model_path,
+            revision=None,
+            stride=max_word_per_chunk,
+            lang=lang,
         )
         pred_results = []
         ref_results = []

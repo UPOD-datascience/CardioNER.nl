@@ -470,7 +470,12 @@ def merge_annotations(
     return NEW_DICT_LIST
 
 
-def clean_spans(entities, original_text):
+def clean_spans(
+    entities,
+    original_text,
+    lang: str = "nl",
+    trim_trailing_cutoff_words_enabled: bool = False,
+):
     """
     Apply post-hoc cleaning to entity spans based on predictor_manuela.py logic.
 
@@ -484,6 +489,9 @@ def clean_spans(entities, original_text):
     Args:
         entities (list): List of entity dictionaries with 'start', 'end', 'text', 'tag', 'score' keys
         original_text (str): The original text from which entities were extracted
+        lang (str): Language code used for language-specific cleanup rules.
+        trim_trailing_cutoff_words_enabled (bool): If True, trim spans at language-specific
+            trailing cutoff words (e.g. prepositions/conjunctions). Disabled by default.
 
     Returns:
         list: Cleaned entities with updated spans
@@ -494,6 +502,42 @@ def clean_spans(entities, original_text):
         """Check if text consists only of special characters."""
         return bool(re.fullmatch(r"\W+", text.strip()))
 
+    # Language-aware trailing cutoff words: trim only when cutoff words occur at the very end
+    TRAILING_CUTOFF_WORDS_BY_LANG = {
+        "nl": {"van", "met", "in", "op", "door", "als"},
+        "en": {"of", "with", "in", "on", "by", "as"},
+        "sv": {"av", "med", "i", "på", "genom", "som"},
+        "it": {"di", "con", "in", "su", "da", "come"},
+        "ro": {"de", "cu", "în", "in", "pe", "prin", "ca"},
+        "cz": {"z", "s", "v", "na", "přes", "pres", "jako"},
+        "es": {"de", "con", "en", "sobre", "por", "como"},
+    }
+
+    def trim_trailing_cutoff_words(entity_text, start_span, end_span, lang_code):
+        if not entity_text:
+            return entity_text, start_span, end_span
+
+        cutoff_words = TRAILING_CUTOFF_WORDS_BY_LANG.get(
+            (lang_code or "nl").lower(), TRAILING_CUTOFF_WORDS_BY_LANG["nl"]
+        )
+
+        changed = True
+        while changed and entity_text:
+            changed = False
+            lowered = entity_text.lower()
+
+            for word in cutoff_words:
+                # Match cutoff word only at the end (optionally preceded by whitespace)
+                pattern = r"(?:^|\s)" + re.escape(word) + r"\s*$"
+                match = re.search(pattern, lowered)
+                if match:
+                    entity_text = entity_text[: match.start()].rstrip()
+                    end_span = start_span + len(entity_text)
+                    changed = True
+                    break
+
+        return entity_text, start_span, end_span
+
     cleaned_entities = []
 
     for entity in entities:
@@ -502,61 +546,88 @@ def clean_spans(entities, original_text):
         start_span = entity["start"]
         end_span = entity["end"]
 
-        # Text cleaning from predictor_manuela.py
-        # Remove trailing space + punctuation if no opening parenthesis
-        if len(entity_text) >= 2:
+        # If span contains an unmatched opening parenthesis, extend to the next closing parenthesis
+        if entity_text.count("(") > entity_text.count(")"):
+            next_closing = original_text.find(")", end_span)
+            if next_closing != -1:
+                end_span = next_closing + 1
+                entity_text = original_text[start_span:end_span]
+
+        # Iterative edge cleanup:
+        # keep trimming until no more leading/trailing whitespace or trailing symbols can be removed
+        bracket_pairs = {"(": ")", "[": "]", "{": "}"}
+        changed = True
+        while changed and len(entity_text) > 0:
+            changed = False
+
+            # Remove leading whitespace (including spaces, tabs, and line breaks)
+            while len(entity_text) > 0 and entity_text[0].isspace():
+                entity_text = entity_text[1:]
+                start_span = start_span + 1
+                changed = True
+
+            # Remove trailing whitespace (including spaces, tabs, and line breaks)
+            while len(entity_text) > 0 and entity_text[-1].isspace():
+                entity_text = entity_text[:-1]
+                end_span = end_span - 1
+                changed = True
+
+            if len(entity_text) == 0:
+                break
+
+            # Remove trailing space + punctuation if no opening parenthesis
             if (
-                entity_text[-2] == " "
+                len(entity_text) >= 2
+                and entity_text[-2] == " "
                 and entity_text[-1] in ".,;:!?"
                 and "(" not in entity_text[:-2]
             ):
                 entity_text = entity_text[:-2]
                 end_span = end_span - 2
+                changed = True
+                continue
 
-        # Remove trailing closing parenthesis if no opening parenthesis
-        if len(entity_text) >= 1:
+            # Remove attached trailing punctuation if no opening parenthesis
+            if entity_text[-1] in ".,;:!?" and "(" not in entity_text[:-1]:
+                entity_text = entity_text[:-1]
+                end_span = end_span - 1
+                changed = True
+                continue
+
+            # Remove trailing closing parenthesis if no opening parenthesis
             if entity_text[-1] == ")" and "(" not in entity_text:
                 entity_text = entity_text[:-1]
                 end_span = end_span - 1
+                changed = True
+                continue
 
-        # Remove leading whitespace
-        while entity_text.startswith(" "):
-            entity_text = entity_text[1:]
-            start_span = start_span + 1
-
-        # Remove trailing whitespace
-        while entity_text.endswith(" "):
-            entity_text = entity_text[:-1]
-            end_span = end_span - 1
-
-        # (Removed) Language-specific article stripping
-
-        # Trim mismatched leading '(' when there is no closing ')'
-        if entity_text.startswith("(") and ")" not in entity_text:
-            entity_text = entity_text[1:]
-            start_span = start_span + 1
-
-        # Symmetric bracket trimming when both sides are present
-        bracket_pairs = {"(": ")", "[": "]", "{": "}"}
-        trimmed = True
-        while trimmed and len(entity_text) >= 2:
-            trimmed = False
-            opener = entity_text[0]
-            closer = entity_text[-1]
-            if opener in bracket_pairs and bracket_pairs[opener] == closer:
-                entity_text = entity_text[1:-1]
+            # Trim mismatched leading '(' when there is no closing ')'
+            if entity_text.startswith("(") and ")" not in entity_text:
+                entity_text = entity_text[1:]
                 start_span = start_span + 1
+                changed = True
+                continue
+
+            # Symmetric bracket trimming when both sides are present
+            if len(entity_text) >= 2:
+                opener = entity_text[0]
+                closer = entity_text[-1]
+                if opener in bracket_pairs and bracket_pairs[opener] == closer:
+                    entity_text = entity_text[1:-1]
+                    start_span = start_span + 1
+                    end_span = end_span - 1
+                    changed = True
+
+        if trim_trailing_cutoff_words_enabled:
+            # Trim language-aware trailing cutoff words (e.g. nl/en/sv/it/ro/cz/es)
+            entity_text, start_span, end_span = trim_trailing_cutoff_words(
+                entity_text, start_span, end_span, lang
+            )
+
+            # Cleanup possible whitespace left after cutoff-word trimming
+            while len(entity_text) > 0 and entity_text[-1].isspace():
+                entity_text = entity_text[:-1]
                 end_span = end_span - 1
-                trimmed = True
-
-        # Final cleanup - remove any remaining leading/trailing whitespace
-        while entity_text.startswith(" "):
-            entity_text = entity_text[1:]
-            start_span = start_span + 1
-
-        while entity_text.endswith(" "):
-            entity_text = entity_text[:-1]
-            end_span = end_span - 1
 
         # Entity validation
         # Check if text is purely numeric (including decimals)
