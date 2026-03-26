@@ -20,9 +20,9 @@ datasets = "^3.1.0"
 sentencepiece = "^0.2.1"
 pydantic = "^2.9.2"
 evaluate = "^0.4.3"
-seqeval = { path = "assets/seqeval-1.2.2.tar.gz",develop = false }
+seqeval = "^1.2.2"
 #torchtext = "^0.18.0"
-transformer = "^5.0.0"
+transformers = ">=4.55.0,<5.0.0"
 torch = {version = "2.6.0", source = "torch" }
 accelerate = "^1.1.1"
 pytorch-crf = "^0.7.2"
@@ -53,4 +53,3 @@ build-backend = "poetry.core.masonry.api"
 name = "torch"
 url = "https://download.pytorch.org/whl/cu126"
 priority = "supplemental"
-

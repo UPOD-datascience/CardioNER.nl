@@ -7,6 +7,11 @@ from torchcrf import CRF
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import TokenClassifierOutput
 
+try:
+    from transformers import EuroBertModel
+except ImportError:
+    EuroBertModel = None
+
 # Large negative number for masking impossible transitions
 LARGE_NEGATIVE_NUMBER = -1e9
 NUM_PER_LAYER = 16
@@ -351,7 +356,7 @@ class TokenClassificationModelCRF(PreTrainedModel):
 
         # If base_model is not provided, load it from config
         if base_model is None:
-            from transformers import AutoConfig, RobertaForTokenClassification
+            from transformers import AutoConfig, AutoModel
 
             # Use backbone_model_name if available, fallback to name_or_path
             # This is critical because name_or_path gets overwritten during save/load
@@ -366,16 +371,30 @@ class TokenClassificationModelCRF(PreTrainedModel):
                 )
 
             # Create a clean config for the backbone
-            backbone_config = AutoConfig.from_pretrained(backbone_name)
+            backbone_config = AutoConfig.from_pretrained(
+                backbone_name, trust_remote_code=True
+            )
             backbone_config.hidden_dropout_prob = getattr(
                 config, "hidden_dropout_prob", 0.1
             )
             backbone_config.num_labels = config.num_labels
 
-            roberta_model = RobertaForTokenClassification.from_pretrained(
-                backbone_name, config=backbone_config
-            )
-            self.roberta = roberta_model.roberta
+            if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
+                self.roberta = EuroBertModel(backbone_config)
+            else:
+                try:
+                    self.roberta = AutoModel.from_pretrained(
+                        backbone_name,
+                        config=backbone_config,
+                        add_pooling_layer=False,
+                        trust_remote_code=True,
+                    )
+                except TypeError:
+                    self.roberta = AutoModel.from_pretrained(
+                        backbone_name,
+                        config=backbone_config,
+                        trust_remote_code=True,
+                    )
 
             # Store backbone_model_name in config for future loading
             if (
@@ -599,7 +618,7 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
         # Initialize the transformer backbone
         if base_model is None:
-            from transformers import AutoConfig, RobertaModel
+            from transformers import AutoConfig, AutoModel
 
             # Use backbone_model_name if available, fallback to name_or_path
             backbone_name = getattr(config, "backbone_model_name", None)
@@ -610,13 +629,28 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
             if backbone_name:
                 # Load pretrained weights
-                backbone_config = AutoConfig.from_pretrained(backbone_name)
+                backbone_config = AutoConfig.from_pretrained(
+                    backbone_name, trust_remote_code=True
+                )
                 backbone_config.hidden_dropout_prob = getattr(
                     config, "hidden_dropout_prob", 0.1
                 )
-                self.roberta = RobertaModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
+                if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
+                    self.roberta = EuroBertModel(backbone_config)
+                else:
+                    try:
+                        self.roberta = AutoModel.from_pretrained(
+                            backbone_name,
+                            config=backbone_config,
+                            add_pooling_layer=False,
+                            trust_remote_code=True,
+                        )
+                    except TypeError:
+                        self.roberta = AutoModel.from_pretrained(
+                            backbone_name,
+                            config=backbone_config,
+                            trust_remote_code=True,
+                        )
                 # Store backbone_model_name in config for future loading
                 if (
                     not hasattr(config, "backbone_model_name")
@@ -625,7 +659,7 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                     config.backbone_model_name = backbone_name
             else:
                 # Fallback: initialize without pretrained weights (not recommended)
-                self.roberta = RobertaModel(config, add_pooling_layer=False)
+                self.roberta = AutoModel.from_config(config, trust_remote_code=True)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -1020,7 +1054,7 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
 
         # Initialize the transformer backbone
         if base_model is None:
-            from transformers import AutoConfig, RobertaModel
+            from transformers import AutoConfig, AutoModel
 
             # Use backbone_model_name if available, fallback to name_or_path
             backbone_name = getattr(config, "backbone_model_name", None)
@@ -1031,13 +1065,28 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
 
             if backbone_name:
                 # Load pretrained weights
-                backbone_config = AutoConfig.from_pretrained(backbone_name)
+                backbone_config = AutoConfig.from_pretrained(
+                    backbone_name, trust_remote_code=True
+                )
                 backbone_config.hidden_dropout_prob = getattr(
                     config, "hidden_dropout_prob", 0.1
                 )
-                self.roberta = RobertaModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
+                if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
+                    self.roberta = EuroBertModel(backbone_config)
+                else:
+                    try:
+                        self.roberta = AutoModel.from_pretrained(
+                            backbone_name,
+                            config=backbone_config,
+                            add_pooling_layer=False,
+                            trust_remote_code=True,
+                        )
+                    except TypeError:
+                        self.roberta = AutoModel.from_pretrained(
+                            backbone_name,
+                            config=backbone_config,
+                            trust_remote_code=True,
+                        )
                 # Store backbone_model_name in config for future loading
                 if (
                     not hasattr(config, "backbone_model_name")
@@ -1046,7 +1095,7 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                     config.backbone_model_name = backbone_name
             else:
                 # Fallback: initialize without pretrained weights (not recommended)
-                self.roberta = RobertaModel(config, add_pooling_layer=False)
+                self.roberta = AutoModel.from_config(config, trust_remote_code=True)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -1369,20 +1418,28 @@ class TokenClassificationModel(PreTrainedModel):
                 )
 
             # Create a clean config for the backbone
-            backbone_config = AutoConfig.from_pretrained(backbone_name)
+            backbone_config = AutoConfig.from_pretrained(
+                backbone_name, trust_remote_code=True
+            )
             backbone_config.hidden_dropout_prob = getattr(
                 config, "hidden_dropout_prob", 0.1
             )
 
-            try:
-                self.roberta = AutoModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
-            except TypeError:
-                # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
-                self.roberta = AutoModel.from_pretrained(
-                    backbone_name, config=backbone_config
-                )
+            if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
+                self.roberta = EuroBertModel(backbone_config)
+            else:
+                try:
+                    self.roberta = AutoModel.from_pretrained(
+                        backbone_name,
+                        config=backbone_config,
+                        add_pooling_layer=False,
+                        trust_remote_code=True,
+                    )
+                except TypeError:
+                    # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
+                    self.roberta = AutoModel.from_pretrained(
+                        backbone_name, config=backbone_config, trust_remote_code=True
+                    )
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta

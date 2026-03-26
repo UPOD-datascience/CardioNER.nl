@@ -41,7 +41,7 @@ try:
         TokenClassificationModelMultiHead,
         TokenClassificationModelMultiHeadCRF,
     )
-except ImportError:
+except ImportError as e_abs:
     try:
         from modeling import (
             MultiHeadConfig,
@@ -51,8 +51,11 @@ except ImportError:
             TokenClassificationModelMultiHead,
             TokenClassificationModelMultiHeadCRF,
         )
-    except ImportError:
-        print("Warning: Could not import custom model classes from modeling.py")
+    except ImportError as e_rel:
+        print(
+            "Warning: Could not import custom model classes from modeling.py. "
+            f"Absolute import error: {e_abs}. Relative import error: {e_rel}"
+        )
         TokenClassificationModelCRF = None
         TokenClassificationModel = None
         TokenClassificationModelMultiHeadCRF = None
