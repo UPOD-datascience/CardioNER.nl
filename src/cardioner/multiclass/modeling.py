@@ -8,10 +8,11 @@ from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import TokenClassifierOutput
 
 try:
-    from transformers import EuroBertModel
-except ImportError:
+    from transformers.models.eurobert.modeling_eurobert import EuroBertModel
+except ImportError as e:
     EuroBertModel = None
-
+    print("COULD NOT IMPORT EUROBERT MODEL:", repr(e))
+    
 # Large negative number for masking impossible transitions
 LARGE_NEGATIVE_NUMBER = -1e9
 NUM_PER_LAYER = 16

@@ -3,7 +3,7 @@ $ErrorActionPreference = "Continue"
 $output_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multiclass_3ldense_20epochs_"
 $base_corpus_path = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined\MultiClinNER-multi"
 
-$categories = @("procedure", "symptom")
+$categories = @("disease") #"procedure", "symptom")
 $logFile = "inference_log.txt"
 
 foreach ($cat in $categories) {
