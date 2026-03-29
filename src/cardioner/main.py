@@ -12,12 +12,14 @@ environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from functools import partial
 from typing import Dict, List, Literal, Optional, Tuple
 
 import evaluate
 import pandas as pd
+import transformers
 from datasets import Dataset
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sklearn.model_selection import GroupKFold, train_test_split
@@ -33,8 +35,6 @@ from transformers import (
     pipeline,
 )
 
-import transformers 
-import sys
 print(sys.executable)
 print(transformers.__file__)
 print(transformers.__version__)
@@ -90,11 +90,19 @@ def inference(
     os.makedirs(output_dir, exist_ok=True)
 
     if pipe == "hf":
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=trust_remote_code, use_fast=True
+            )
+            print("Using fast tokenizer for inference.")
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=trust_remote_code, use_fast=False
+            )
+            print("Fast tokenizer not available; falling back to slow tokenizer.")
+
         # Auto-detect max_word_per_chunk from tokenizer if not provided
         if max_word_per_chunk is None:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path, trust_remote_code=trust_remote_code
-            )
             max_word_per_chunk = tokenizer.model_max_length // 2
             assert max_word_per_chunk < 10000, (
                 f"Calculated max_word_per_chunk ({max_word_per_chunk}) is >= 10,000. "
@@ -113,7 +121,7 @@ def inference(
             "token-classification",
             stride=max_word_per_chunk,
             model=model_path,
-            tokenizer=model_path,
+            tokenizer=tokenizer,
             aggregation_strategy=strategy,
             trust_remote_code=trust_remote_code,
         )
@@ -298,10 +306,17 @@ def inference_multihead_crf(
     output_tsv_path = os.path.join(output_dir, "predictions.tsv")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path, trust_remote_code=trust_remote_code
-    )
+    # Load tokenizer (prefer fast tokenizer, fallback to slow)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code, use_fast=True
+        )
+        print("Using fast tokenizer for inference.")
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code, use_fast=False
+        )
+        print("Fast tokenizer not available; falling back to slow tokenizer.")
 
     # Auto-detect max_word_per_chunk from tokenizer if not provided
     if max_word_per_chunk is None:
@@ -511,10 +526,17 @@ def inference_multihead(
     output_tsv_path = os.path.join(output_dir, "predictions.tsv")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path, trust_remote_code=trust_remote_code
-    )
+    # Load tokenizer (prefer fast tokenizer, fallback to slow)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code, use_fast=True
+        )
+        print("Using fast tokenizer for inference.")
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code, use_fast=False
+        )
+        print("Fast tokenizer not available; falling back to slow tokenizer.")
 
     # Auto-detect max_word_per_chunk from tokenizer if not provided
     if max_word_per_chunk is None:

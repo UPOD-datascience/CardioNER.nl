@@ -34,11 +34,14 @@ from cardioner.utils import pretty_print_classifier
 
 try:
     from cardioner.multilabel.modeling import MultiLabelTokenClassificationModelCustom
-except ImportError:
+except ImportError as e_abs:
     try:
         from .modeling import MultiLabelTokenClassificationModelCustom
-    except ImportError:
-        print("Warning: Could not import MultiLabelTokenClassificationModelCustom")
+    except ImportError as e_rel:
+        print(
+            "Warning: Could not import MultiLabelTokenClassificationModelCustom. "
+            f"Absolute import error: {e_abs}. Relative import error: {e_rel}"
+        )
         MultiLabelTokenClassificationModelCustom = None
 
 import evaluate
@@ -185,12 +188,16 @@ class MultiLabelTokenClassificationModelHF(PreTrainedModel):
             )
 
         # Create a clean config for the backbone
-        backbone_config = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
+        backbone_config = AutoConfig.from_pretrained(
+            backbone_name, trust_remote_code=True
+        )
         backbone_config.hidden_dropout_prob = getattr(
             config, "hidden_dropout_prob", 0.1
         )
 
-        self.roberta = AutoModel.from_pretrained(backbone_name, config=backbone_config, trust_remote_code=True)
+        self.roberta = AutoModel.from_pretrained(
+            backbone_name, config=backbone_config, trust_remote_code=True
+        )
 
         # Store backbone_model_name in config for future loading
         if (
@@ -533,7 +540,10 @@ class ModelTrainer:
                 label_pad_token_id=-100,
             )
         or_config = AutoConfig.from_pretrained(
-            model, hf_token=self.hf_token, return_unused_kwargs=False, trust_remote_code=True
+            model,
+            hf_token=self.hf_token,
+            return_unused_kwargs=False,
+            trust_remote_code=True,
         )
         or_config.num_labels = len(self.label2id)
         or_config.id2label = self.id2label
@@ -555,7 +565,9 @@ class ModelTrainer:
             print(
                 "Warning: You are now creating a custom model class which requires trust_remote_code=True to load!"
             )
-            base_model = AutoModel.from_pretrained(model, token=hf_token, trust_remote_code=True)
+            base_model = AutoModel.from_pretrained(
+                model, token=hf_token, trust_remote_code=True
+            )
 
             # Store custom parameters in config for proper saving/loading
             or_config.classifier_hidden_layers = classifier_hidden_layers

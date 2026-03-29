@@ -9,8 +9,12 @@ from transformers import (
     DebertaV2Config,
     PreTrainedModel,
     RobertaConfig,
-    EuroBertModel,
 )
+
+try:
+    from transformers import EuroBertModel
+except ImportError:
+    EuroBertModel = None
 from transformers.modeling_outputs import TokenClassifierOutput
 
 
@@ -57,12 +61,14 @@ class MultiLabelTokenClassificationModelCustom(PreTrainedModel):
                 )
 
             # Create a clean config for the backbone (without custom attributes that might confuse AutoModel)
-            backbone_config = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
+            backbone_config = AutoConfig.from_pretrained(
+                backbone_name, trust_remote_code=True
+            )
             # Copy over relevant attributes from our config
             backbone_config.hidden_dropout_prob = getattr(
                 config, "hidden_dropout_prob", 0.1
             )
-            if 'eurobert' in backbone_name.lower():
+            if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
                 self.backbone = EuroBertModel(backbone_config)
             else:
                 self.backbone = AutoModel.from_config(

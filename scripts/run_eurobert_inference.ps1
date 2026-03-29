@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Continue"
 
 # Common arguments
-$model_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multilabel_3ldense_20epochs_procedure\fold_0"
+$model_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multiclass_3ldense_20epochs_procedure\fold_0"
 $base_corpus_path = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined"
 $filter_file = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined\batch_1_ids.txt"
 
@@ -15,7 +15,7 @@ $logFile = "real_inference_log.txt"
 foreach ($lang in $languages) {
     try {
         $corpus_path = Join-Path $base_corpus_path "MultiClinNER-$lang\test\procedure\txt"
-        $output_prefix = "PROCEDURE_EuroBERT610_multilabel_$lang"
+        $output_prefix = "PROCEDURE_EuroBERT610_multiclass_$lang"
 
         $msg = "[$(Get-Date)] Starting language: $lang from $corpus_path"
         Write-Host $msg
@@ -52,7 +52,7 @@ foreach ($lang in $languages) {
 }
 
 # Common arguments
-$model_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multilabel_3ldense_20epochs_symptom\fold_0"
+$model_path = "T:\laupodteam\AIOS\Bram\language_modeling\Models\language_models\MultiClinAI\EuroBERT\multiclass_3ldense_20epochs_symptom\fold_0"
 $base_corpus_path = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined"
 $filter_file = "T:\laupodteam\AIOS\Bram\notebooks\code_dev\CardioNER.nl\assets\MultiClinNER_combined\batch_1_ids.txt"
 
@@ -65,7 +65,7 @@ $logFile = "real_inference_log.txt"
 foreach ($lang in $languages) {
     try {
         $corpus_path = Join-Path $base_corpus_path "MultiClinNER-$lang\test\symptom\txt"
-        $output_prefix = "SYMPTOM_EuroBERT610_multilabel_$lang"
+        $output_prefix = "SYMPTOM_EuroBERT610_multiclass_$lang"
 
         $msg = "[$(Get-Date)] Starting language: $lang from $corpus_path"
         Write-Host $msg
@@ -100,7 +100,6 @@ foreach ($lang in $languages) {
         continue
     }
 }
-
 
 
 

@@ -7,23 +7,65 @@ from torchcrf import CRF
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import TokenClassifierOutput
 
+try:
+    from transformers.models.eurobert.modeling_eurobert import EuroBertModel
+except Exception:
+    try:
+        from transformers import EuroBertModel
+    except Exception:
+        EuroBertModel = None
+        print("COULD NOT IMPORT EUROBERT MODEL")
+
 # Large negative number for masking impossible transitions
 LARGE_NEGATIVE_NUMBER = -1e9
 NUM_PER_LAYER = 16
+
+def _build_backbone_from_config(config):
+    """
+    Build a backbone model structure from config only.
+    Never call from_pretrained() here; outer model loading will restore weights.
+    """
+    from transformers import AutoConfig, AutoModel
+
+    backbone_name = getattr(config, "backbone_model_name", None)
+    if backbone_name is None:
+        backbone_name = getattr(config, "_name_or_path", None)
+
+    if backbone_name is None:
+        raise ValueError(
+            "config.backbone_model_name (or config._name_or_path) is required to load backbone"
+        )
+
+    backbone_config = AutoConfig.from_pretrained(
+        backbone_name,
+        trust_remote_code=True,
+    )
+
+    if hasattr(config, "hidden_dropout_prob"):
+        backbone_config.hidden_dropout_prob = getattr(
+            config, "hidden_dropout_prob", 0.1
+        )
+
+    if hasattr(config, "num_labels"):
+        backbone_config.num_labels = getattr(config, "num_labels")
+
+    if "eurobert" in backbone_name.lower() and EuroBertModel is not None:
+        backbone = EuroBertModel(backbone_config)
+    else:
+        backbone = AutoModel.from_config(
+            backbone_config,
+            trust_remote_code=True,
+        )
+
+    if getattr(config, "backbone_model_name", None) is None:
+        config.backbone_model_name = backbone_name
+
+    return backbone, backbone_name
 
 
 class MultiHeadCRFConfig(PretrainedConfig):
     """
     Configuration class for Multi-Head CRF models.
-
-    Args:
-        entity_types: List of entity type names (e.g., ["DRUG", "DISEASE", "SYMPTOM"])
-        number_of_layers_per_head: Number of dense layers per head before classification
-        crf_reduction: Reduction mode for CRF loss ("mean", "sum", "token_mean", "none")
-        freeze_backbone: Whether to freeze the transformer backbone
-        num_frozen_encoders: Number of encoder layers to freeze (from bottom)
-        classifier_dropout: Dropout rate for classifier heads
-        **kwargs: Additional arguments passed to PretrainedConfig
     """
 
     model_type = "multihead-crf-tagger"
@@ -56,15 +98,6 @@ class MultiHeadCRFConfig(PretrainedConfig):
 class MultiHeadCRF(nn.Module):
     """
     Custom CRF implementation with BIO transition masking.
-
-    This CRF implementation includes:
-    - Proper initialization of transition parameters
-    - Masking of impossible BIO transitions (e.g., O -> I is invalid)
-    - Viterbi decoding for inference
-
-    Args:
-        num_tags: Number of tags (typically 3 for BIO: O, B, I)
-        batch_first: Whether batch dimension is first
     """
 
     def __init__(self, num_tags: int, batch_first: bool = True) -> None:
@@ -81,35 +114,20 @@ class MultiHeadCRF(nn.Module):
         self.mask_impossible_transitions()
 
     def reset_parameters(self) -> None:
-        """Initialize the transition parameters uniformly between -0.1 and 0.1."""
         nn.init.uniform_(self.start_transitions, -0.1, 0.1)
         nn.init.uniform_(self.end_transitions, -0.1, 0.1)
         nn.init.uniform_(self.transitions, -0.1, 0.1)
 
     def mask_impossible_transitions(self) -> None:
-        """
-        Set impossible BIO transitions to large negative values.
-
-        For standard BIO tagging with tags [O=0, B=1, I=2]:
-        - Cannot start with I tag
-        - Cannot transition from O to I
-        """
         with torch.no_grad():
-            # Assuming BIO scheme: O=0, B=1, I=2
-            # Cannot start with I
             if self.num_tags > 2:
                 self.start_transitions[2] = LARGE_NEGATIVE_NUMBER
-                # Cannot go from O to I
                 self.transitions[0][2] = LARGE_NEGATIVE_NUMBER
 
-            # If PADDING token exists (index 3+), mask its transitions
             if self.num_tags > 3:
-                # Cannot start with PADDING
                 self.start_transitions[3] = LARGE_NEGATIVE_NUMBER
-                # Cannot transition to PADDING from valid tags
                 for i in range(3):
                     self.transitions[i][3] = LARGE_NEGATIVE_NUMBER
-                # Cannot transition from PADDING to valid tags
                 for i in range(3):
                     self.transitions[3][i] = LARGE_NEGATIVE_NUMBER
 
@@ -123,25 +141,12 @@ class MultiHeadCRF(nn.Module):
         mask: Optional[torch.Tensor] = None,
         reduction: str = "mean",
     ) -> torch.Tensor:
-        """
-        Compute the negative log likelihood of a sequence of tags given emission scores.
-
-        Args:
-            emissions: Emission scores (batch_size, seq_length, num_tags) if batch_first
-            tags: Gold tag sequence (batch_size, seq_length) if batch_first
-            mask: Mask tensor (batch_size, seq_length) if batch_first
-            reduction: Loss reduction mode ("none", "sum", "mean", "token_mean")
-
-        Returns:
-            Negative log likelihood loss
-        """
         self._validate(emissions, tags=tags, mask=mask)
         if reduction not in ("none", "sum", "mean", "token_mean"):
             raise ValueError(f"invalid reduction: {reduction}")
         if mask is None:
             mask = torch.ones_like(tags, dtype=torch.uint8)
 
-        # Ensure all tensors are on the same device as emissions
         device = emissions.device
         tags = tags.to(device)
         mask = mask.to(device)
@@ -151,11 +156,8 @@ class MultiHeadCRF(nn.Module):
             tags = tags.transpose(0, 1)
             mask = mask.transpose(0, 1)
 
-        # shape: (batch_size,)
         numerator = self._compute_score(emissions, tags, mask)
-        # shape: (batch_size,)
         denominator = self._compute_normalizer(emissions, mask)
-        # shape: (batch_size,)
         llh = numerator - denominator
         nllh = -llh
 
@@ -165,22 +167,11 @@ class MultiHeadCRF(nn.Module):
             return nllh.sum()
         if reduction == "mean":
             return nllh.mean()
-        assert reduction == "token_mean"
         return nllh.sum() / mask.type_as(emissions).sum()
 
     def decode(
         self, emissions: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> List[List[int]]:
-        """
-        Find the most likely tag sequence using Viterbi algorithm.
-
-        Args:
-            emissions: Emission scores
-            mask: Mask tensor
-
-        Returns:
-            List of best tag sequences for each batch
-        """
         self._validate(emissions, mask=mask)
         if mask is None:
             mask = emissions.new_ones(emissions.shape[:2], dtype=torch.uint8)
@@ -207,12 +198,11 @@ class MultiHeadCRF(nn.Module):
                 f"got {emissions.size(2)}"
             )
 
-        if tags is not None:
-            if emissions.shape[:2] != tags.shape:
-                raise ValueError(
-                    "the first two dimensions of emissions and tags must match, "
-                    f"got {tuple(emissions.shape[:2])} and {tuple(tags.shape)}"
-                )
+        if tags is not None and emissions.shape[:2] != tags.shape:
+            raise ValueError(
+                "the first two dimensions of emissions and tags must match, "
+                f"got {tuple(emissions.shape[:2])} and {tuple(tags.shape)}"
+            )
 
         if mask is not None:
             if emissions.shape[:2] != mask.shape:
@@ -228,16 +218,12 @@ class MultiHeadCRF(nn.Module):
     def _compute_score(
         self, emissions: torch.Tensor, tags: torch.Tensor, mask: torch.Tensor
     ) -> torch.Tensor:
-        # emissions: (seq_length, batch_size, num_tags)
-        # tags: (seq_length, batch_size)
-        # mask: (seq_length, batch_size)
         assert emissions.dim() == 3 and tags.dim() == 2
         assert emissions.shape[:2] == tags.shape
         assert emissions.size(2) == self.num_tags
         assert mask.shape == tags.shape
         assert mask[0].all()
 
-        # Move all tensors to the same device as emissions
         device = emissions.device
         tags = tags.to(device)
         mask = mask.to(device)
@@ -245,8 +231,6 @@ class MultiHeadCRF(nn.Module):
         seq_length, batch_size = tags.shape
         mask = mask.type_as(emissions)
 
-        # Start transition score and first emission
-        # Ensure arange is on the same device as other tensors
         batch_indices = torch.arange(batch_size, device=device)
         score = self.start_transitions[tags[0]]
         score += emissions[0, batch_indices, tags[0]]
@@ -255,7 +239,6 @@ class MultiHeadCRF(nn.Module):
             score += self.transitions[tags[i - 1], tags[i]] * mask[i]
             score += emissions[i, batch_indices, tags[i]] * mask[i]
 
-        # End transition score
         seq_ends = mask.long().sum(dim=0) - 1
         last_tags = tags[seq_ends, batch_indices]
         score += self.end_transitions[last_tags]
@@ -265,16 +248,12 @@ class MultiHeadCRF(nn.Module):
     def _compute_normalizer(
         self, emissions: torch.Tensor, mask: torch.Tensor
     ) -> torch.Tensor:
-        # emissions: (seq_length, batch_size, num_tags)
-        # mask: (seq_length, batch_size)
         assert emissions.dim() == 3 and mask.dim() == 2
         assert emissions.shape[:2] == mask.shape
         assert emissions.size(2) == self.num_tags
         assert mask[0].all()
 
         seq_length = emissions.size(0)
-
-        # Start transition score and first emission
         score = self.start_transitions + emissions[0]
 
         for i in range(1, seq_length):
@@ -290,16 +269,12 @@ class MultiHeadCRF(nn.Module):
     def _viterbi_decode(
         self, emissions: torch.Tensor, mask: torch.Tensor
     ) -> List[List[int]]:
-        # emissions: (seq_length, batch_size, num_tags)
-        # mask: (seq_length, batch_size)
         assert emissions.dim() == 3 and mask.dim() == 2
         assert emissions.shape[:2] == mask.shape
         assert emissions.size(2) == self.num_tags
         assert mask[0].all()
 
         seq_length, batch_size = mask.shape
-
-        # Start transition and first emission
         score = self.start_transitions + emissions[0]
         history = []
 
@@ -313,7 +288,6 @@ class MultiHeadCRF(nn.Module):
 
         score += self.end_transitions
 
-        # Trace back
         seq_ends = mask.long().sum(dim=0) - 1
         best_tags_list = []
 
@@ -334,7 +308,6 @@ class MultiHeadCRF(nn.Module):
 class TokenClassificationModelCRF(PreTrainedModel):
     """
     Custom token classification model with CRF layer and configurable classifier head.
-    This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
 
     def __init__(
@@ -349,49 +322,23 @@ class TokenClassificationModelCRF(PreTrainedModel):
         self.config = config
         self.num_labels = config.num_labels
 
-        # If base_model is not provided, load it from config
         if base_model is None:
-            from transformers import AutoConfig, RobertaForTokenClassification
-
-            # Use backbone_model_name if available, fallback to name_or_path
-            # This is critical because name_or_path gets overwritten during save/load
-            backbone_name = getattr(config, "backbone_model_name", None)
-            if backbone_name is None:
-                backbone_name = getattr(config, "name_or_path", None) or getattr(
-                    config, "_name_or_path", None
-                )
-            if backbone_name is None:
-                raise ValueError(
-                    "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
-                )
-
-            # Create a clean config for the backbone
-            backbone_config = AutoConfig.from_pretrained(backbone_name)
-            backbone_config.hidden_dropout_prob = getattr(
-                config, "hidden_dropout_prob", 0.1
-            )
-            backbone_config.num_labels = config.num_labels
-
-            roberta_model = RobertaForTokenClassification.from_pretrained(
-                backbone_name, config=backbone_config
-            )
-            self.roberta = roberta_model.roberta
-
-            # Store backbone_model_name in config for future loading
-            if (
-                not hasattr(config, "backbone_model_name")
-                or config.backbone_model_name is None
-            ):
-                config.backbone_model_name = backbone_name
+            self.roberta, backbone_name = _build_backbone_from_config(config)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
             else:
                 self.roberta = base_model
+            backbone_name = (
+                getattr(getattr(self.roberta, "config", None), "_name_or_path", None)
+                or getattr(config, "backbone_model_name", None)
+                or getattr(config, "_name_or_path", None)
+            )
+            if getattr(config, "backbone_model_name", None) is None:
+                config.backbone_model_name = backbone_name
 
         self.lm_output_size = self.roberta.config.hidden_size
 
-        # Store configuration for saving/loading
         self.config.freeze_backbone = freeze_backbone
         self.config.classifier_hidden_layers = classifier_hidden_layers
         self.config.classifier_dropout = classifier_dropout
@@ -403,48 +350,31 @@ class TokenClassificationModelCRF(PreTrainedModel):
             self.roberta.eval()
         else:
             print("+" * 30, "\n\n", "NOT Freezing backbone...", "+" * 30, "\n\n")
+            self.roberta.train(True)
 
-        self.roberta.train(not freeze_backbone)
-
-        self.dropout = nn.Dropout(
-            config.hidden_dropout_prob
-            if hasattr(config, "hidden_dropout_prob")
-            else 0.1
-        )
+        self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
         self.crf = CRF(self.num_labels, batch_first=True)
 
         self._build_classifier_head(classifier_hidden_layers, classifier_dropout)
+        self.post_init()
 
     def _build_classifier_head(self, hidden_layers, dropout_rate):
-        """
-        Build a flexible classifier head with configurable hidden layers and dropout.
-
-        Args:
-            hidden_layers: Tuple of integers representing the number of neurons in each hidden layer.
-                          None or empty tuple means a simple linear layer.
-            dropout_rate: Dropout probability between layers
-        """
         layers = []
         input_size = self.lm_output_size
 
-        # If hidden_layers is None or empty, just create a simple linear layer
         if not hidden_layers:
             self.classifier = nn.Sequential(
                 nn.Dropout(dropout_rate), nn.Linear(input_size, self.num_labels)
             )
             return
 
-        # Build MLP with specified hidden layers
         for hidden_size in hidden_layers:
             layers.append(nn.Linear(input_size, hidden_size))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout_rate))
             input_size = hidden_size
 
-        # Final classification layer
         layers.append(nn.Linear(input_size, self.num_labels))
-
-        # Create sequential model
         self.classifier = nn.Sequential(*layers)
 
     def forward(
@@ -465,26 +395,34 @@ class TokenClassificationModelCRF(PreTrainedModel):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        outputs = self.roberta(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        try:
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        except TypeError:
+            outputs = self.roberta(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
         sequence_output = self.dropout(outputs.last_hidden_state)
-        logits = self.classifier(sequence_output)  # Emissions for CRF
+        logits = self.classifier(sequence_output)
 
         loss = None
         if labels is not None:
-            # CRF calculates the log-likelihood of the correct sequence
-            # We use a negative sign to convert it into a loss
-            # Mask padding/special tokens when attention_mask is available
             labels_long = labels.long()
             if attention_mask is not None:
                 mask = attention_mask.bool()
@@ -520,14 +458,12 @@ class TokenClassificationModelCRF(PreTrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        """Override from_pretrained to handle custom model loading"""
         config = kwargs.pop("config", None)
         if config is None:
             from transformers import AutoConfig
 
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
-        # Extract custom parameters from config if they exist
         freeze_backbone = getattr(config, "freeze_backbone", False)
         classifier_hidden_layers = getattr(config, "classifier_hidden_layers", None)
         classifier_dropout = getattr(config, "classifier_dropout", 0.1)
@@ -539,14 +475,12 @@ class TokenClassificationModelCRF(PreTrainedModel):
             classifier_dropout=classifier_dropout,
         )
 
-        # Load state dict if available
         try:
             state_dict = torch.load(
                 f"{pretrained_model_name_or_path}/pytorch_model.bin", map_location="cpu"
             )
             model.load_state_dict(state_dict)
-        except:
-            # If loading fails, the model will be initialized with random weights
+        except Exception:
             print(
                 "Warning: Could not load pre-trained weights. Using randomly initialized model."
             )
@@ -557,16 +491,6 @@ class TokenClassificationModelCRF(PreTrainedModel):
 class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
     """
     Multi-Head CRF model for token classification with multiple entity types.
-
-    Each entity type gets its own classification head and CRF layer, allowing
-    for independent BIO tagging per entity type. This is useful for scenarios
-    where entities can overlap or when different entity types have different
-    transition patterns.
-
-    Args:
-        config: MultiHeadCRFConfig or compatible config with entity_types
-        base_model: Optional pre-trained RoBERTa model
-        freeze_backbone: Whether to freeze transformer weights
     """
 
     config_class = MultiHeadCRFConfig
@@ -577,16 +501,11 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        # Get entity types from config
         self.entity_types = getattr(config, "entity_types", [])
         if not self.entity_types:
             raise ValueError("entity_types must be provided in config")
 
-        # Number of labels per head (typically 3 for BIO: O, B, I) + padding
         self.num_labels = config.num_labels
-        # self.num_labels_with_pad = self.num_labels + 1  # should be self.num_labels?
-
-        # Configuration parameters
         self.number_of_layers_per_head = getattr(config, "number_of_layers_per_head", 1)
         self.crf_reduction = getattr(config, "crf_reduction", "mean")
         freeze_backbone = (
@@ -597,49 +516,27 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
         self.num_frozen_encoders = getattr(config, "num_frozen_encoders", 0)
         classifier_dropout = getattr(config, "classifier_dropout", 0.1)
 
-        # Initialize the transformer backbone
         if base_model is None:
-            from transformers import AutoConfig, RobertaModel
-
-            # Use backbone_model_name if available, fallback to name_or_path
-            backbone_name = getattr(config, "backbone_model_name", None)
-            if backbone_name is None:
-                backbone_name = getattr(config, "name_or_path", None) or getattr(
-                    config, "_name_or_path", None
-                )
-
-            if backbone_name:
-                # Load pretrained weights
-                backbone_config = AutoConfig.from_pretrained(backbone_name)
-                backbone_config.hidden_dropout_prob = getattr(
-                    config, "hidden_dropout_prob", 0.1
-                )
-                self.roberta = RobertaModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
-                # Store backbone_model_name in config for future loading
-                if (
-                    not hasattr(config, "backbone_model_name")
-                    or config.backbone_model_name is None
-                ):
-                    config.backbone_model_name = backbone_name
-            else:
-                # Fallback: initialize without pretrained weights (not recommended)
-                self.roberta = RobertaModel(config, add_pooling_layer=False)
+            self.roberta, backbone_name = _build_backbone_from_config(config)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
             else:
                 self.roberta = base_model
+            backbone_name = (
+                getattr(getattr(self.roberta, "config", None), "_name_or_path", None)
+                or getattr(config, "backbone_model_name", None)
+                or getattr(config, "_name_or_path", None)
+            )
+            if getattr(config, "backbone_model_name", None) is None:
+                config.backbone_model_name = backbone_name
 
-        self.hidden_size = config.hidden_size
+        self.hidden_size = self.roberta.config.hidden_size
         self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
 
-        # Create heads for each entity type
         print(f"Creating Multi-Head CRF with entity types: {sorted(self.entity_types)}")
 
         for entity_type in self.entity_types:
-            # Dense layers per head
             for i in range(self.number_of_layers_per_head):
                 setattr(
                     self,
@@ -655,7 +552,6 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                     self, f"{entity_type}_dropout_{i}", nn.Dropout(classifier_dropout)
                 )
 
-            # Classifier and CRF per head
             setattr(
                 self,
                 f"{entity_type}_classifier",
@@ -667,19 +563,17 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                 MultiHeadCRF(num_tags=self.num_labels, batch_first=True),
             )
 
-        # Handle freezing
         if freeze_backbone:
             self._freeze_backbone()
 
+        self.post_init()
+
     def _freeze_backbone(self):
-        """Freeze transformer backbone parameters."""
         print("+" * 30, "\n\n", "Freezing backbone...", "+" * 30, "\n\n")
 
-        # Freeze embeddings
         for param in self.roberta.embeddings.parameters():
             param.requires_grad = False
 
-        # Optionally freeze some encoder layers
         if self.num_frozen_encoders > 0:
             for _, param in islice(
                 self.roberta.encoder.named_parameters(),
@@ -688,7 +582,6 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                 param.requires_grad = False
 
     def reset_head_parameters(self):
-        """Reset parameters for all heads (useful after loading pretrained weights)."""
         for entity_type in self.entity_types:
             for i in range(self.number_of_layers_per_head):
                 getattr(self, f"{entity_type}_dense_{i}").reset_parameters()
@@ -710,27 +603,10 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
         return_dict: Optional[bool] = None,
         **kwargs,
     ):
-        """
-        Forward pass through the multi-head CRF model.
-
-        Args:
-            input_ids: Input token IDs
-            attention_mask: Attention mask
-            labels: Dictionary mapping entity types to label tensors
-                   e.g., {"DRUG": tensor, "DISEASE": tensor}
-            ... other standard transformer arguments
-
-        Returns:
-            During training (labels provided):
-                Tuple of (total_loss, logits_dict) where logits_dict maps entity types to logits
-            During inference (no labels):
-                List of prediction tensors, one per entity type (sorted alphabetically)
-        """
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        # Get transformer outputs
         try:
             outputs = self.roberta(
                 input_ids,
@@ -744,7 +620,6 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                 return_dict=return_dict,
             )
         except TypeError:
-            # Some backbones (e.g., EuroBERT) do not accept token_type_ids/head_mask
             outputs = self.roberta(
                 input_ids,
                 attention_mask=attention_mask,
@@ -756,9 +631,8 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
             )
 
         sequence_output = outputs[0]
-        sequence_output = self.dropout(sequence_output)  # (batch, seq_len, hidden)
+        sequence_output = self.dropout(sequence_output)
 
-        # Compute logits for each head
         logits = {}
         for entity_type in self.entity_types:
             head_output = sequence_output
@@ -773,19 +647,15 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
             )
 
         if labels is not None:
-            # Training mode - compute CRF loss for each head
-            # Mask padding/special tokens when attention_mask is available
             losses = {}
             mask = attention_mask.bool() if attention_mask is not None else None
 
             for entity_type in self.entity_types:
                 if entity_type in labels:
-                    # Ensure labels are on the same device as logits
                     entity_labels = (
                         labels[entity_type].long().to(logits[entity_type].device)
                     )
                     crf = getattr(self, f"{entity_type}_crf")
-                    # CRF returns negative log likelihood, we want to minimize it
                     if mask is not None:
                         losses[entity_type] = crf(
                             logits[entity_type],
@@ -805,25 +675,21 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                             reduction=self.crf_reduction,
                         )
 
-            # Sum losses from all heads
             total_loss = sum(losses.values())
             return total_loss, logits
 
-        else:
-            # Inference mode - decode each head
-            predictions = {}
-            mask = attention_mask.bool() if attention_mask is not None else None
+        predictions = {}
+        mask = attention_mask.bool() if attention_mask is not None else None
 
-            for entity_type in self.entity_types:
-                crf = getattr(self, f"{entity_type}_crf")
-                if mask is not None:
-                    decoded = crf.decode(logits[entity_type], mask=mask)
-                else:
-                    decoded = crf.decode(logits[entity_type])
-                predictions[entity_type] = torch.tensor(decoded)
+        for entity_type in self.entity_types:
+            crf = getattr(self, f"{entity_type}_crf")
+            if mask is not None:
+                decoded = crf.decode(logits[entity_type], mask=mask)
+            else:
+                decoded = crf.decode(logits[entity_type])
+            predictions[entity_type] = torch.tensor(decoded)
 
-            # Return as list sorted by entity type for consistency
-            return [predictions[ent] for ent in sorted(self.entity_types)]
+        return [predictions[ent] for ent in sorted(self.entity_types)]
 
     def get_input_embeddings(self):
         return self.roberta.get_input_embeddings()
@@ -833,20 +699,16 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        """Override from_pretrained to handle custom model loading."""
         import json
         import os
 
         config = kwargs.pop("config", None)
 
         if config is None:
-            # Load config directly from JSON to get all saved attributes
             config_file = os.path.join(pretrained_model_name_or_path, "config.json")
             if os.path.exists(config_file):
                 with open(config_file, "r") as f:
                     config_dict = json.load(f)
-
-                # Create MultiHeadCRFConfig with all loaded parameters
                 config = MultiHeadCRFConfig(**config_dict)
             else:
                 from transformers import AutoConfig
@@ -856,10 +718,7 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                     trust_remote_code=kwargs.get("trust_remote_code", True),
                 )
 
-        # Ensure config has all required RoBERTa parameters
-        # These are needed to initialize RobertaModel
         roberta_defaults = {
-            # Core model architecture
             "layer_norm_eps": 1e-5,
             "hidden_size": 768,
             "num_hidden_layers": 12,
@@ -872,13 +731,10 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
             "type_vocab_size": 1,
             "initializer_range": 0.02,
             "vocab_size": 52000,
-            # Token IDs
             "pad_token_id": 1,
             "bos_token_id": 0,
             "eos_token_id": 2,
-            # Position embeddings
             "position_embedding_type": "absolute",
-            # Model behavior flags
             "use_cache": True,
             "is_decoder": False,
             "add_cross_attention": False,
@@ -888,13 +744,9 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
             "torchscript": False,
             "tie_word_embeddings": True,
             "return_dict": True,
-            # Gradient checkpointing
             "gradient_checkpointing": False,
-            # Pruning
             "pruned_heads": {},
-            # Problem type (for classification)
             "problem_type": None,
-            # Embedding layer norm
             "embedding_size": None,
         }
 
@@ -903,10 +755,8 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
                 setattr(config, key, default_value)
 
         freeze_backbone = getattr(config, "freeze_backbone", False)
-
         model = cls(config=config, freeze_backbone=freeze_backbone)
 
-        # Load state dict if available
         weight_file = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin")
         safetensors_file = os.path.join(
             pretrained_model_name_or_path, "model.safetensors"
@@ -934,16 +784,6 @@ class TokenClassificationModelMultiHeadCRF(PreTrainedModel):
 class MultiHeadConfig(PretrainedConfig):
     """
     Configuration class for Multi-Head models (without CRF).
-
-    Args:
-        entity_types: List of entity type names (e.g., ["DRUG", "DISEASE", "SYMPTOM"])
-        number_of_layers_per_head: Number of dense layers per head before classification
-        freeze_backbone: Whether to freeze the transformer backbone
-        num_frozen_encoders: Number of encoder layers to freeze (from bottom)
-        classifier_dropout: Dropout rate for classifier heads
-        use_class_weights: Whether to use class weights for loss computation
-        class_weights: Optional dict mapping entity types to weight lists
-        **kwargs: Additional arguments passed to PretrainedConfig
     """
 
     model_type = "multihead-tagger"
@@ -974,18 +814,6 @@ class MultiHeadConfig(PretrainedConfig):
 class TokenClassificationModelMultiHead(PreTrainedModel):
     """
     Multi-Head model for token classification with multiple entity types (no CRF).
-
-    Each entity type gets its own classification head, allowing for independent
-    BIO tagging per entity type. This is useful for scenarios where entities
-    can overlap or when different entity types need separate classification.
-
-    Unlike the CRF variant, this model uses standard CrossEntropyLoss and
-    argmax decoding, which is faster but doesn't enforce valid BIO sequences.
-
-    Args:
-        config: MultiHeadConfig or compatible config with entity_types
-        base_model: Optional pre-trained RoBERTa model
-        freeze_backbone: Whether to freeze transformer weights
     """
 
     config_class = MultiHeadConfig
@@ -996,15 +824,11 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        # Get entity types from config
         self.entity_types = getattr(config, "entity_types", [])
         if not self.entity_types:
             raise ValueError("entity_types must be provided in config")
 
-        # Number of labels per head (typically 3 for BIO: O, B, I)
         self.num_labels = config.num_labels
-
-        # Configuration parameters
         self.number_of_layers_per_head = getattr(config, "number_of_layers_per_head", 1)
         freeze_backbone = (
             freeze_backbone
@@ -1014,55 +838,32 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
         self.num_frozen_encoders = getattr(config, "num_frozen_encoders", 0)
         classifier_dropout = getattr(config, "classifier_dropout", 0.1)
 
-        # Class weights for loss computation
         self.use_class_weights = getattr(config, "use_class_weights", False)
         self.class_weights = getattr(config, "class_weights", None)
 
-        # Initialize the transformer backbone
         if base_model is None:
-            from transformers import AutoConfig, RobertaModel
-
-            # Use backbone_model_name if available, fallback to name_or_path
-            backbone_name = getattr(config, "backbone_model_name", None)
-            if backbone_name is None:
-                backbone_name = getattr(config, "name_or_path", None) or getattr(
-                    config, "_name_or_path", None
-                )
-
-            if backbone_name:
-                # Load pretrained weights
-                backbone_config = AutoConfig.from_pretrained(backbone_name)
-                backbone_config.hidden_dropout_prob = getattr(
-                    config, "hidden_dropout_prob", 0.1
-                )
-                self.roberta = RobertaModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
-                # Store backbone_model_name in config for future loading
-                if (
-                    not hasattr(config, "backbone_model_name")
-                    or config.backbone_model_name is None
-                ):
-                    config.backbone_model_name = backbone_name
-            else:
-                # Fallback: initialize without pretrained weights (not recommended)
-                self.roberta = RobertaModel(config, add_pooling_layer=False)
+            self.roberta, backbone_name = _build_backbone_from_config(config)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
             else:
                 self.roberta = base_model
+            backbone_name = (
+                getattr(getattr(self.roberta, "config", None), "_name_or_path", None)
+                or getattr(config, "backbone_model_name", None)
+                or getattr(config, "_name_or_path", None)
+            )
+            if getattr(config, "backbone_model_name", None) is None:
+                config.backbone_model_name = backbone_name
 
-        self.hidden_size = config.hidden_size
+        self.hidden_size = self.roberta.config.hidden_size
         self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
 
-        # Create heads for each entity type
         print(
             f"Creating Multi-Head model with entity types: {sorted(self.entity_types)}"
         )
 
         for entity_type in self.entity_types:
-            # Dense layers per head
             for i in range(self.number_of_layers_per_head):
                 setattr(
                     self,
@@ -1078,14 +879,12 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                     self, f"{entity_type}_dropout_{i}", nn.Dropout(classifier_dropout)
                 )
 
-            # Classifier per head (no CRF)
             setattr(
                 self,
                 f"{entity_type}_classifier",
                 nn.Linear(self.hidden_size, self.num_labels),
             )
 
-        # Set up loss functions per entity type (with optional class weights)
         self.loss_fns = nn.ModuleDict()
         for entity_type in self.entity_types:
             if (
@@ -1102,19 +901,17 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
             else:
                 self.loss_fns[entity_type] = nn.CrossEntropyLoss(ignore_index=-100)
 
-        # Handle freezing
         if freeze_backbone:
             self._freeze_backbone()
 
+        self.post_init()
+
     def _freeze_backbone(self):
-        """Freeze transformer backbone parameters."""
         print("+" * 30, "\n\n", "Freezing backbone...", "+" * 30, "\n\n")
 
-        # Freeze embeddings
         for param in self.roberta.embeddings.parameters():
             param.requires_grad = False
 
-        # Optionally freeze some encoder layers
         if self.num_frozen_encoders > 0:
             for _, param in islice(
                 self.roberta.encoder.named_parameters(),
@@ -1123,7 +920,6 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                 param.requires_grad = False
 
     def reset_head_parameters(self):
-        """Reset parameters for all heads (useful after loading pretrained weights)."""
         for entity_type in self.entity_types:
             for i in range(self.number_of_layers_per_head):
                 getattr(self, f"{entity_type}_dense_{i}").reset_parameters()
@@ -1143,27 +939,10 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
         return_dict: Optional[bool] = None,
         **kwargs,
     ):
-        """
-        Forward pass through the multi-head model.
-
-        Args:
-            input_ids: Input token IDs
-            attention_mask: Attention mask
-            labels: Dictionary mapping entity types to label tensors
-                   e.g., {"DRUG": tensor, "DISEASE": tensor}
-            ... other standard transformer arguments
-
-        Returns:
-            During training (labels provided):
-                Tuple of (total_loss, logits_dict) where logits_dict maps entity types to logits
-            During inference (no labels):
-                List of prediction tensors, one per entity type (sorted alphabetically)
-        """
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        # Get transformer outputs
         try:
             outputs = self.roberta(
                 input_ids,
@@ -1177,7 +956,6 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                 return_dict=return_dict,
             )
         except TypeError:
-            # Some backbones (e.g., EuroBERT) do not accept token_type_ids/head_mask
             outputs = self.roberta(
                 input_ids,
                 attention_mask=attention_mask,
@@ -1189,9 +967,8 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
             )
 
         sequence_output = outputs[0]
-        sequence_output = self.dropout(sequence_output)  # (batch, seq_len, hidden)
+        sequence_output = self.dropout(sequence_output)
 
-        # Compute logits for each head
         logits = {}
         for entity_type in self.entity_types:
             head_output = sequence_output
@@ -1206,7 +983,6 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
             )
 
         if labels is not None:
-            # Training mode - compute CrossEntropyLoss for each head
             losses = {}
 
             for entity_type in self.entity_types:
@@ -1215,11 +991,8 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                         labels[entity_type].long().to(logits[entity_type].device)
                     )
                     entity_logits = logits[entity_type]
-
-                    # Reshape for CrossEntropyLoss: (batch * seq_len, num_labels) and (batch * seq_len,)
                     loss_fct = self.loss_fns[entity_type]
 
-                    # Move loss function weights to the same device if needed
                     if hasattr(loss_fct, "weight") and loss_fct.weight is not None:
                         loss_fct.weight = loss_fct.weight.to(entity_logits.device)
 
@@ -1228,21 +1001,15 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                         entity_labels.view(-1),
                     )
 
-            # Sum losses from all heads
             total_loss = sum(losses.values())
             return total_loss, logits
 
-        else:
-            # Inference mode - argmax decoding for each head
-            predictions = {}
+        predictions = {}
+        for entity_type in self.entity_types:
+            preds = torch.argmax(logits[entity_type], dim=-1)
+            predictions[entity_type] = preds
 
-            for entity_type in self.entity_types:
-                # Simple argmax decoding (no CRF constraints)
-                preds = torch.argmax(logits[entity_type], dim=-1)
-                predictions[entity_type] = preds
-
-            # Return as list sorted by entity type for consistency
-            return [predictions[ent] for ent in sorted(self.entity_types)]
+        return [predictions[ent] for ent in sorted(self.entity_types)]
 
     def get_input_embeddings(self):
         return self.roberta.get_input_embeddings()
@@ -1252,20 +1019,16 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        """Override from_pretrained to handle custom model loading."""
         import json
         import os
 
         config = kwargs.pop("config", None)
 
         if config is None:
-            # Load config directly from JSON to get all saved attributes
             config_file = os.path.join(pretrained_model_name_or_path, "config.json")
             if os.path.exists(config_file):
                 with open(config_file, "r") as f:
                     config_dict = json.load(f)
-
-                # Create MultiHeadConfig with all loaded parameters
                 config = MultiHeadConfig(**config_dict)
             else:
                 from transformers import AutoConfig
@@ -1275,7 +1038,6 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                     trust_remote_code=kwargs.get("trust_remote_code", True),
                 )
 
-        # Ensure config has all required RoBERTa parameters
         roberta_defaults = {
             "layer_norm_eps": 1e-5,
             "hidden_size": 768,
@@ -1313,10 +1075,8 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
                 setattr(config, key, default_value)
 
         freeze_backbone = getattr(config, "freeze_backbone", False)
-
         model = cls(config=config, freeze_backbone=freeze_backbone)
 
-        # Load state dict if available
         weight_file = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin")
         safetensors_file = os.path.join(
             pretrained_model_name_or_path, "model.safetensors"
@@ -1344,7 +1104,6 @@ class TokenClassificationModelMultiHead(PreTrainedModel):
 class TokenClassificationModel(PreTrainedModel):
     """
     Custom token classification model with configurable classifier head (no CRF).
-    This model can be loaded with trust_remote_code=True for HuggingFace Hub compatibility.
     """
 
     def __init__(self, config, base_model=None):
@@ -1352,37 +1111,8 @@ class TokenClassificationModel(PreTrainedModel):
         self.config = config
         self.num_labels = config.num_labels
 
-        # Initialize the roberta backbone - load pretrained weights
         if base_model is None:
-            from transformers import AutoConfig, AutoModel
-
-            # Use backbone_model_name if available, fallback to name_or_path
-            # This is critical because name_or_path gets overwritten during save/load
-            backbone_name = getattr(config, "backbone_model_name", None)
-            if backbone_name is None:
-                backbone_name = getattr(config, "name_or_path", None) or getattr(
-                    config, "_name_or_path", None
-                )
-            if backbone_name is None:
-                raise ValueError(
-                    "config.backbone_model_name (or config.name_or_path) is required to load pretrained backbone"
-                )
-
-            # Create a clean config for the backbone
-            backbone_config = AutoConfig.from_pretrained(backbone_name)
-            backbone_config.hidden_dropout_prob = getattr(
-                config, "hidden_dropout_prob", 0.1
-            )
-
-            try:
-                self.roberta = AutoModel.from_pretrained(
-                    backbone_name, config=backbone_config, add_pooling_layer=False
-                )
-            except TypeError:
-                # Some backbones (e.g., DeBERTa) do not accept add_pooling_layer
-                self.roberta = AutoModel.from_pretrained(
-                    backbone_name, config=backbone_config
-                )
+            self.roberta, backbone_name = _build_backbone_from_config(config)
         else:
             if hasattr(base_model, "roberta"):
                 self.roberta = base_model.roberta
@@ -1391,29 +1121,19 @@ class TokenClassificationModel(PreTrainedModel):
             backbone_name = (
                 getattr(getattr(self.roberta, "config", None), "_name_or_path", None)
                 or getattr(config, "backbone_model_name", None)
-                or getattr(config, "name_or_path", None)
+                or getattr(config, "_name_or_path", None)
             )
 
-        # Store backbone_model_name in config for future loading
-        if (
-            not hasattr(config, "backbone_model_name")
-            or config.backbone_model_name is None
-        ):
+        if getattr(config, "backbone_model_name", None) is None:
             config.backbone_model_name = backbone_name
-        self.dropout = nn.Dropout(
-            config.hidden_dropout_prob
-            if hasattr(config, "hidden_dropout_prob")
-            else 0.1
-        )
 
-        # Get classifier configuration
+        self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
+
         classifier_hidden_layers = getattr(config, "classifier_hidden_layers", None)
         classifier_dropout = getattr(config, "classifier_dropout", 0.1)
 
-        # Build classifier head
         if classifier_hidden_layers is not None:
-            # rebuild the MLP head
-            in_size = config.hidden_size
+            in_size = self.roberta.config.hidden_size
             layers = []
             if classifier_hidden_layers:
                 for h in classifier_hidden_layers:
@@ -1426,16 +1146,18 @@ class TokenClassificationModel(PreTrainedModel):
             layers.append(nn.Linear(in_size, config.num_labels))
             self.classifier = nn.Sequential(*layers)
         else:
-            # Default single linear layer
-            self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+            self.classifier = nn.Linear(
+                self.roberta.config.hidden_size, config.num_labels
+            )
 
-        # Initialize only classifier weights to preserve pretrained backbone
         if isinstance(self.classifier, nn.Sequential):
             for module in self.classifier:
                 if isinstance(module, nn.Linear):
                     self._init_weights(module)
         elif isinstance(self.classifier, nn.Linear):
             self._init_weights(self.classifier)
+
+        self.post_init()
 
     def forward(
         self,
@@ -1455,7 +1177,6 @@ class TokenClassificationModel(PreTrainedModel):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        # Run inputs through the transformer backbone
         try:
             outputs = self.roberta(
                 input_ids,
@@ -1469,11 +1190,9 @@ class TokenClassificationModel(PreTrainedModel):
                 return_dict=return_dict,
             )
         except TypeError:
-            # Some backbones (e.g., DeBERTa) do not accept head_mask
             outputs = self.roberta(
                 input_ids,
                 attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
                 position_ids=position_ids,
                 inputs_embeds=inputs_embeds,
                 output_attentions=output_attentions,
@@ -1489,7 +1208,6 @@ class TokenClassificationModel(PreTrainedModel):
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
             if attention_mask is not None:
-                # Only keep active parts of the sequence
                 active_loss = attention_mask.view(-1) == 1
                 active_logits = logits.view(-1, self.num_labels)[active_loss]
                 active_labels = labels.view(-1)[active_loss]
@@ -1516,19 +1234,7 @@ class TokenClassificationModel(PreTrainedModel):
 
 
 def load_custom_cardioner_multiclass_model(model_path: str, device: str = "auto"):
-    """
-    Utility function to easily load a custom CardioNER multiclass model.
-
-    Args:
-        model_path: Path to the saved model directory
-        device: Device to load model on ("auto", "cpu", "cuda", etc.)
-
-    Returns:
-        tuple: (model, tokenizer, config)
-    """
-    # Validate model directory
     import os
-
     import torch
     from transformers import AutoModelForTokenClassification, AutoTokenizer
 
@@ -1544,15 +1250,12 @@ def load_custom_cardioner_multiclass_model(model_path: str, device: str = "auto"
 
     print(f"Loading custom CardioNER multiclass model from: {model_path}")
 
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    # Load model with trust_remote_code=True
     model = AutoModelForTokenClassification.from_pretrained(
         model_path, trust_remote_code=True
     )
 
-    # Set device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -1566,21 +1269,10 @@ def load_custom_cardioner_multiclass_model(model_path: str, device: str = "auto"
 
 
 def load_custom_multihead_crf_model(model_path: str, device: str = "auto"):
-    """
-    Utility function to load a Multi-Head CRF model.
-
-    Args:
-        model_path: Path to the saved model directory
-        device: Device to load model on ("auto", "cpu", "cuda", etc.)
-
-    Returns:
-        tuple: (model, tokenizer, config)
-    """
     import os
-
+    import json
     from transformers import AutoTokenizer
 
-    # Validate model directory
     required_files = ["config.json", "modeling.py"]
     missing_files = [
         f for f in required_files if not os.path.exists(os.path.join(model_path, f))
@@ -1593,23 +1285,17 @@ def load_custom_multihead_crf_model(model_path: str, device: str = "auto"):
 
     print(f"Loading Multi-Head CRF model from: {model_path}")
 
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-    # Load config
-    import json
 
     with open(os.path.join(model_path, "config.json"), "r") as f:
         config_dict = json.load(f)
 
     config = MultiHeadCRFConfig(**config_dict)
 
-    # Load model
     model = TokenClassificationModelMultiHeadCRF.from_pretrained(
         model_path, config=config
     )
 
-    # Set device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -1624,15 +1310,6 @@ def load_custom_multihead_crf_model(model_path: str, device: str = "auto"):
 
 
 def validate_custom_multiclass_model_directory(model_path: str) -> dict:
-    """
-    Validate that a model directory contains all necessary files for custom multiclass model loading.
-
-    Args:
-        model_path: Path to the model directory
-
-    Returns:
-        dict: Validation results with status and details
-    """
     import json
     import os
 
@@ -1644,21 +1321,18 @@ def validate_custom_multiclass_model_directory(model_path: str) -> dict:
         "model_info": {},
     }
 
-    # Required files
     required_files = {
         "config.json": "Model configuration",
         "modeling.py": "Custom model class definition",
         "pytorch_model.bin": "Model weights",
     }
 
-    # Optional files
     optional_files = {
         "tokenizer.json": "Tokenizer vocabulary",
         "tokenizer_config.json": "Tokenizer configuration",
         "training_args.json": "Training arguments",
     }
 
-    # Check required files
     for filename, description in required_files.items():
         filepath = os.path.join(model_path, filename)
         if os.path.exists(filepath):
@@ -1669,7 +1343,6 @@ def validate_custom_multiclass_model_directory(model_path: str) -> dict:
                 f"Missing required file: {filename} - {description}"
             )
 
-    # Check optional files
     for filename, description in optional_files.items():
         filepath = os.path.join(model_path, filename)
         if os.path.exists(filepath):
@@ -1679,7 +1352,6 @@ def validate_custom_multiclass_model_directory(model_path: str) -> dict:
                 f"Missing optional file: {filename} - {description}"
             )
 
-    # Parse config if available
     config_path = os.path.join(model_path, "config.json")
     if os.path.exists(config_path):
         try:
@@ -1712,7 +1384,6 @@ def validate_custom_multiclass_model_directory(model_path: str) -> dict:
             validation_results["valid"] = False
             validation_results["errors"].append(f"Invalid config.json: {str(e)}")
 
-    # Check modeling.py content
     modeling_path = os.path.join(model_path, "modeling.py")
     if os.path.exists(modeling_path):
         try:
@@ -1739,38 +1410,17 @@ def validate_custom_multiclass_model_directory(model_path: str) -> dict:
     return validation_results
 
 
-# Register the MultiHeadCRF config for auto loading
 try:
     from transformers import AutoConfig
 
     AutoConfig.register("multihead-crf-tagger", MultiHeadCRFConfig)
 except Exception:
-    pass  # Config may already be registered
+    pass
 
 
 def patch_legacy_model(
     model_path: str, backbone_model_name: str, dry_run: bool = True
 ) -> bool:
-    """
-    Patch a legacy saved model by adding backbone_model_name to config.json.
-
-    Use this to fix models trained before backbone_model_name was added to the config.
-
-    Args:
-        model_path: Path to the saved model directory
-        backbone_model_name: The original backbone model name used during training
-                            (e.g., "CLTL/MedRoBERTa.nl", "GroNLP/bert-base-dutch-cased")
-        dry_run: If True, only print what would be changed without modifying files
-
-    Returns:
-        bool: True if patch was successful (or would be successful in dry_run mode)
-
-    Example:
-        >>> # First, do a dry run to see what will change
-        >>> patch_legacy_model("/path/to/saved/model", "CLTL/MedRoBERTa.nl", dry_run=True)
-        >>> # Then apply the patch
-        >>> patch_legacy_model("/path/to/saved/model", "CLTL/MedRoBERTa.nl", dry_run=False)
-    """
     import json
     import os
     import shutil
@@ -1781,11 +1431,9 @@ def patch_legacy_model(
         print(f"ERROR: config.json not found at {config_path}")
         return False
 
-    # Load existing config
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    # Check if already patched
     if "backbone_model_name" in config:
         print(f"Model already has backbone_model_name: {config['backbone_model_name']}")
         if config["backbone_model_name"] == backbone_model_name:
@@ -1800,7 +1448,6 @@ def patch_legacy_model(
             else:
                 print("Updating to new value...")
 
-    # Add backbone_model_name
     config["backbone_model_name"] = backbone_model_name
 
     if dry_run:
@@ -1809,12 +1456,10 @@ def patch_legacy_model(
         print("\nTo apply this patch, run with dry_run=False")
         return True
 
-    # Create backup
     backup_path = config_path + ".backup"
     shutil.copy2(config_path, backup_path)
     print(f"Created backup at {backup_path}")
 
-    # Write updated config
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
@@ -1827,21 +1472,6 @@ def patch_legacy_model(
 def patch_multiple_models(
     model_paths: list, backbone_model_name: str, dry_run: bool = True
 ) -> dict:
-    """
-    Patch multiple legacy saved models at once.
-
-    Args:
-        model_paths: List of paths to saved model directories
-        backbone_model_name: The original backbone model name used during training
-        dry_run: If True, only print what would be changed without modifying files
-
-    Returns:
-        dict: Results for each model path
-
-    Example:
-        >>> models = ["/path/to/model1", "/path/to/model2"]
-        >>> patch_multiple_models(models, "CLTL/MedRoBERTa.nl", dry_run=False)
-    """
     results = {}
     for path in model_paths:
         print(f"\n{'=' * 60}")
@@ -1849,7 +1479,6 @@ def patch_multiple_models(
         print("=" * 60)
         results[path] = patch_legacy_model(path, backbone_model_name, dry_run)
 
-    # Summary
     print(f"\n{'=' * 60}")
     print("SUMMARY")
     print("=" * 60)
