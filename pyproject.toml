@@ -44,6 +44,7 @@ pysbd = "^0.3.4"
 pyarrow = "^22.0.0"
 ipykernel = "^7.1.0"
 rapidfuzz = "^3.14.3"
+langextract = "^1.2.0"
 
 [build-system]
 requires = ["poetry-core"]
