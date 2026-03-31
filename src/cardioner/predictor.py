@@ -356,8 +356,8 @@ class PredictionNER:
         original_text,
         confidence_threshold=0.5,
         no_iob=False,
-        post_hoc_cleaning=False,
-        trim_trailing_cutoff_words_enabled: Optional[bool] = False,
+        post_hoc_cleaning=True,
+        trim_trailing_cutoff_words_enabled: Optional[bool] = True,
         pre_merge_rule_1: bool = False,
         pre_merge_rule_2: bool = False,
         pre_merge_rule_3: bool = False,
@@ -514,7 +514,20 @@ class PredictionNER:
                 if current_entity and current_entity["tag"] == tag_type:
                     current_entity["end"] = end
                     current_entity["scores"].append(score)
+                elif (
+                    current_entity
+                    and idx + 1 < len(corrected_tokens)
+                    and corrected_tokens[idx + 1]["tag"] == f"I-{current_entity['tag']}"
+                    and tag_type != current_entity["tag"]
+                ):
+                    # Bridge a single-token class intrusion inside an active entity sequence.
+                    # Example: B-X I-X I-Y I-X  -> keep X sequence contiguous.
+                    continue
                 else:
+                    if current_entity:
+                        finalized = finalize_entity(current_entity)
+                        if finalized:
+                            entities.append(finalized)
                     current_entity = {
                         "start": start,
                         "end": end,
