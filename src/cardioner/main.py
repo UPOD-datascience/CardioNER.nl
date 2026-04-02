@@ -209,6 +209,7 @@ def inference(
                 batch_size=dt4h_batch_size,
                 confidence_threshold=dt4h_min_confidence,
                 post_hoc_cleaning=dt4h_post_hoc_cleaning,
+                trim_trailing_cutoff_words=True,
             )
             if len(res) > 0:
                 for _res in res:
