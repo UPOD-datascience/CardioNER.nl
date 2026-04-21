@@ -1,11 +1,31 @@
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-ro/test/disease/txt --lang=multi --output_file_prefix=ro_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+#!/usr/bin/env bash
+set -euo pipefail
 
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-it/test/disease/txt --lang=multi --output_file_prefix=it_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+BASE_DIR="/home/bramiozo/DEV/CardioNER.nl"
+MODEL_ROOT="${BASE_DIR}/output/EuroBERT-610m"
+DATA_ROOT="${BASE_DIR}/assets/MultiClinNER"
+INFERENCE_PIPE="dt4h"
+BATCH_SIZE=4
 
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-en/test/disease/txt --lang=multi --output_file_prefix=en_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+entities="disease procedure symptom"
+languages="cz sv en es it nl ro"
 
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-es/test/disease/txt --lang=multi --output_file_prefix=es_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+for entity in ${entities}; do
+  ENTITY_UPPER="$(printf "%s" "${entity}" | tr '[:lower:]' '[:upper:]')"
+  model_path="${MODEL_ROOT}/${ENTITY_UPPER}_3l_multilabel_weighted/fold_0"
 
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-nl/test/disease/txt --lang=multi --output_file_prefix=nl_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+  for lang in ${languages}; do
+    corpus_inference="${DATA_ROOT}/MultiClinNER-${lang}/test/${entity}/txt"
+    output_prefix="${lang}_${entity}_eurobert610_ml_silver_"
 
-poetry run python -m cardioner.main --inference_only --model_path=/home/bramiozo/DEV/CardioNER.nl/output/EuroBERT-610m/DISEASE_3l_multilabel_weighted/fold_0 --corpus_inference=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/MultiClinNER-cz/test/disease/txt --lang=multi --output_file_prefix=cz_disease_eurobert610_ml_ --inference_pipe=dt4h --inference_batch_size=4 --trust_remote_code --inference_filter_file=/home/bramiozo/DEV/CardioNER.nl/assets/MultiClinNER/batch_1_ids.txt;
+    poetry run python -m cardioner.main \
+      --inference_only \
+      --model_path="${model_path}" \
+      --corpus_inference="${corpus_inference}" \
+      --lang=multi \
+      --output_file_prefix="${output_prefix}" \
+      --inference_pipe="${INFERENCE_PIPE}" \
+      --inference_batch_size="${BATCH_SIZE}" \
+      --trust_remote_code
+  done
+done
